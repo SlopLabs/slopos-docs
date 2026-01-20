@@ -1,97 +1,88 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Welcome to SlopOS"
+description: "Three kernel wizards. One island. An operating system that boots—when the Wheel of Fate allows it."
 ---
 
-## Setting up
+<p align="center">
+  <img src="https://img.shields.io/badge/status-it%20boots%20(sometimes)-brightgreen?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/vibes-immaculate-blueviolet?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/stability-the%20wheel%20decides-orange?style=for-the-badge" />
+</p>
 
-Get your documentation site up and running in minutes.
+## The Legend
+
+Three kernel wizards shipwrecked on the island of **Sloptopia**. Armed with Rust, mass AI token consumption, and zero fear of `unsafe`, they built an operating system that boots—when the Wheel of Fate allows it.
+
+**Win the spin, enter the shell. Lose, reboot and try again. The house always wins. Eventually.**
 
 <Card
-  title="Start here"
+  title="Get Started"
   icon="rocket"
   href="/quickstart"
   horizontal
 >
-  Follow our three step quickstart guide.
+  Spin up SlopOS in QEMU and test your luck.
 </Card>
 
-## Make it yours
+## What's Inside
 
-Design a docs site that looks great and empowers your users.
+SlopOS is a from-scratch x86_64 operating system written primarily in Rust, featuring:
 
 <Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+  <Card title="Memory Management" icon="memory">
+    Buddy allocator + demand paging
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Ring Isolation" icon="shield">
+    Ring 0/3 with proper TSS isolation
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Preemptive Scheduler" icon="clock">
+    SYSCALL/SYSRET fast path
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Interrupt Handling" icon="bolt">
+    IOAPIC + LAPIC interrupts
+  </Card>
+  <Card title="Input Devices" icon="keyboard">
+    PS/2 keyboard & mouse
+  </Card>
+  <Card title="Filesystem" icon="folder">
+    ext2 on VirtIO block
+  </Card>
+  <Card title="Graphics" icon="display">
+    Framebuffer graphics
+  </Card>
+  <Card title="The Wheel" icon="dice">
+    Wheel of Fate + W/L currency
   </Card>
 </Columns>
 
-## Create beautiful pages
+## Architecture
 
-Everything you need to create world-class documentation.
+```
+                      +-------------------------------------+
+                      |            USERLAND (Ring 3)        |
+                      |  +-------+  +--------+  +---------+ |
+                      |  | Shell |  |Roulette|  |Composit.| |
+                      |  +---+---+  +----+---+  +----+----+ |
+                      +------+----------+----------+--------+
+                             |  SYSCALL |          |
+                      +------v----------v----------v--------+
+                      |             KERNEL (Ring 0)         |
+                      |  +------+  +------+  +----------+   |
+                      |  | Sched|  |  MM  |  |  Video   |   |
+                      |  +------+  +------+  +----------+   |
+                      |  +------+  +------+  +----------+   |
+                      |  |VirtIO|  | ext2 |  |   PS/2   |   |
+                      |  +------+  +------+  +----------+   |
+                      +-------------------------------------+
+```
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## The Sacred Commit Logs
 
-## Need inspiration?
+<Note>
+  *"still no progress but ai said it works soo it has t be working :)"*
+  — from the sacred commit logs
+</Note>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+---
+
+**GPL-3.0-only** | [GitHub](https://github.com/Fabbboy/slopos)
