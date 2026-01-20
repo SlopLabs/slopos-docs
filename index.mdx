@@ -1,88 +1,72 @@
 ---
-title: "Welcome to SlopOS"
-description: "Three kernel wizards. One island. An operating system that boots—when the Wheel of Fate allows it."
+title: "SlopOS Documentation"
+description: "Learn how to build, run, and understand SlopOS - the operating system governed by the Wheel of Fate"
 ---
 
-<p align="center">
-  <img src="https://img.shields.io/badge/status-it%20boots%20(sometimes)-brightgreen?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/vibes-immaculate-blueviolet?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/stability-the%20wheel%20decides-orange?style=for-the-badge" />
-</p>
+## Welcome
 
-## The Legend
+This is the official documentation for **SlopOS**, a from-scratch x86_64 operating system written in Rust. Whether you want to run it, understand its internals, or contribute - you're in the right place.
 
-Three kernel wizards shipwrecked on the island of **Sloptopia**. Armed with Rust, mass AI token consumption, and zero fear of `unsafe`, they built an operating system that boots—when the Wheel of Fate allows it.
-
-**Win the spin, enter the shell. Lose, reboot and try again. The house always wins. Eventually.**
-
-<Card
-  title="Get Started"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Spin up SlopOS in QEMU and test your luck.
-</Card>
-
-## What's Inside
-
-SlopOS is a from-scratch x86_64 operating system written primarily in Rust, featuring:
-
-<Columns cols={2}>
-  <Card title="Memory Management" icon="memory">
-    Buddy allocator + demand paging
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get SlopOS running in QEMU in minutes
   </Card>
-  <Card title="Ring Isolation" icon="shield">
-    Ring 0/3 with proper TSS isolation
+  <Card title="GitHub" icon="github" href="https://github.com/Fabbboy/slopos">
+    View source code and contribute
   </Card>
-  <Card title="Preemptive Scheduler" icon="clock">
-    SYSCALL/SYSRET fast path
-  </Card>
-  <Card title="Interrupt Handling" icon="bolt">
-    IOAPIC + LAPIC interrupts
-  </Card>
-  <Card title="Input Devices" icon="keyboard">
-    PS/2 keyboard & mouse
-  </Card>
-  <Card title="Filesystem" icon="folder">
-    ext2 on VirtIO block
-  </Card>
-  <Card title="Graphics" icon="display">
-    Framebuffer graphics
-  </Card>
-  <Card title="The Wheel" icon="dice">
-    Wheel of Fate + W/L currency
-  </Card>
-</Columns>
+</CardGroup>
 
-## Architecture
+## Documentation Overview
 
-```
-                      +-------------------------------------+
-                      |            USERLAND (Ring 3)        |
-                      |  +-------+  +--------+  +---------+ |
-                      |  | Shell |  |Roulette|  |Composit.| |
-                      |  +---+---+  +----+---+  +----+----+ |
-                      +------+----------+----------+--------+
-                             |  SYSCALL |          |
-                      +------v----------v----------v--------+
-                      |             KERNEL (Ring 0)         |
-                      |  +------+  +------+  +----------+   |
-                      |  | Sched|  |  MM  |  |  Video   |   |
-                      |  +------+  +------+  +----------+   |
-                      |  +------+  +------+  +----------+   |
-                      |  |VirtIO|  | ext2 |  |   PS/2   |   |
-                      |  +------+  +------+  +----------+   |
-                      +-------------------------------------+
-```
+<AccordionGroup>
+  <Accordion title="Getting Started" icon="play">
+    The [Quickstart](/quickstart) guide covers prerequisites, building from source, and running SlopOS in QEMU. You'll need Rust nightly, QEMU, and a few standard tools.
+  </Accordion>
+  
+  <Accordion title="Kernel Subsystems" icon="microchip">
+    SlopOS is organized into subsystems:
+    - **boot/** - GDT, IDT, TSS, early init, SYSCALL MSRs
+    - **mm/** - Physical frames, virtual memory, ELF loader
+    - **core/** - Scheduler, syscall handlers, task management
+    - **drivers/** - PIT, PS/2, IOAPIC, VirtIO, PCI
+    - **video/** - Framebuffer, graphics primitives
+    - **fs/** - ext2 filesystem implementation
+  </Accordion>
+  
+  <Accordion title="Userland" icon="terminal">
+    Ring 3 applications include:
+    - **Shell** - Command-line interface
+    - **Compositor** - Window management
+    - **Roulette** - The Wheel of Fate interface
+    - **File Manager** - ext2 file browser
+  </Accordion>
+  
+  <Accordion title="The Lore" icon="book">
+    The `lore/` directory contains the sacred chronicles of SlopOS development. Start with `GENESIS.md` to understand the epic tale of three kernel wizards shipwrecked on Sloptopia.
+  </Accordion>
+</AccordionGroup>
 
-## The Sacred Commit Logs
+## Key Concepts
+
+<CardGroup cols={2}>
+  <Card title="W/L Currency" icon="coins">
+    Every operation is a gamble. Successful ops award W's, failures cost L's. The scheduler tracks your balance.
+  </Card>
+  <Card title="Wheel of Fate" icon="circle-notch">
+    Boot outcomes are determined by the Wheel. Win the spin, enter the shell. Lose, reboot and try again.
+  </Card>
+  <Card title="IOAPIC Required" icon="triangle-exclamation">
+    SlopOS requires LAPIC + IOAPIC. The legacy 8259 PIC has been sacrificed to the Wheel.
+  </Card>
+  <Card title="no_std Rust" icon="rust">
+    All kernel code is `#![no_std]` with `#![forbid(unsafe_op_in_unsafe_fn)]`. Unsafe blocks are minimal and documented.
+  </Card>
+</CardGroup>
+
+## Contributing
+
+SlopOS welcomes contributions. Check the [AGENTS.md](https://github.com/Fabbboy/slopos/blob/main/AGENTS.md) file for coding guidelines, commit conventions, and the lore system requirements.
 
 <Note>
-  *"still no progress but ai said it works soo it has t be working :)"*
-  — from the sacred commit logs
+  All changes must integrate with the W/L Currency System and respect the sacred lore. Read the chronicles before contributing.
 </Note>
-
----
-
-**GPL-3.0-only** | [GitHub](https://github.com/Fabbboy/slopos)
