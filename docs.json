@@ -40,7 +40,7 @@
   "logo": {
     "light": "/logo/logo.png",
     "dark": "/logo/logo.png",
-    "height": 40
+    "height": 60
   },
   "navbar": {
     "links": [
