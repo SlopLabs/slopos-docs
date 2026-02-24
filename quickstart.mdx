@@ -5,15 +5,16 @@ description: "Spin up SlopOS in QEMU and test your luck"
 
 ## Prerequisites
 
-You need QEMU, xorriso, mkfs.ext2, and mass skill issue tolerance.
+You need QEMU, xorriso, mkfs.ext2, [`just`](https://github.com/casey/just), and mass skill issue tolerance.
 
 <CodeGroup>
 ```bash Debian/Ubuntu
 sudo apt install qemu-system-x86 xorriso e2fsprogs
+cargo install just  # or: https://github.com/casey/just#installation
 ```
 
 ```bash Arch (btw)
-sudo pacman -S qemu-full xorriso e2fsprogs
+sudo pacman -S qemu-full xorriso e2fsprogs just
 ```
 </CodeGroup>
 
@@ -30,7 +31,7 @@ git submodule update --init --recursive
 ### Step 2: Setup Rust toolchain
 
 ```bash
-make setup
+just setup
 ```
 
 This installs the pinned Rust nightly from `rust-toolchain.toml`.
@@ -38,7 +39,7 @@ This installs the pinned Rust nightly from `rust-toolchain.toml`.
 ### Step 3: Spin the Wheel
 
 ```bash
-make boot VIDEO=1
+just boot
 ```
 
 <Warning>
@@ -49,19 +50,20 @@ make boot VIDEO=1
 
 | Command | What it does |
 |---------|--------------|
-| `make boot VIDEO=1` | Boot with display window |
-| `make boot` | Headless boot (serial only) |
-| `make boot-log` | Boot with timeout, saves to `test_output.log` |
-| `make test` | Run the test harness |
+| `just boot` | Boot with display window |
+| `just boot-headless` | Headless boot (serial only) |
+| `just boot-log` | Boot with timeout, saves to `test_output.log` |
+| `just test` | Run the test harness |
 
 ## Advanced Options
 
 <Accordion title="GPU & Display Options">
 ```bash
-VIRGL=1 VIDEO=1 make boot         # GPU acceleration
-QEMU_DISPLAY=gtk make boot VIDEO=1    # Force GTK
-QEMU_DISPLAY=sdl make boot VIDEO=1    # Force SDL
-DEBUG=1 make boot VIDEO=1             # Debug logging
+QEMU_DISPLAY=gtk just boot                      # Force GTK
+QEMU_DISPLAY=sdl just boot                      # Force SDL
+DEBUG=1 just boot                               # Debug logging
+just show-qemu-resolution                       # Show detected framebuffer mode
+QEMU_FB_WIDTH=2560 QEMU_FB_HEIGHT=1440 just boot  # Manual override
 ```
 </Accordion>
 
