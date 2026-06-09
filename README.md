@@ -1,27 +1,37 @@
 # SlopOS Documentation
 
-Official documentation for [SlopOS](https://github.com/Fabbboy/slopos) — the operating system that boots when the Wheel of Fate allows it.
+Official documentation for [SlopOS](https://github.com/SlopLabs/slopos), the operating system that boots when the Wheel of Fate allows it.
 
 ## Development
 
-Install the [Mintlify CLI](https://www.npmjs.com/package/mint) to preview documentation changes locally:
+This site is built with [Fumadocs](https://fumadocs.dev), [Next.js](https://nextjs.org), and [Bun](https://bun.sh).
+
+Install dependencies:
 
 ```bash
-npm i -g mint
+bun install
 ```
 
 Run the development server:
 
 ```bash
-mint dev
+bun run dev
 ```
 
 View your local preview at `http://localhost:3000`.
 
+Useful checks:
+
+```bash
+bun run types:check
+bun run lint
+bun run build
+```
+
 ## Publishing
 
-Changes pushed to the default branch are automatically deployed via the Mintlify GitHub integration.
+Deploy the repository on Vercel. Vercel detects `bun.lock` and uses Bun for dependency installation.
 
 ## License
 
-Documentation content follows the main SlopOS license: **GPL-3.0-only**
+Documentation content follows the main SlopOS license: **GPL-3.0-only**.

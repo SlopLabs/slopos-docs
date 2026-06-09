@@ -17,14 +17,14 @@ The result? An OS that boots. Sometimes. When the Wheel of Fate allows it.
 
 In AI terminology, "slop" refers to low-quality AI-generated content. SlopOS embraces this label - it's an operating system built on the premise that AI can write kernel code, bugs and all. Every crash is a feature. Every panic is expected. The sloppiness is the point.
 
-<CardGroup cols={2}>
+<Cards>
   <Card title="Get Started" icon="rocket" href="/quickstart">
     Run SlopOS in QEMU and spin the Wheel
   </Card>
   <Card title="View Source" icon="github" href="https://github.com/SlopLabs/slopos">
     Explore the AI-generated codebase
   </Card>
-</CardGroup>
+</Cards>
 
 ---
 
@@ -55,15 +55,15 @@ SlopOS introduces a unique boot mechanism: **the Wheel of Fate**. Every boot is 
 
 This isn't a bug - it's the core philosophy. The **W/L Currency System** tracks your wins and losses across the entire kernel. Successful operations award W's. Failures cost L's. The scheduler reads your balance on every context switch.
 
-<Warning>
+<Callout type="warning">
   The house always wins. Eventually.
-</Warning>
+</Callout>
 
 ---
 
 ## Architecture Overview
 
-<AccordionGroup>
+<Accordions defaultValue="Kernel Subsystems">
   <Accordion title="Kernel Subsystems" icon="microchip" defaultOpen>
     - **boot/** - GDT, IDT, TSS, early init, SYSCALL MSRs
     - **mm/** - Physical frame allocator, virtual memory, ELF loader
@@ -87,7 +87,7 @@ This isn't a bug - it's the core philosophy. The **W/L Currency System** tracks 
     - Limine bootloader
     - QEMU for testing (q35 machine, requires IOAPIC)
   </Accordion>
-</AccordionGroup>
+</Accordions>
 
 ---
 
@@ -112,6 +112,6 @@ SlopOS welcomes contributions - both human and AI-assisted. Review the [AGENTS.m
 - W/L Currency System integration
 - Lore documentation requirements
 
-<Note>
+<Callout>
   All changes must respect the sacred lore. The Wheel of Fate governs all.
-</Note>
+</Callout>
