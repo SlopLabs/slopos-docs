@@ -1,0 +1,40 @@
+---
+title: "TCB Discipline"
+description: "How SlopOS keeps the trusted base measurable"
+---
+
+The trusted computing base is the code that can violate Rust's safety guarantees
+if it is wrong. In SlopOS, that should be mostly OSTD.
+
+## Measurement
+
+```bash
+just tcb-ratio
+```
+
+The measurement counts unsafe lines in `slopos-ostd` against total kernel Rust lines
+in the actual kernel dependency closure. The current public target is less than
+1 percent for the kernel TCB ratio.
+
+## Source Gates
+
+| Gate | Purpose |
+|------|---------|
+| Unsafe boundary | Keep unsafe out of kernel crates outside OSTD and documented exemptions |
+| Allocation boundary | Keep direct allocation policy inside OSTD |
+| Async boundary | Keep async out of kernel crates |
+| Stack bound | Catch excessive final stack frames |
+| Wait predicate discipline | Keep wait predicates side-effect disciplined |
+
+## Allowed exemptions outside OSTD
+
+The source policy documents narrow exemptions for the allocator entry point and
+for macro-generated link-section attributes. Those exemptions do not open a
+general path for runtime unsafe in ordinary kernel crates.
+
+## Contributor Rule
+
+If a change appears to require unsafe, first ask whether it belongs in OSTD as a
+small safe API. If it does, give the unsafe block a concrete safety argument,
+add or extend Miri coverage where practical, and consider whether the invariant
+belongs in the Verus proof set.

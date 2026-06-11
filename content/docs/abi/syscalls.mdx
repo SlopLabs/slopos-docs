@@ -1,0 +1,43 @@
+---
+title: "Syscall Table"
+description: "Overview of the SlopOS syscall ABI"
+---
+
+The syscall table is part of the SlopOS ABI. The source tree defines the exact
+numeric assignments, table size, and constants. These docs describe the shape of
+the interface and the rules for keeping it stable.
+
+## Groups
+
+| Group | Examples |
+|-------|----------|
+| Core | yield, exit, time, system information, reboot |
+| Random and roulette | entropy and Wheel of Fate calls |
+| Filesystem | path operations, fd operations, metadata, directory listing |
+| Memory | heap break, mappings, protection, memfd, truncate |
+| Process | spawn, wait, terminate, exec, fork, clone, identity |
+| SMP | CPU count, current CPU, affinity |
+| Signals | actions, masks, delivery, return, signalfd |
+| Poll and descriptors | poll, select, pipe, dup, fcntl, ioctl, pidfd |
+| Networking | sockets, bind/listen/accept/connect, TCP/UDP I/O, DNS, options |
+| UI and TTY | framebuffer, input, clipboard, font, pty, terminal I/O |
+| SlopRing | setup, enter, fixed/provided buffer registration |
+| Testing | kernel/userland test reporting and test-phase control |
+
+## Stability rules
+
+- Numeric assignments are canonical in the ABI source, not in prose.
+- Assigned numbers stay stable. Removed or reserved syscalls leave gaps.
+- New syscalls use the next available assignment from the source ABI module.
+- Structs shared across the boundary use fixed representation and explicit
+  layout tests.
+- Userland wrappers should import ABI constants instead of duplicating numbers.
+- Public docs should describe behavior and link to generated or source ABI when
+  exact values are required.
+
+## Return convention
+
+Handlers return non-negative values on success and negative errno values on
+failure. Unknown table slots return `-ENOSYS`.
+
+See [Adding a syscall](/development/adding-a-syscall) before extending the ABI.

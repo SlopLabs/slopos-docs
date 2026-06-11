@@ -1,0 +1,91 @@
+---
+title: "SlopRing"
+description: "Submission/completion ring ABI"
+---
+
+SlopRing is SlopOS's io_uring-style async edge. The kernel side remains
+synchronous; userland batches work in a shared SQ/CQ ring and drives futures
+through the SlopOS runtime.
+
+The source ABI defines exact numeric syscall assignments, opcode values, feature
+bits, limits, and struct layout. This page describes the public behavior and the
+names to look for in generated or source ABI reference.
+
+## Syscalls
+
+| Name | Purpose |
+|------|---------|
+| `ring_setup` | Create a ring, map the shared region, and return a ring fd |
+| `ring_enter` | Submit SQEs, harvest CQEs, and optionally block for completions |
+| `ring_register` | Register or unregister fixed buffers and provided-buffer rings |
+
+## Layout
+
+| Struct | Role |
+|--------|------|
+| `RingParams` | Header and offsets for the single shared mapping |
+| `Sqe` | Submission queue entry |
+| `Cqe` | Completion queue entry |
+| `BufIovec` | One registered fixed buffer |
+| `RegisterBufRingCmd` | Provided-buffer ring registration |
+| `IouringBuf` | One provided-buffer descriptor |
+
+The region is one mapping with header, SQ control words, CQ control words, SQE
+array, and CQE array. SQ and CQ use split-ownership head/tail counters. The
+kernel snapshots SQE bytes through volatile user-frame accessors and never takes
+a Rust reference directly into user-writable ring memory.
+
+## Feature names
+
+| Feature | Meaning |
+|---------|---------|
+| `SLOPRING_FEAT_SINGLE_MMAP` | One shared region for all ring state |
+| `SLOPRING_FEAT_MULTISHOT` | Multishot accept, receive, and poll behavior |
+| `SLOPRING_FEAT_REG_BUFFERS` | Fixed and provided buffer registration |
+
+## Opcode names
+
+| Opcode name | Summary |
+|-------------|---------|
+| `OP_NOP` | Complete immediately |
+| `OP_READ` | File or socket read path |
+| `OP_WRITE` | File or socket write path |
+| `OP_RECVMSG` | Receive a message, including AF_UNIX paths |
+| `OP_SEND` | Send buffer contents |
+| `OP_ACCEPT` | Accept a socket connection |
+| `OP_POLL_ADD` | Register and probe fd readiness |
+| `OP_TIMEOUT` | Harvest wait deadline |
+| `OP_CANCEL` | Cancel in-flight ops by `user_data` |
+| `OP_RECVFROM` | Receive a datagram and source address |
+| `OP_OPENAT` | Open a path and install an fd |
+| `OP_CLOSE` | Close an fd |
+| `OP_SEND_ZC` | Zero-copy send from a registered fixed buffer |
+| `OP_CONNECT` | Async, non-blocking socket connect |
+
+## Fixed buffers
+
+`ring_register` can pin a fixed-buffer set once and let later SQEs select a
+buffer by index. SQEs use `SLOPRING_SQE_FIXED_BUFFER` and `Sqe.buf_index`.
+Unregistering fails while any in-flight operation holds a registered buffer.
+
+## Provided buffers
+
+Provided-buffer rings let userland publish a group of receive buffers. Receive
+SQEs use `SLOPRING_SQE_BUFFER_SELECT` and `Sqe.buf_group`; completions set
+`SLOPRING_CQE_F_BUFFER` and carry the selected buffer id in `Cqe.flags`.
+
+## Zero-copy send
+
+`OP_SEND_ZC` requires a registered fixed buffer. It posts a result CQE first and
+later posts a terminal notification CQE with `SLOPRING_CQE_F_NOTIF` when the
+buffer is reusable.
+
+The network stack has separate one-shot and TCP retransmit-safe models. TCP
+keeps the registered buffer pinned across retransmit and releases it only after
+ACK or teardown.
+
+## Connect
+
+`OP_CONNECT` submits a socket connect and completes with success or a negated
+errno. It does not install a new fd and does not select a buffer. The probe can
+defer while a TCP handshake is in progress and is re-driven during harvest.

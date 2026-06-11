@@ -1,0 +1,54 @@
+---
+title: "Privilege Separation"
+description: "Ring 0/Ring 3 isolation in SlopOS"
+---
+
+SlopOS runs the kernel in Ring 0 and user tasks in Ring 3. The implementation is
+Rust-first and centered on OSTD CPU, task, and user-context primitives.
+
+## Components
+
+| Component | Role |
+|-----------|------|
+| Per-CPU GDT and TSS | Define kernel/user selectors and the Ring 3 to Ring 0 stack transition |
+| Syscall MSRs | Configure the normal x86-64 `SYSCALL` entry path |
+| User context | Holds the register and FPU state restored when a task returns to user mode |
+| Scheduler task state | Tracks task lifecycle, kernel stacks, user stacks, and SafeStack state |
+| Exception and IRQ entry | Handles traps from both kernel and user mode with appropriate stacks |
+| User memory access | Validates user pointers and copies data across privilege boundaries |
+
+## Ring 3 entry
+
+User tasks carry a user context containing general registers, user RIP/RSP, and
+FPU state references. The scheduler installs per-task kernel stack state, updates
+per-CPU syscall scratch data, and returns through the OSTD user-return path.
+User code resumes with user selectors and user page tables.
+
+The TSS/RSP0 path remains important because interrupts and traps from Ring 3 need
+a known kernel stack. OSTD owns the descriptor and MSR details so higher kernel
+subsystems interact with safe abstractions.
+
+## Syscall entry
+
+Normal SlopOS userland uses the x86-64 `SYSCALL` instruction. The entry
+trampoline snapshots the user register file into a user context, and the syscall
+layer routes to typed handlers.
+
+A DPL=3 interrupt gate for vector `0x80` exists as a compatibility bridge. It
+converts the interrupt frame into the same user-context shape and calls the same
+dispatcher. It is not the normal fast path.
+
+## Isolation rules
+
+- Kernel-only mappings are not exposed through user page tables.
+- User pointers are represented as typed pointer or slice wrappers and validated
+  at syscall boundaries.
+- Process address spaces are mutated through VM-space cursor primitives.
+- Signals, fork, clone, exec, pidfd, signalfd, and SlopRing use the same task and
+  file-descriptor ownership model.
+
+## Verification boundary
+
+Descriptor table installation, raw MSR access, naked assembly, user-copy
+machinery, intrusive task links, and low-level memory access are trusted OSTD
+responsibilities. Higher kernel crates should not introduce raw unsafe code.

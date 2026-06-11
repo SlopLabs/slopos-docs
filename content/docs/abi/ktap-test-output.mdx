@@ -1,0 +1,81 @@
+---
+title: "KTAP Test Output"
+description: "Serial test output ABI used by the SlopOS test runner"
+---
+
+When SlopOS boots with `tests=on`, the kernel emits a KTAP-compatible stream on
+the serial console. The host test runner parses that stream and renders
+progress, failure details, and optional JSONL events.
+
+## Phases
+
+| Phase | Registration | Trigger |
+|-------|--------------|---------|
+| Kernel tests | `stest!` | Boot pipeline |
+| Userland tests | `utest!` | Init asks the kernel to run userland tests |
+
+Every harness line starts with `KTAP\t`. Ordinary kernel log lines may intermix
+and are ignored by the parser outside diagnostic blocks.
+
+## Header
+
+Each phase begins with:
+
+```text
+KTAP	TAP version 14
+KTAP	1..N
+```
+
+`N` is the number of tests selected for that phase after filters.
+
+## Result Lines
+
+```text
+KTAP	ok 17 - slopos_mm::tests::heap::test_heap_kzalloc_zeroed # time_ms=3
+KTAP	not ok 42 - slopos_core::tests::sched::test_priority_inversion # time_ms=11
+KTAP	ok 18 - slopos_net::tests::tcp_live::test_loopback_handshake # SKIP test returned Skipped
+```
+
+Slow tests add `OVER_TIME`. Expected panic tests add `EXPECTED_PANIC`.
+
+## Diagnostics
+
+Failures include a YAML diagnostic block:
+
+```text
+KTAP	  ---
+KTAP	  outcome: Fail
+KTAP	  file: <source-path>:1832
+KTAP	  log: |
+KTAP	   captured klog line
+KTAP	  ...
+```
+
+Verbose passing tests may include a `log: |` block without `outcome` or `file`.
+Logs may contain trim markers when the captured klog exceeds the per-test cap or
+the per-CPU log ring overflows.
+
+## Userland Subtests
+
+Userland test binaries report subtests through the test-report syscall. The
+kernel emits them indented before the parent result:
+
+```text
+KTAP	  ok 1 - alloc_basic
+KTAP	  not ok 2 - alloc_zero # zero-size returned null
+KTAP	ok 5 - utest_heap_allocator # time_ms=234
+```
+
+The host parser buffers subtests and attaches them to the next top-level result.
+
+## Footer And Exit
+
+Each phase ends with:
+
+```text
+KTAP	# elapsed_ms=14238 pass=2391 fail=1 skip=0 over_time=14
+```
+
+When all test phases finish, the kernel writes to `isa-debug-exit`: status `0`
+for green and status `1` for failure. QEMU maps those to host exit statuses that
+the host runner normalizes.

@@ -1,0 +1,54 @@
+---
+title: "Adding A Driver"
+description: "How to add or extend a kernel driver"
+---
+
+Drivers live in the driver subsystem unless they are architecture primitives
+that belong in OSTD or platform-table parsers that belong in ACPI support.
+
+## Placement
+
+| Driver kind | Likely home |
+|-------------|-------------|
+| ACPI table parser | ACPI support crate |
+| Raw CPU/MMIO primitive | OSTD |
+| PCI, MSI, VirtIO, input, TTY, platform driver | Driver subsystem |
+| Device-facing syscall service | Kernel service bridge |
+| File descriptor integration | Filesystem and driver file ops |
+
+## Driver Rules
+
+- Keep unsafe in OSTD. Use safe MMIO, port I/O, DMA, and PCI helpers.
+- Prefer MSI-X, then MSI. Legacy interrupt modes are not the supported VirtIO
+  path.
+- Register IRQ callbacks through OSTD IRQ line APIs.
+- Use `WaitQueue` or event-based wakeups for blocking I/O.
+- Keep interrupt handlers short; defer protocol work to scheduler-backed tasks
+  when possible.
+- Add hermetic tests for pure logic and QEMU tests for hardware integration.
+
+## Boot Integration
+
+Platform drivers usually connect through boot ordering. Boot steps should state
+whether hardware is mandatory or optional. Mandatory platform components should
+panic early with a clear message; optional devices should log and leave the
+subsystem disabled.
+
+## Test Strategy
+
+| Risk | Test |
+|------|------|
+| Register parsing | Host or kernel unit tests |
+| IRQ routing | Kernel tests with synthetic callbacks |
+| DMA queue behavior | Hermetic tests plus QEMU device tests |
+| Blocking I/O | Poll/select and wakeup tests |
+| Error cleanup | Probe failure and teardown tests |
+
+Run at least:
+
+```bash
+just test FILTER='slopos_drivers::*'
+just check-framekernel
+```
+
+`just check-framekernel` needs a prior `just build`.

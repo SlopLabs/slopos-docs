@@ -1,0 +1,46 @@
+---
+title: "Adding A Syscall"
+description: "How to extend the SlopOS syscall ABI"
+---
+
+Syscalls are ABI. Treat every number and struct layout as durable once merged.
+
+## Checklist
+
+1. Add the next syscall constant in the ABI source.
+2. Keep the `SYSCALL_` prefix and group it with related syscalls.
+3. Confirm it is within the dispatch table size defined by the ABI.
+4. Add ABI structs or constants in the ABI crate when arguments cross the boundary.
+5. Implement the handler in the syscall layer.
+6. Use `define_syscall!` and typed arguments where possible.
+7. Register the handler in the central dispatch table.
+8. Add user wrappers in the appropriate userland runtime or libc layer.
+9. Add tests for dispatch registration, success, and at least one error path.
+10. Update the public ABI docs if the syscall is stable.
+
+## Handler Shape
+
+Handlers should parse user pointers through typed wrappers such as `UserPtr`,
+`UserSlice`, or byte wrappers. Do not manually trust raw register values.
+
+Keep ownership changes transactional. If a syscall installs an fd, task, buffer,
+or mapping, handle cleanup on every error path.
+
+## Tests
+
+Useful test targets:
+
+| Area | Test target |
+|------|-----------|
+| Dispatch and syscall behavior | Kernel syscall tests |
+| Userland ABI wrapper | Userland test binaries |
+| libc wrapper | libc unit tests |
+| Runtime wrapper | Runtime tests or userland integration tests |
+
+For pollable resources, add a readiness test and a blocking/wakeup test. For
+memory or user-copy syscalls, add invalid pointer and boundary tests.
+
+## Docs
+
+Stable syscalls should update [Syscall Table](/abi/syscalls). If the syscall
+changes windowing, SlopRing, KTAP, or other structured ABI, update that page too.

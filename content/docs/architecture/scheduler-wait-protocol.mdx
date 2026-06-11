@@ -1,0 +1,61 @@
+---
+title: "Scheduler And Wait Protocol"
+description: "How SlopOS prevents lost wakeups"
+---
+
+SlopOS uses a synchronous, preemptive scheduler. Blocking paths funnel through
+OSTD `WaitQueue` or typed `EventBus` queues; async behavior is built in userland
+on top of pollable file descriptors and SlopRing.
+
+## Scheduler State
+
+The scheduler packs task status, block reason, CPU hint, and an epoch into one
+atomic word. This replaces older paired-atomic state where a wake producer could
+observe one field before the other.
+
+The runnable invariant is:
+
+> A non-idle task with `Ready` status must also have scheduler placement: current
+> CPU ownership, one ready queue, one remote wake inbox, a wake publisher
+> reservation, or a migration handoff.
+
+`Ready` without placement is a bug. The rescue sweep is diagnostic backstop, not
+normal scheduling policy.
+
+## WaitQueue Pattern
+
+Blocking follows the Linux-style order:
+
+```text
+consumer:
+  check condition
+  take WaitQueue lock
+  check condition again
+  enqueue current task
+  commit Running -> Blocked under the same lock
+  drop lock and yield
+
+producer:
+  publish durable state
+  take WaitQueue lock
+  remove waiters
+  wake Blocked -> Ready
+  drop lock
+```
+
+The under-lock recheck closes the window where the producer publishes and drains
+an empty queue between the consumer's first check and enqueue.
+
+## EventBus And Poll
+
+File descriptors expose readiness through `FileOps::poll`. The poll/select path
+registers the calling task on the relevant queues before checking readiness,
+then blocks with an optional timeout. SlopRing harvest blocking reuses this same
+shape: the blocking `ring_enter` call registers the calling task, re-probes
+in-flight operations, and posts CQEs when resources are ready.
+
+## Timers
+
+Sleep and scheduler ticks use the LAPIC timer. HPET provides the high precision
+clock and calibration reference. The scheduler can program LAPIC one-shot
+deadlines for idle wakeups and then restore periodic mode in the timer ISR.

@@ -1,0 +1,51 @@
+---
+title: "Boot"
+description: "Boot path from Limine to userland"
+---
+
+SlopOS boots as a Limine payload under OVMF. The ISO builder injects the chosen
+framebuffer resolution and optional kernel command line into the boot
+configuration.
+
+## Stages
+
+| Stage | Responsibility |
+|-------|----------------|
+| Limine handoff | Read bootloader requests, memory map, framebuffer, and modules |
+| Early CPU setup | Bring up serial logging, descriptor tables, syscall entry, and service tables |
+| Memory handoff | Initialize physical frames, heap, paging, and kernel mappings |
+| Interrupt setup | Install exception and IRQ entry, LAPIC, IOAPIC, vectors, and exception stacks |
+| SMP | Bring up application processors and per-CPU state |
+| Platform devices | Discover ACPI tables, HPET, PCI, interrupt routing, VirtIO, and input devices |
+| Scheduler and init | Start scheduling, launch init, and enter userland |
+
+## Boot invariants
+
+- HPET is required for the supported QEMU runtime.
+- LAPIC timer calibration is required. HPET is the preferred reference clock.
+- The scheduler tick uses the LAPIC timer. PIT is only a legacy calibration
+  fallback and does not drive scheduling.
+- Application processors start their LAPIC timers after calibration is available.
+- VirtIO devices use modern interrupt delivery; legacy mode is not the supported
+  runtime path.
+
+## Command line
+
+The justfile threads boot and test command-line keys into the ISO:
+
+```bash
+BOOT_CMDLINE='tests=off roulette=skip boot.debug=on' just boot-log
+TEST_CMDLINE='tests=on tests.run=slopos_mm::*' just test
+```
+
+Common keys:
+
+| Key | Meaning |
+|-----|---------|
+| `tests=on/off` | Enable the test harness |
+| `tests.shutdown=on/off` | Exit QEMU through the debug-exit device after tests |
+| `tests.verbosity=quiet/summary/verbose` | Test output detail |
+| `tests.run=glob` | Run matching tests |
+| `tests.skip=glob` | Skip matching tests |
+| `roulette=skip` | Bypass the Wheel of Fate |
+| `boot.debug=on` | Enable extra boot logging |

@@ -1,0 +1,32 @@
+---
+title: "Roadmap"
+description: "How to read plans and future work"
+---
+
+The source repo keeps working notes in `plans/`. Those files are not public specs
+unless a current docs page names them as source material.
+
+## Durable Versus Temporary
+
+| Location | Meaning |
+|----------|---------|
+| Public docs | Stable architecture, ABI shape, verification, and developer workflows |
+| Source README and policy files | Contributor, agent, and security policy |
+| Plans directory | Historical or temporary working plans |
+| Verification directory | Machine-checked proof source and verifier metadata |
+
+## Current Themes
+
+- Keep ABI documentation cross-checked against source-generated ABI.
+- Generate or mechanically check syscall and SlopRing tables where practical.
+- Expand debugging playbooks for page-table inspection, reverse debugging, and
+  KTAP failure triage.
+- Add diagrams for boot flow, syscall flow, task scheduling, SlopRing, memory
+  mapping, and userland/windowing.
+- Keep roadmap material separate from durable architecture claims until source
+  and tests match it.
+
+## Source Plans
+
+If a plan has stale paths, old test counts, or phase language, treat it as
+history. Refresh it before using it for implementation decisions.

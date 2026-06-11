@@ -1,0 +1,93 @@
+---
+title: "Troubleshooting"
+description: "Common first-run and QEMU issues"
+---
+
+## `just setup` Fails
+
+Check the tool named in the error:
+
+| Symptom | Fix |
+|---------|-----|
+| `rustup is required` | Install rustup, then rerun `just setup` |
+| Go missing or too old | Install Go `>= 1.22` and rerun `just setup` |
+| Go module download fails | Check network access or pre-populate the Go module cache |
+| Rust target missing | Let `just setup` install the pinned target |
+
+## Limine Download Fails
+
+The ISO build downloads the pinned Limine binary release into
+`third_party/limine` and verifies the tarball hash. In offline environments,
+pre-populate that directory with the Limine binaries required by the build.
+
+```text
+limine-bios.sys
+limine-bios-cd.bin
+limine-uefi-cd.bin
+BOOTX64.EFI
+limine
+```
+
+## No Hardware Acceleration
+
+If `/dev/kvm` is not usable on Linux, or HVF is not available on macOS, the QEMU
+wrapper switches to TCG with `-cpu max`. That is expected but slower.
+
+For deterministic replay debugging, TCG is required. For day-to-day interactive
+use, prefer KVM or HVF when available.
+
+## QEMU Display Errors
+
+Check backend support:
+
+```bash
+qemu-system-x86_64 -display help
+```
+
+Then force a backend:
+
+```bash
+QEMU_DISPLAY=sdl just boot-fast
+QEMU_DISPLAY=gtk just boot-fast
+QEMU_DISPLAY=cocoa just boot-fast
+```
+
+On macOS, Cocoa is the default. GTK is usually not available there.
+
+## Boot Hangs Or Looks Blank
+
+Start with serial output:
+
+```bash
+just boot-log
+tail -n 120 test_output.log
+```
+
+Then skip the wheel and enable debug logs:
+
+```bash
+DEBUG=1 just boot-fast
+BOOT_CMDLINE='tests=off roulette=skip boot.debug=on' just boot-log
+```
+
+For a freeze, use `just boot-debug`, then run `just debug-bt` in another
+terminal to capture all-CPU backtraces into `builddir/freeze-gdb.log`.
+
+## Tests Fail In QEMU
+
+Use the harness options before dropping to raw serial:
+
+```bash
+just test-rerun-failed
+just test-verbose FILTER='slopos_mm::*'
+just test-json builddir/events.jsonl
+just test-raw
+```
+
+If the failure is a memory corruption and it reproduces under TCG single-core,
+record it:
+
+```bash
+just rr-record
+just rr-gdb WATCH=0xdeadbeef
+```

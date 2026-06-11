@@ -1,0 +1,53 @@
+---
+title: "Security And CVSS"
+description: "Confidence-gated vulnerability triage"
+---
+
+`CVSS.md` in the source repo is the living ledger for open guaranteed findings.
+SlopOS is pre-alpha, so resolved findings are removed rather than retained as a
+fixed-history ledger.
+
+## Triage Order
+
+1. List raw findings first. Do not assign CVSS yet.
+2. Assign confidence from 0 to 100.
+3. Only confidence `>= 80` findings are guaranteed issues.
+4. Only guaranteed issues receive CVSS vectors and scores.
+5. Use the source repo's CVSS helper, or an equivalent CVSS v3.1 calculator,
+   for vector scoring.
+
+## Confidence Model
+
+| Category | Points |
+|----------|--------|
+| Evidence quality | 0-40 |
+| Exploitability clarity | 0-30 |
+| Reproducibility | 0-30 |
+
+Speculation should stay in raw triage until it has enough evidence.
+
+## Ledger Entry Requirements
+
+Each open guaranteed issue in `CVSS.md` needs:
+
+- Stable ID such as `SLOPOS-2026-0001`.
+- Status: `open` or `needs-retest`.
+- Confidence score and reasoning.
+- CVSS vector and score.
+- Exact evidence paths and line references.
+- Minimal repro or a clear reason no safe repro is possible.
+
+## Sweep Targets
+
+Prioritize newly written or recently changed code. At minimum, rescan:
+
+| Area | Why |
+|------|-----|
+| Syscalls | User-controlled arguments and kernel authority |
+| Memory management | UB, isolation, mapping lifetime |
+| Filesystems | Parser and path traversal risk |
+| Drivers | Device input and DMA |
+| Networking | Packet parsing and state machines |
+| SlopRing | Shared memory, pinned buffers, completion ownership |
+
+Do not present speculative issues as scored vulnerabilities.

@@ -1,0 +1,68 @@
+---
+title: "Debugging With GDB And Replay"
+description: "Live and deterministic kernel debugging workflows"
+---
+
+SlopOS has two GDB workflows: live forward debugging for KVM/HVF timing and
+record/replay for deterministic single-CPU failures.
+
+## Live Forward
+
+Use this when the bug needs SMP or production timing.
+
+```bash
+just boot-debug
+just debug-bt
+just debug-gdb
+just debug-monitor
+```
+
+`boot-debug` enables:
+
+| Endpoint | Location |
+|----------|----------|
+| GDB stub | TCP `:1234` |
+| QEMU monitor | `/tmp/slopos-monitor.sock` |
+
+`debug-bt` attaches to the running kernel and writes all-CPU backtraces to
+`builddir/freeze-gdb.log`.
+
+## Record/Replay
+
+Use this when the failure reproduces under TCG, single CPU, and instruction-count
+time.
+
+```bash
+just rr-record
+just rr-replay
+just rr-gdb WATCH=0x4090fe
+```
+
+The recording lands at `builddir/replay.bin`. `rr-gdb` runs to the fault, sets a
+physical write watchpoint for the watched virtual address, and reverse-continues
+to the writer.
+
+## GDB Helpers
+
+The debugging recipes load SlopOS-specific GDB helpers for common kernel work:
+
+| Helper | Use |
+|--------|-----|
+| `v2p <cr3> <va>` | Translate a guest virtual address through page tables |
+| `wpva <cr3> <va>` | Set a physical write watchpoint for a guest virtual address |
+| fault inspection | Stop at the fatal user fault and dump relevant state |
+| reverse watchpoint | Replay to the writer that corrupted a watched address |
+
+## Rust GDB Notes
+
+- GDB defaults to Rust expression syntax: use `(*frame).rip`.
+- Use hardware breakpoints for kernel symbols early in boot.
+- For ambiguous `pub(crate)` Rust symbols, break by file and line.
+- Always compare guest memory bytes at fault RIP with the ELF expectation when
+  diagnosing invalid-instruction faults.
+
+## Limits
+
+Record/replay uses TCG and `smp=1`, so it cannot prove SMP race behavior. If the
+workload deadlocks or the failure disappears under instruction-counted time, use
+live forward debugging instead.

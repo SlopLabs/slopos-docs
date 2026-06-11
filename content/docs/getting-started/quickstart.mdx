@@ -1,0 +1,109 @@
+---
+title: "Quickstart"
+description: "Build and boot SlopOS in QEMU"
+---
+
+## Prerequisites
+
+You need QEMU, xorriso, mkfs.ext2, `just`, Rust via `rustup`, and Go `>= 1.22`
+for the host-side test wrapper.
+
+<Tabs items={['macOS', 'Debian/Ubuntu', 'Arch']}>
+<Tab value="macOS">
+
+```bash
+brew install qemu xorriso e2fsprogs just go
+```
+
+QEMU defaults to the Cocoa display backend on macOS. If display startup fails,
+run `qemu-system-x86_64 -display help` and set `QEMU_DISPLAY=sdl` if SDL is the
+backend you have installed.
+
+</Tab>
+<Tab value="Debian/Ubuntu">
+
+```bash
+sudo apt install qemu-system-x86 xorriso e2fsprogs golang-go
+cargo install just
+```
+
+</Tab>
+<Tab value="Arch">
+
+```bash
+sudo pacman -S qemu-full xorriso e2fsprogs just go
+```
+
+</Tab>
+</Tabs>
+
+## Clone
+
+```bash
+git clone https://github.com/SlopLabs/slopos.git
+cd slopos
+```
+
+There is no required submodule checkout. The ISO build downloads the pinned
+Limine binary release on demand and caches it under `third_party/limine`.
+
+## Setup
+
+```bash
+just setup
+```
+
+`just setup` installs or verifies the pinned Rust nightly from
+`rust-toolchain.toml`, checks the `x86_64-unknown-none` target, verifies a Go
+toolchain `>= 1.22`, downloads Go module dependencies for the host test runner,
+and creates `builddir/`.
+
+## Boot
+
+```bash
+just boot
+```
+
+This builds `builddir/slop-notests.iso`, creates the ext2 root image, and starts
+QEMU with video enabled.
+
+<Callout type="warning">
+  The default boot includes the Wheel of Fate. For a deterministic developer
+  boot, use `just boot-fast`.
+</Callout>
+
+## Useful First Commands
+
+| Command | Use |
+|---------|-----|
+| `just --list` | Show every available recipe and doc string |
+| `just boot-fast` | Boot with `roulette=skip` for quick iteration |
+| `just boot-prod` | Boot a release-optimized kernel with the wheel skipped |
+| `just boot-headless` | Boot with serial only |
+| `just boot-log` | Boot with timeout and save serial output to `test_output.log` |
+| `just boot-debug` | Boot with QEMU GDB stub on `:1234` and monitor socket |
+| `just test` | Build and run the full QEMU test harness |
+| `just test-rerun-failed` | Re-run names captured from the last failing run |
+| `just test-userland-only` | Skip kernel tests and run only userland tests |
+| `just verify` | Run pinned Verus proofs |
+| `just check-framekernel` | Run unsafe, async, allocation, stack, fmt, Miri, and Verus gates |
+
+## What Gets Built
+
+The default boot path produces:
+
+| Artifact | Meaning |
+|----------|---------|
+| `builddir/kernel.elf` | Kernel ELF with symbols |
+| `builddir/slop-notests.iso` | Non-test boot ISO |
+| `fs/assets/ext2.img` | Root filesystem image with userland binaries |
+| `third_party/limine/` | Cached Limine binary release |
+| `third_party/ovmf/` | Cached OVMF firmware blobs |
+
+The test path uses `builddir/slop-tests.iso` and `fs/assets/ext2-tests.img`.
+
+## Minimum Runtime Shape
+
+SlopOS expects QEMU's `q35` machine, LAPIC, IOAPIC, HPET, MSI/MSI-X capable
+VirtIO devices, PS/2 input, OVMF firmware, and Limine boot media. The legacy
+8259 PIC path and legacy VirtIO interrupt mode are not the supported runtime.

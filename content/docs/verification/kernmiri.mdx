@@ -1,0 +1,42 @@
+---
+title: "KernMiri"
+description: "Miri coverage for trusted-core tests"
+---
+
+KernMiri is SlopOS's local convention for running `slopos-ostd` tests under
+Miri. It complements Verus: Verus proves selected logic models, while Miri
+interprets real Rust test executions and catches undefined behavior in supported
+code paths.
+
+## Command
+
+```bash
+just check-miri
+```
+
+The recipe installs the Miri component for the pinned Rust channel if needed,
+runs `cargo miri setup`, and executes:
+
+```bash
+MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks" \
+  cargo +<rust_channel> miri test -p slopos-ostd --no-fail-fast
+```
+
+## What It Is Good For
+
+- Pointer aliasing and invalid dereference bugs in tested OSTD code.
+- UB in small architecture-neutral helpers.
+- Regression coverage for APIs that absorb raw unsafe details.
+- Sanity checks around SlopRing `UFrame` round trips and similar byte accessors.
+
+## What It Does Not Prove
+
+- Full kernel boot behavior.
+- Real hardware MMIO behavior.
+- Weak-memory protocols.
+- Interrupt delivery.
+- QEMU device interactions.
+- Whole-kernel absence of logic bugs.
+
+Miri is part of `just check-framekernel` because it catches a different class
+of bugs than tests, code review, or Verus proofs.

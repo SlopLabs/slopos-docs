@@ -1,0 +1,44 @@
+---
+title: "Hardware Requirements"
+description: "Expected QEMU and platform features"
+---
+
+The supported runtime is QEMU, not bare metal.
+
+## Required QEMU Shape
+
+| Feature | Requirement |
+|---------|-------------|
+| Machine | `q35` |
+| Firmware | OVMF UEFI |
+| Bootloader | Limine binary release cached in `third_party/limine` |
+| CPU | x86_64 with APIC support; `host` with KVM/HVF or `max` with TCG |
+| SMP | `QEMU_SMP` power of two, default `4` |
+| Memory | Default `512M`, adjustable with `QEMU_MEM` |
+| Timers | HPET and LAPIC timer |
+| Interrupts | LAPIC, IOAPIC, MSI/MSI-X |
+| Storage | VirtIO block with legacy mode disabled |
+| Network | VirtIO net with legacy mode disabled |
+| Input | PS/2 keyboard and mouse |
+| Display | VGA framebuffer device with Limine-provided mode |
+
+## Host Packages
+
+| Host | Packages |
+|------|----------|
+| macOS | `qemu xorriso e2fsprogs just go` via Homebrew |
+| Debian/Ubuntu | `qemu-system-x86 xorriso e2fsprogs golang-go` plus `just` |
+| Arch | `qemu-full xorriso e2fsprogs just go` |
+
+Rust is installed through `rustup` and pinned by `rust-toolchain.toml`.
+
+## Optional Acceleration
+
+| Host | Preferred accelerator |
+|------|-----------------------|
+| Linux | KVM |
+| macOS | HVF |
+| Other or restricted | TCG |
+
+When acceleration is unavailable, the QEMU wrapper switches from `-cpu host` to
+`-cpu max` and forces TCG.

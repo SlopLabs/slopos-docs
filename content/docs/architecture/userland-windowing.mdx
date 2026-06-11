@@ -1,0 +1,46 @@
+---
+title: "Userland And Windowing"
+description: "Runtime, apps, compositor, and GUI protocol crates"
+---
+
+Userland is a mix of low-level syscall wrappers, a libc layer, async runtime,
+protocol crates, and apps.
+
+## Runtime Layers
+
+| Layer | Source | Role |
+|-------|--------|------|
+| Raw syscalls | Userland syscall layer | Thin register-level wrappers |
+| libc | libc layer | std PAL shims, malloc, stdio, process, thread, signal, net |
+| SlopRing runtime | Runtime crate | Safe userland ring wrapper |
+| `slopfut` | Runtime crate | Futures executor, reactor, I/O, time, signals, process waits |
+| Protocol | Protocol crate | Display protocol v2 typed wire format |
+| Windowing | Windowing runtime | Surfaces, buffers, event loop, raw drawing apps |
+| AppKit | App toolkit | Retained widget toolkit and controls |
+
+## Apps
+
+The root image currently builds apps and tools such as:
+
+```text
+init shell terminal compositor roulette file_manager image_viewer
+sysmon nmap ifconfig nc curl ping
+```
+
+The test image adds userland test binaries for fork, heap, image, ring, pidfd,
+signalfd, `slopfut`, terminal grid, clipboard, signal behavior, and more.
+
+## Display Protocol
+
+The compositor protocol is versioned in `slop-protocol`. It includes:
+
+- Version handshake and capability discovery.
+- Surface create, attach, damage, commit, frame callbacks, and destroy.
+- Toplevel creation, title, app-id, configure/ack, and destroy.
+- Cursor shape requests.
+- Clipboard copy/paste using memfd buffers and SCM_RIGHTS where needed.
+- Interactive move/resize authorization through input serials.
+
+Pixel buffers are memfd-backed and shared with the compositor. The windowing
+runtime provides raw window and surface APIs; AppKit builds widget trees and
+retained UI behavior on top.

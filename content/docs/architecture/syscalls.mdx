@@ -1,0 +1,44 @@
+---
+title: "Syscalls"
+description: "Syscall entry and dispatch architecture"
+---
+
+The syscall layer is the privileged API between Ring 3 userland and the Ring 0
+kernel. The ABI source defines numeric assignments; these docs describe the
+entry path, handler model, and compatibility expectations.
+
+## Entry
+
+Normal userland enters with `SYSCALL`. Early boot configures the x86-64 syscall
+MSRs so the CPU jumps to the kernel entry trampoline, masks the expected flags,
+and uses the configured kernel/user selector layout.
+
+The trampoline snapshots the user register file into a user context. The
+dispatcher parses register arguments through typed argument wrappers and routes
+to the matching handler.
+
+## Handler groups
+
+| Group | Examples |
+|-------|----------|
+| Core | yield, exit, time, system info, reboot |
+| Process | spawn, wait, exec, fork, clone, identity |
+| Memory | heap break, mappings, protection, shared memory |
+| Filesystem | path operations, fd operations, poll/select, ioctl |
+| Networking | sockets, TCP/UDP, DNS, message send/receive |
+| Signals | signal actions, masks, delivery, return |
+| Pollable process and signal fds | pidfd and signalfd |
+| SlopRing | setup, enter, registration |
+| UI and TTY | framebuffer, input, clipboard, terminal operations |
+| Tests | kernel/userland test reporting and harness control |
+
+## ABI discipline
+
+- Add or change numeric ABI assignments only in the ABI source.
+- Keep assigned slots stable; gaps are allowed.
+- Prefer typed user-pointer and user-slice wrappers over raw register handling.
+- Add userland wrappers where the syscall is meant to be public.
+- Add dispatch, success-path, and error-path tests.
+- Update public docs for stable behavior, not for every internal handler move.
+
+See [Adding a syscall](/development/adding-a-syscall) for the contributor flow.

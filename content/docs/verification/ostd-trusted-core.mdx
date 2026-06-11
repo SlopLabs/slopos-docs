@@ -1,0 +1,42 @@
+---
+title: "OSTD Trusted Core"
+description: "What slopos-ostd owns"
+---
+
+`slopos-ostd` is the Operating System Trusted Domain. Every runtime-unsafe
+kernel mechanism belongs here or behind its safe APIs.
+
+## Main Responsibilities
+
+| Area | Examples |
+|------|----------|
+| CPU and arch | MSRs, CR3, CPUID, xsave, TSC, APIC MSR helpers |
+| GDT/TSS/syscall data | Per-CPU descriptor tables, RSP0, syscall scratch slots |
+| IRQ and exception substrate | IDT data, interrupt frames, raw handlers, IST-sensitive paths |
+| Memory | frames, user frames, VM cursors, heap, DMA, I/O memory |
+| Sync | spin locks, wait queues, event bus, intrusive lists, RCU-like helpers |
+| Tasks | task handles, scheduler registry, kernel task internals |
+| User access | user pointers, user-copy helpers, user contexts |
+| FFI and link sections | Edition 2024 unsafe attribute wrappers, extern declarations |
+| Test support | Hermetic state, architecture probes, Miri-facing tests |
+
+## Safe API Contract
+
+Higher kernel crates should call OSTD helpers instead of spelling raw unsafe
+blocks. Typical examples:
+
+- Use `KBox`, `KVec`, `KArc`, and `PinBox` instead of direct `alloc`.
+- Use `UserPtr`, `UserSlice`, and user-copy wrappers at syscall boundaries.
+- Use OSTD frame and VM cursor APIs instead of manual page-table mutation.
+- Use OSTD intrusive-list roles instead of open-coded raw task links.
+- Use OSTD FFI macros for required `extern "C"` symbols or link-section items.
+
+## Audited-Only Surface
+
+Not every OSTD module is proved. The verified set focuses on memory-safety
+critical logic; the remaining unsafe modules are audited, require safety notes,
+and are covered by Miri where feasible.
+
+The SlopRing volatile `UFrame` accessors are a good example: their byte-copy and
+acquire/release behavior is small and audited, but the weak-memory protocol is
+not modeled by Verus.

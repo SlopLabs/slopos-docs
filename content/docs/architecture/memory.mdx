@@ -1,0 +1,44 @@
+---
+title: "Memory"
+description: "Physical frames, VM spaces, process memory, and sharing"
+---
+
+The memory system is split between trusted OSTD primitives and safe higher-level
+kernel policy.
+
+## Layers
+
+| Layer | Role |
+|-------|------|
+| Frame ownership | Ref-counted physical frame ownership and metadata |
+| User frames | Frames that can be mapped into user address spaces |
+| Page tables | Mapping, unmapping, and page-table walking |
+| VM spaces | Process address-space mutation |
+| Kernel heap | OSTD allocation surfaces for kernel data structures |
+| Process memory | Demand paging, copy-on-write fork, ELF loading, memfd, stack regions |
+| User buffers | Checked user access and pinned buffers for I/O and SlopRing |
+
+## Key behaviors
+
+- Anonymous process memory is mapped through `mmap`, `brk`, and demand paging.
+- Fork uses copy-on-write address spaces.
+- `memfd_create` and shared mappings back windowing buffers and IPC surfaces.
+- SlopRing fixed buffers are pinned once and referenced by later submissions.
+- Provided buffer rings let the kernel choose a receive buffer from a user-owned
+  buffer group.
+
+## Framekernel constraints
+
+Kernel code routes heap allocation through OSTD allocation wrappers. Large kernel
+objects should use OSTD in-place initialization so stack frames stay within the
+enforced budget.
+
+The load-bearing verified memory invariants are:
+
+| Invariant area | Proof status |
+|----------------|--------------|
+| Frame ref counts | Verus proof |
+| Slab slot lifetimes | Verus proof |
+| VM cursor map/unmap logic | Verus proof |
+| SlopRing cursor and layout logic | Verus proof |
+| Volatile user-frame accessors and weak-memory protocol | Audited and Miri-covered |

@@ -1,0 +1,47 @@
+---
+title: "Unsafe And FFI Boundaries"
+description: "Where ABI and unsafe edges belong"
+---
+
+SlopOS is Rust-first. Raw unsafe, naked assembly, linker symbols, and C ABI
+edges should stay inside the trusted core or inside narrow bridge modules that
+exist only to connect assembly, bootloader, or linker contracts.
+
+## Boundary categories
+
+| Category | Belongs in |
+|----------|------------|
+| Raw CPU and architecture operations | OSTD architecture modules |
+| Naked assembly entry and return paths | OSTD assembly or explicit bridge modules |
+| Linker symbols and link-section declarations | OSTD FFI helpers or narrow boot/kernel bridges |
+| Bootloader protocol ABI | Boot protocol bridge |
+| Scheduler and interrupt assembly ABI | Dedicated boundary modules |
+| User pointer validation and raw copies | OSTD user-memory APIs |
+| MMIO, port I/O, DMA, and PCI raw access | OSTD device and memory APIs |
+
+The exact allowlist is enforced in the source repo. Public docs describe the
+policy; the scripts define the current mechanical rule.
+
+## Rules
+
+- Prefer normal Rust functions and typed callback structs.
+- Put raw extern declarations behind OSTD wrappers or a dedicated boundary.
+- Keep linker symbols behind safe accessor functions.
+- Do not add ad hoc `extern "C"` blocks in feature code.
+- If an ABI edge needs unsafe, keep the unsafe block small and give it a
+  concrete safety argument.
+- Extend unsafe-check exemptions only with a narrow, documented reason.
+
+## Checks
+
+Use targeted `rg` scans around the code you touched when reviewing a boundary
+change:
+
+```bash
+rg 'extern "C"' <changed-subsystem>
+rg 'unsafe' <changed-subsystem>
+just check-framekernel
+```
+
+The first scans are review aids. The framekernel gate is the policy-enforcing
+check.

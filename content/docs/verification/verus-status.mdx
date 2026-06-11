@@ -1,0 +1,43 @@
+---
+title: "Verus Status"
+description: "Machine-checked proof coverage"
+---
+
+SlopOS verifies selected OSTD critical-path invariants with Verus. The source
+repo's verification metadata defines the exact pinned toolchain and proof set;
+`just verify` uses that metadata directly.
+
+## Run the verifier
+
+```bash
+just ensure-verus
+just verify
+just verify frame_refcount
+```
+
+## Verified coverage
+
+| Area | Proves |
+|------|--------|
+| Frame ownership | Ref-count invariants, including no double-free and no use-after-free |
+| Slab lifetime | Heap slot lifetime and fit invariants |
+| VM cursor logic | Map/unmap well-formedness and user-mapping sensitivity rules |
+| SlopRing cursor logic | Completion queue overwrite prevention, overflow latch, and in-flight bounds |
+| SlopRing layout logic | Masked indices and layout arithmetic stay in bounds |
+| TCP zero-copy send logic | Pinned send windows stay in bounds and live until ACK or teardown |
+
+## Explicit gaps
+
+- VM-space proofs use a coarse lock-per-space model. This is a scalability gap,
+  not a current soundness gap.
+- SlopRing proofs model index and state-machine logic, not the volatile
+  user-frame accessors or weak-memory behavior.
+- TCP zero-copy proofs model send-queue logic, not runtime atomics in the
+  notification token.
+
+## Upgrade policy
+
+Verus bumps should happen on dedicated verification branches, at most quarterly
+unless a required feature lands. A pin bump must update the source verification
+metadata, redownload the toolchain, run `just verify`, and update the status
+record in the source repo.

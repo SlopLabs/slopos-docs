@@ -1,0 +1,50 @@
+---
+title: "Overview"
+description: "Current SlopOS subsystem map"
+---
+
+SlopOS is a Rust kernel and userland organized around a small trusted core, safe
+kernel subsystems, and a userland async/runtime layer. These docs describe stable
+architecture and behavior rather than mirroring every source path.
+
+## High-level flow
+
+```text
+Limine + OVMF
+  -> early CPU, memory, interrupt, and service setup
+  -> platform discovery and device initialization
+  -> scheduler, memory manager, filesystem, network stack, syscall layer
+  -> init, shell, compositor, terminal, and apps
+```
+
+## Subsystems
+
+| Subsystem | Responsibility |
+|-----------|----------------|
+| ABI | Shared structs, constants, syscall surface, SlopRing layout, window and network contracts |
+| Trusted core | Unsafe machine interfaces, memory primitives, synchronization, task handles, user-copy |
+| Boot | Limine handoff, descriptor tables, exceptions, SMP bring-up, boot ordering |
+| Kernel services | Stable bridge between low-level trusted primitives and higher kernel subsystems |
+| Memory | Process address spaces, demand paging, COW, memfd, ELF loading, pinned user buffers |
+| Scheduler | Task lifecycle, SMP scheduling, sleeps, futexes, trap and IRQ handoff |
+| Syscalls | Typed dispatch, process, memory, filesystem, networking, signal, ring, UI, and test handlers |
+| Drivers | ACPI, APIC/IOAPIC, HPET, PCI, MSI/MSI-X, VirtIO, PS/2, serial, TTY |
+| Filesystem | VFS, ext2, ramfs, devfs, pipes, fd tables, polling |
+| Networking | VirtIO net, IPv4, ARP, ICMP, UDP, TCP, DNS, AF_UNIX sockets |
+| SlopRing | Shared submission/completion ring, registered buffers, provided buffers, completion delivery |
+| Runtime | libc layer, SlopRing wrapper, `slopfut` executor, process and signal futures |
+| Windowing | Display protocol, memfd-backed surfaces, compositor, raw window API, appkit widgets |
+| Tests | Kernel and userland tests, KTAP serial output, host parser, JSONL reporting |
+| Verification | OSTD trusted core, Verus proofs, KernMiri, framekernel discipline gates |
+
+## Design lines
+
+- Kernel async is banned. The kernel blocks through synchronous wait queues;
+  async is a userland edge built on SlopRing and `slopfut`.
+- IRQ and device work use APIC, IOAPIC, MSI/MSI-X, HPET, and VirtIO. PIT exists
+  only as a legacy calibration fallback, not as the scheduler timer.
+- The ABI source is generated from the source repo, not from prose in these docs.
+  Reference pages describe shape and semantics; exact numeric assignments belong
+  in the ABI source.
+- Tests are ABI consumers: kernel tests, userland tests, KTAP output, and the
+  host parser all exercise public contracts.

@@ -1,0 +1,46 @@
+---
+title: "Networking"
+description: "Network stack and socket architecture"
+---
+
+The SlopOS network stack provides a small but real socket system for userland
+tools and the async runtime.
+
+## Stack map
+
+| Layer | Responsibility |
+|-------|----------------|
+| Device | VirtIO net queues and interrupt-driven packet movement |
+| Link and routing | ARP, neighbor state, routes, and device selection |
+| IPv4 | Packet validation, fragmentation-related handling, protocol dispatch |
+| ICMP | Echo and control-message support |
+| UDP | Datagram demux, send, receive, and DNS transport |
+| TCP | Connections, listeners, retransmit, congestion, receive reassembly |
+| DNS | In-kernel resolver client for userland requests |
+| AF_UNIX | Local sockets and fd-passing support |
+| Socket file ops | File descriptor behavior and poll readiness |
+
+## Syscall surface
+
+The public socket surface includes create, bind, listen, accept, connect,
+send/receive, datagram send/receive, DNS resolve, socket options, shutdown,
+message send/receive, and local/peer address queries.
+
+Message send/receive supports SCM_RIGHTS-style file descriptor passing for local
+protocol surfaces.
+
+## SlopRing integration
+
+SlopRing routes socket operations through the same synchronous socket semantics
+where possible. Current ring behavior covers send, receive, accept, connect,
+poll, registered fixed buffers, provided buffer selection, and zero-copy send
+notifications.
+
+Zero-copy send uses registered buffers and posts a terminal notification when
+the buffer is reusable. UDP/ICMP can use one-shot NIC DMA; TCP keeps pins across
+retransmit until ACK or teardown.
+
+## Userland consumers
+
+Network tools, shell commands, `slopfut` I/O futures, and the compositor protocol
+all exercise the socket layer.

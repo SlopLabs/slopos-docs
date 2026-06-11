@@ -1,0 +1,76 @@
+---
+title: "Build And Test Recipes"
+description: "Current justfile recipes for SlopOS development"
+---
+
+The source repo's recipe list is the command source of truth. Run `just --list`
+after pulling changes.
+
+## Setup And Build
+
+| Recipe | What it does |
+|--------|--------------|
+| `just setup` | Verify Rust nightly, `x86_64-unknown-none`, Go `>= 1.22`, and workspace metadata |
+| `just build` | Build userland, root filesystem image, and `builddir/kernel.elf` |
+| `just iso` | Build `builddir/slop.iso` with the default command line |
+| `just clean` | Remove cargo build output and `builddir/kernel.elf` |
+| `just distclean` | Remove ISOs, disk images, logs, and build output |
+
+Limine is not a git submodule. The ISO build fetches the pinned Limine binary
+release if the local Limine cache is empty.
+
+## Boot
+
+| Recipe | What it does |
+|--------|--------------|
+| `just boot` | Interactive boot with display window and default wheel behavior |
+| `just boot-fast` | Interactive boot with `roulette=skip` |
+| `just boot-prod` | Release-optimized kernel, wheel skipped |
+| `just boot-headless` | Interactive serial-only boot |
+| `just boot-log` | Headless timed boot, writes `test_output.log` |
+| `just boot-debug` | `boot-fast` plus GDB stub and QEMU monitor |
+
+Useful boot environment variables:
+
+```bash
+BOOT_CMDLINE='tests=off roulette=skip boot.debug=on' just boot
+DEBUG=1 just boot
+QEMU_SMP=2 QEMU_MEM=1G just boot-fast
+just ports=7777,8080 boot
+```
+
+## Tests
+
+| Recipe | What it does |
+|--------|--------------|
+| `just test` | Full QEMU harness with live progress and per-failure diagnostics |
+| `just test FILTER='glob'` | Run matching kernel/userland tests |
+| `just test-rerun-failed` | Run the last failed test names |
+| `just test-verbose FILTER='glob'` | Dump captured klog for every test |
+| `just test-quiet FILTER='glob'` | Show only failures and summary |
+| `just test-raw` | Pass QEMU stdout through directly |
+| `just test-json builddir/events.jsonl` | Write machine-readable JSONL events |
+| `just test-userland-only` | Run only the userland phase |
+| `just test-host` | Host-side Rust tests for selected crates and OSTD |
+| `just check-tests-host` | Go unit tests for the host test wrapper |
+| `just check-test-count` | Guard against accidental test-count drops |
+
+The QEMU harness builds the host test runner, boots with
+`tests=on tests.shutdown=on tests.verbosity=summary boot.debug=on roulette=skip`,
+parses KTAP from the serial stream, and interprets `isa-debug-exit`.
+
+## Verification And Discipline
+
+| Recipe | What it does |
+|--------|--------------|
+| `just ensure-verus` | Fetch the pinned Verus toolchain |
+| `just verify` | Verify all proof files, or one proof stem via `FILTER` |
+| `just check-miri` | Run `slopos-ostd` tests under Miri |
+| `just tcb-ratio` | Print unsafe lines in OSTD over kernel Rust LoC |
+| `just check-no-kernel-async` | Fail on `async fn` in kernel crates |
+| `just check-framekernel` | Composite framekernel gate |
+| `just fmt` | `cargo fmt --all -- --check` |
+| `just check` | Allocation and stack-size gates against `kernel.elf` |
+
+`just check-framekernel` requires a prior `just build` because the stack-size
+gate inspects `builddir/kernel.elf`.

@@ -1,0 +1,49 @@
+---
+title: "Adding Tests"
+description: "Kernel, userland, host, and verification tests"
+---
+
+SlopOS has multiple test layers. Pick the lowest layer that exercises the
+behavior without unnecessary boot cost, then add QEMU coverage for integration.
+
+## Test Types
+
+| Type | Macro or command | Use |
+|------|------------------|-----|
+| Kernel test | `stest!` | Kernel logic and QEMU integration |
+| Userland test | `utest!` plus a userland test binary | Syscall and runtime behavior from Ring 3 |
+| Host Rust test | `cargo test -p ...` or `just test-host` | Pure crate logic |
+| Go harness test | `just check-tests-host` | Parser and renderer behavior |
+| Miri test | `just check-miri` | OSTD UB-sensitive code |
+| Verus proof | `just verify` | Critical invariant logic |
+
+## Running
+
+```bash
+just test
+just test FILTER='slopos_mm::*'
+just test-rerun-failed
+just test-verbose FILTER='ring::*'
+just test-userland-only
+```
+
+The harness records the previous failing names in `builddir/last-fail.list`.
+
+## Naming
+
+Kernel tests are emitted as `<module>::<name>`. Keep names specific enough that
+filtering is useful. Userland tests should report subtests with stable names via
+the test-report syscall.
+
+## KTAP Expectations
+
+If a test fails, the kernel must emit a top-level `not ok` line and a diagnostic
+block with captured klog. Userland tests emit subtests first and then a parent
+result once the test process exits.
+
+See [KTAP Test Output](/abi/ktap-test-output) for the wire contract.
+
+## Count Guard
+
+If a change intentionally removes tests, update the baseline deliberately.
+Otherwise `just check-test-count` should catch accidental drops.

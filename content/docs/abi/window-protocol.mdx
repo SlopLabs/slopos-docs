@@ -1,0 +1,62 @@
+---
+title: "Window And Protocol Surfaces"
+description: "Windowing, surface, and display protocol ABI"
+---
+
+SlopOS windowing has three layers:
+
+| Layer | Role |
+|-------|------|
+| Kernel ABI structs | Shared state and constants |
+| Wire protocol | Display protocol v2 request/event encoding |
+| Client runtime | Raw windows, surfaces, event loop, widgets |
+
+## Kernel Window ABI
+
+`WindowInfo` is the shared window metadata structure. It includes task id,
+position, content size, window state, cursor shape, shared-memory token, damage
+regions, title, app id, and compositor-provided frame dimensions.
+
+Important constants:
+
+| Constant | Meaning |
+|----------|---------|
+| `MAX_WINDOW_DAMAGE_REGIONS` | Per-window damage-region cap |
+| `MAX_BUFFER_AGE` | Buffer-age bound |
+| `WINDOW_STATE_NORMAL` | Normal toplevel |
+| `WINDOW_STATE_MINIMIZED` | Minimized toplevel |
+| `WINDOW_STATE_MAXIMIZED` | Maximized toplevel |
+| `CURSOR_SHAPE_*` | Cursor shape ids from default through resize shapes |
+
+`SurfaceRole` follows Wayland-style role assignment: `None`, `Toplevel`,
+`Popup`, and `Subsurface`. Roles are not intended to change once assigned.
+
+## Display Protocol V2
+
+`slop-protocol` is a length-prefixed little-endian binary protocol. It includes:
+
+| Request group | Examples |
+|---------------|----------|
+| Handshake | `Hello { version }` |
+| Surface lifecycle | create, attach, damage, commit, frame, destroy |
+| Toplevel lifecycle | get toplevel, set title, set app id, ack configure, destroy |
+| Cursor | set cursor shape |
+| Clipboard | copy, paste, read via memfd-backed buffers |
+| Interactive actions | move and resize authorized by input serials |
+
+Server events include hello/capabilities, output info, configure, input events,
+frame callbacks, clipboard readiness/results, and protocol errors.
+
+## Buffer Passing
+
+Window buffers use `memfd_create`, `ftruncate`, and `mmap(MAP_SHARED)`.
+Protocol messages that transfer a buffer fd use AF_UNIX ancillary data. The
+receiver wraps fds in `OwnedFd` so file descriptors are closed on drop unless
+explicitly consumed.
+
+## Runtime Crates
+
+- The windowing runtime exposes raw windows, surfaces, protocol handles, and
+  event-loop helpers.
+- AppKit exposes retained UI nodes, layout constraints, input/focus handling,
+  widget traits, and app launch helpers.

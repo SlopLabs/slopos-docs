@@ -1,0 +1,43 @@
+---
+title: "Known Limitations"
+description: "What SlopOS does not currently promise"
+---
+
+SlopOS is a QEMU-first research and development OS. These are important current
+limits.
+
+## Runtime
+
+- Real hardware boot is not the supported target.
+- QEMU `q35`, OVMF, HPET, LAPIC, IOAPIC, and MSI/MSI-X are expected.
+- Legacy PIC and legacy VirtIO interrupt modes are not the supported path.
+- Display behavior is framebuffer/compositor oriented, not GPU-accelerated
+  desktop hardware support.
+
+## Kernel And ABI
+
+- Syscall coverage is POSIX-inspired, not complete POSIX or Linux parity.
+- Syscall numbers are stable once assigned; SlopOS is pre-alpha.
+- SlopRing does not aim for full Linux io_uring feature parity.
+- Some SlopRing and TCP zero-copy runtime atomics are audited rather than
+  machine-checked.
+- Verification covers selected critical logic, not the whole kernel.
+
+## Filesystem And Storage
+
+- ext2 is the primary persistent filesystem.
+- Journaling filesystems, package management, and robust crash recovery are not
+  current public guarantees.
+- The test harness uses a scratch VirtIO disk for destructive block tests.
+
+## Networking
+
+- The stack supports real TCP/UDP workflows. It is a small OS network stack, not
+  a production hardened Internet stack.
+- QEMU user networking is the normal development path.
+
+## Project Docs
+
+Source repo plans are working notes or historical records unless they are
+explicitly promoted into these docs. Treat this documentation site as the public
+documentation surface.

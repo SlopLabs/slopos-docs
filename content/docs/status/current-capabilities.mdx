@@ -1,0 +1,47 @@
+---
+title: "Current Capabilities"
+description: "What SlopOS can do today"
+---
+
+This matrix describes the current public capability level based on the source
+workspace and justfile.
+
+| Area | Status |
+|------|--------|
+| Boot | Limine + OVMF ISO boots under QEMU `q35` |
+| SMP | Multi-core scheduler support with per-CPU state and LAPIC timers |
+| Privilege separation | Ring 0/Ring 3 user tasks, TSS/RSP0, SYSCALL fast path |
+| Memory | Demand paging, COW fork, mmap/munmap/mprotect, memfd, ASLR-related code |
+| Filesystem | ext2 root image on VirtIO block, VFS, ramfs, devfs, pipes |
+| Networking | VirtIO net, IPv4, ARP, ICMP, UDP, TCP, DNS, AF_UNIX |
+| Process API | spawn, exec, fork, clone, waitpid, process groups/sessions |
+| Signals | rt_sigaction, masks, kill, sigreturn, signalfd |
+| Async runtime | SlopRing, `slopos-rt`, `slopfut`, pidfd waits, signalfd futures |
+| UI | Framebuffer, compositor, terminal, shell, windowing, appkit widgets |
+| Tests | QEMU KTAP harness, userland tests, host tests, JSONL output |
+| Verification | Verus proofs for selected critical logic, KernMiri, framekernel gates |
+
+## Userland Binaries
+
+The normal root image builds:
+
+```text
+init shell terminal compositor roulette file_manager image_viewer
+sysmon nmap ifconfig nc curl ping
+```
+
+The test image adds userland test programs for process, heap, image, network,
+ring, pidfd, signalfd, `slopfut`, signals, terminal, and clipboard behavior.
+
+## Developer Loop
+
+The intended inner loop is:
+
+```bash
+just setup
+just boot-fast
+just test FILTER='glob'
+just check-framekernel
+```
+
+Run `just --list` for the current recipe list.

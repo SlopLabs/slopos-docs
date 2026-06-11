@@ -1,0 +1,43 @@
+---
+title: "Drivers"
+description: "Platform and device driver architecture"
+---
+
+SlopOS targets QEMU `q35` first and expects modern interrupt delivery.
+
+## Platform baseline
+
+| Feature | Role |
+|---------|------|
+| ACPI tables | Discover CPUs, interrupt controllers, HPET, and PCIe configuration |
+| HPET | High-precision reference clock and time source |
+| LAPIC | Per-CPU interrupt controller, timer, and IPIs |
+| IOAPIC | Platform interrupt routing |
+| MSI/MSI-X | Preferred PCI device interrupt delivery |
+| PCIe ECAM | PCI configuration access |
+
+## Timer model
+
+HPET plus LAPIC timer are the primary timing stack:
+
+- HPET is used for high-precision time and timer calibration.
+- LAPIC timer provides periodic scheduler ticks and one-shot wake deadlines.
+- PIT is only a legacy polled fallback for calibration. It is not initialized as
+  a periodic IRQ source and does not drive scheduling.
+
+## Device families
+
+| Family | Status |
+|--------|--------|
+| VirtIO block | Root and test disk images |
+| VirtIO net | Network device, RX/TX queues, interrupt handling, zero-copy hooks |
+| PCI | Device discovery and capability parsing |
+| PS/2 input | Keyboard and mouse input |
+| Serial | Early and runtime logging |
+| TTY/PTY | Terminal line discipline, sessions, job control |
+
+## Interrupt constraints
+
+Legacy PIC code is not the supported interrupt path. VirtIO devices are attached
+with legacy mode disabled; device probe expects MSI-X or MSI. IOAPIC is required
+for platform interrupts that are not MSI/MSI-X.

@@ -1,0 +1,15 @@
+{
+  "title": "Architecture",
+  "pages": [
+    "overview",
+    "boot",
+    "privilege-separation",
+    "memory",
+    "scheduler-wait-protocol",
+    "syscalls",
+    "drivers",
+    "networking",
+    "filesystem",
+    "userland-windowing"
+  ]
+}

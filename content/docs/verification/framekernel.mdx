@@ -1,0 +1,42 @@
+---
+title: "Framekernel"
+description: "The SlopOS trusted-core discipline"
+---
+
+SlopOS uses a framekernel split: one trusted core crate owns unsafe and raw
+machine interfaces, while the rest of the kernel is written against safe APIs.
+
+## Rules
+
+| Rule | Enforcement |
+|------|-------------|
+| `slopos-ostd` owns kernel unsafe | Crate-level unsafe bans plus an unsafe-boundary audit |
+| Kernel services stay synchronous | Async-surface audit |
+| Kernel allocation routes through OSTD | Allocation-dependency audit |
+| Stack frames stay bounded | Final kernel stack-size audit |
+| Trusted core is measured | TCB ratio report |
+| Critical invariants have proofs | `just verify` |
+| OSTD unsafe behavior is interpreted | `just check-miri` |
+
+`just check-framekernel` runs the composite gate:
+
+```bash
+just build
+just check-framekernel
+```
+
+The build step gives the stack-size audit a final kernel image to inspect.
+
+## Kernel Async Boundary
+
+The kernel has no `async fn` surface. Blocking is represented with `WaitQueue`,
+`EventBus`, poll/select shape, sleeps, futexes, and synchronous syscall handlers.
+SlopRing is the async edge, but the async runtime lives in userland
+(`slopos-rt` and `slopfut`).
+
+## Trusted-Core Goal
+
+The practical goal is to keep the amount of trusted code small enough that it can
+be reviewed, interpreted under Miri where possible, and gradually proved with
+Verus. The public claim depends on both the measured TCB ratio and the presence
+of machine-checked critical-path proofs.

@@ -1,0 +1,39 @@
+---
+title: "Filesystem"
+description: "VFS, ext2, devfs, ramfs, pipes, and fd operations"
+---
+
+The filesystem stack provides a VFS layer, an ext2 root image, in-memory files,
+device nodes, pipes, and file descriptor operations.
+
+## Layers
+
+| Layer | Responsibility |
+|-------|----------------|
+| VFS | Mounts, path walking, object traits, common operations |
+| ext2 | Persistent root filesystem image for QEMU boots |
+| ramfs | In-memory files |
+| devfs | Device namespace |
+| File descriptors | Open-file descriptions, fd tables, fd operations |
+| Pipes | Kernel pipe buffers and pipe file ops |
+| Block devices | Backing storage abstraction for filesystems |
+
+## Boot image
+
+The build creates userland binaries first, then packs the root filesystem image.
+The normal image contains init, shell, terminal, compositor, roulette, file
+manager, image viewer, system monitor, and network tools. The test image adds
+userland test binaries.
+
+## File descriptor surface
+
+File descriptors cover regular files, device-backed files, pipes, TTYs, sockets,
+pidfds, signalfds, SlopRing fds, and memfd-backed shared memory. Polling is
+centralized through file operations, which lets sockets, process exits, signals,
+and ring harvest share the same wait protocol.
+
+## Known limits
+
+The current persistent storage path is QEMU/VirtIO/ext2-oriented. Real hardware
+boot, journaling filesystems, package management, and a broader POSIX filesystem
+surface are not current public guarantees.

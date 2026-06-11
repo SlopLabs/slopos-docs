@@ -1,0 +1,95 @@
+---
+title: "QEMU Options"
+description: "Runtime knobs for SlopOS under QEMU"
+---
+
+SlopOS boots through the QEMU wrapper invoked by the justfile. The wrapper sets
+sensible defaults, but most knobs are environment variables.
+
+## Machine Model
+
+The normal runtime is:
+
+```text
+-machine q35,accel=<kvm:tcg|hvf:tcg>
+-cpu host       # changes to max when TCG is required
+-smp 4
+-m 512M
+```
+
+`QEMU_SMP` must be a power of two. On Linux, the script uses KVM when
+`/dev/kvm` is available and writable; otherwise it falls back to TCG with
+`-cpu max`. On macOS, it prefers HVF when QEMU advertises it.
+
+## Firmware And Boot Media
+
+The boot wrapper prepares OVMF firmware and uses runtime copies of OVMF vars:
+
+| Device | Use |
+|--------|-----|
+| OVMF pflash | UEFI firmware |
+| AHCI CD-ROM | Limine ISO boot media |
+| VirtIO block | ext2 root filesystem image |
+| Optional scratch VirtIO block | Destructive block tests in harness mode |
+
+## Display
+
+| Variable | Default | Use |
+|----------|---------|-----|
+| `QEMU_DISPLAY` | `cocoa` on macOS, `auto` elsewhere | Force `cocoa`, `gtk`, or `sdl` |
+| `QEMU_FB_AUTO` | `1` | Detect host display size for the Limine framebuffer |
+| `QEMU_FB_WIDTH` | `1920` | Fallback framebuffer width |
+| `QEMU_FB_HEIGHT` | `1080` | Fallback framebuffer height |
+| `QEMU_FB_AUTO_POLICY` | `primary` | Pick `primary` or `max` display |
+| `QEMU_FB_AUTO_OUTPUT` | empty | Pin a display output name |
+| `QEMU_GTK_ZOOM_TO_FIT` | `off` | GTK scaling option |
+
+Examples:
+
+```bash
+QEMU_DISPLAY=sdl just boot
+QEMU_FB_AUTO=0 QEMU_FB_WIDTH=1280 QEMU_FB_HEIGHT=720 just boot-fast
+QEMU_FB_AUTO_POLICY=max just boot
+```
+
+## Serial And Logging
+
+`just boot-headless` and test mode use `-display none -serial stdio`.
+`just boot-log` writes raw serial data to a temporary `.raw` file, strips ANSI
+control sequences, and saves `test_output.log`.
+
+```bash
+BOOT_LOG_TIMEOUT=30 LOG_FILE=builddir/boot.log just boot-log
+```
+
+## Networking
+
+QEMU user networking is always present for the VirtIO net device. Host-to-guest
+TCP forwarding is enabled by passing `ports=` to the just recipe:
+
+```bash
+just ports=7777 boot
+just ports=7777,8080 boot-fast
+```
+
+Use `host:guest` pairs when the host port differs:
+
+```bash
+just ports=18080:8080 boot
+```
+
+## Debug Mode
+
+`just boot-debug` sets `QEMU_DEBUG=1`, which adds:
+
+| Endpoint | Path |
+|----------|------|
+| GDB stub | TCP `:1234` |
+| QEMU monitor | `/tmp/slopos-monitor.sock` |
+
+Attach while QEMU is running:
+
+```bash
+gdb -q builddir/kernel.elf -ex 'target remote :1234'
+socat - UNIX-CONNECT:/tmp/slopos-monitor.sock
+```
