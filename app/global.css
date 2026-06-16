@@ -1,19 +1,109 @@
 @import 'tailwindcss';
 @import 'fumadocs-ui/css/purple.css';
 @import 'fumadocs-ui/css/preset.css';
+@import './tokens.css';
+
+/* ============================================================
+   Remap Fumadocs theme variables onto the SlopOS palette.
+   Forced-dark mode adds `.dark` on <html>; cover both scopes so
+   the design-system colors win regardless of how the preset
+   declares its dark values.
+   ============================================================ */
+:root,
+.dark {
+  --color-fd-background: var(--void);
+  --color-fd-foreground: var(--ink);
+  --color-fd-muted: var(--surface-1);
+  --color-fd-muted-foreground: var(--ink-faint);
+  --color-fd-popover: var(--surface-2);
+  --color-fd-popover-foreground: var(--ink);
+  --color-fd-card: var(--surface-1);
+  --color-fd-card-foreground: var(--ink);
+  --color-fd-border: var(--line);
+  --color-fd-primary: var(--violet);
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-secondary: var(--surface-2);
+  --color-fd-secondary-foreground: var(--ink);
+  --color-fd-accent: var(--violet-wash);
+  --color-fd-accent-foreground: var(--violet-bright);
+  --color-fd-ring: var(--violet);
+}
 
 html {
   scrollbar-gutter: stable;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   min-height: 100vh;
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  background: var(--void);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--violet);
+  color: var(--on-accent);
 }
 
 html > body[data-scroll-locked] {
   margin-right: 0 !important;
   --removed-body-scroll-bar-size: 0 !important;
+}
+
+/* ============================================================
+   Docs reading view — match the design-system docs surface.
+   Fumadocs wraps article content in `.prose`.
+   ============================================================ */
+.prose :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-display);
+  letter-spacing: var(--tracking-tight);
+}
+
+/* sidebar / nav section labels speak the OS mono voice */
+#nd-sidebar [data-radix-collection-item] > p,
+#nd-sidebar p[data-active='false'],
+.fd-sidebar-group-label {
+  font-family: var(--font-mono);
+}
+
+/* inline code — violet on a faint wash, like the design */
+.prose
+  :not(pre)
+  > code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  color: var(--violet-bright);
+  background: var(--violet-wash);
+  border: 1px solid var(--violet-line);
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+}
+
+/* tables — hairline borders, mono uppercase headers */
+.prose table {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.prose thead th {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  background: var(--surface-1);
+}
+.prose tbody td {
+  color: var(--ink-dim);
+}
+
+/* sidebar active link gets the violet rail from docs.html */
+#nd-sidebar a[data-active='true'] {
+  color: var(--violet-bright);
+  background: var(--violet-wash);
+  box-shadow: inset 2px 0 0 var(--violet);
+  font-weight: 600;
 }

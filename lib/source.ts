@@ -7,7 +7,8 @@ export const source = loader({
   baseUrl: docsRoute,
   source: docs.toFumadocsSource(),
   plugins: [lucideIconsPlugin()],
-  url: (slugs) => (slugs.length === 0 ? '/' : `/${slugs.join('/')}`),
+  url: (slugs) =>
+    slugs.length === 0 ? docsRoute : `${docsRoute}/${slugs.join('/')}`,
 });
 
 export function getPageImage(page: (typeof source)['$inferPage']) {
