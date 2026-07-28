@@ -25,6 +25,7 @@ just verify frame_refcount
 | SlopRing cursor logic | Completion queue overwrite prevention, overflow latch, and in-flight bounds |
 | SlopRing layout logic | Masked indices and layout arithmetic stay in bounds |
 | TCP zero-copy send logic | Pinned send windows stay in bounds and live until ACK or teardown |
+| Task ownership | Existence-reference uniqueness, container count conservation, single-winner destruction, and the reap gate |
 
 ## Explicit gaps
 
@@ -34,6 +35,11 @@ just verify frame_refcount
   user-frame accessors or weak-memory behavior.
 - TCP zero-copy proofs model send-queue logic, not runtime atomics in the
   notification token.
+- Task-ownership proofs model the ownership logic, not the weak-memory ordering
+  of the existence flag exchange or the reference-count release loop, not the
+  intrusive placement links or the provenance of the raw pointers they pass
+  around, and not the saturation arm or the weak count. Those stay
+  KernMiri-covered.
 
 ## Upgrade policy
 

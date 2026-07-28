@@ -59,3 +59,6 @@ in-flight operations, and posts CQEs when resources are ready.
 Sleep and scheduler ticks use the LAPIC timer. HPET provides the high precision
 clock and calibration reference. The scheduler can program LAPIC one-shot
 deadlines for idle wakeups and then restore periodic mode in the timer ISR.
+
+See [Task Ownership](/architecture/task-ownership) for how the queues and wake
+inboxes named here own the tasks they hold.

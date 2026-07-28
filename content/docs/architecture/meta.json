@@ -6,6 +6,7 @@
     "privilege-separation",
     "memory",
     "scheduler-wait-protocol",
+    "task-ownership",
     "syscalls",
     "drivers",
     "networking",
