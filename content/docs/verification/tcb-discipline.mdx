@@ -14,13 +14,27 @@ just tcb-ratio
 
 The measurement counts unsafe lines in `slopos-ostd` against total kernel Rust lines
 in the actual kernel dependency closure. The current public target is less than
-1 percent for the kernel TCB ratio.
+1 percent.
+
+Read it as a trend rather than as a TCB fraction comparable to other
+projects'. The denominator is raw first-party lines, including the vendored
+DWARF reader, and published comparators measure post-LTO linked code size.
+The number that actually bounds what has to be trusted is the size of OSTD's
+exported obligation surface: its `pub unsafe fn`s, its `pub unsafe trait`s,
+and — the one that matters most — the safe functions that still carry a
+`# Safety` section. A `# Safety` section on a function that is not
+`unsafe fn` says a safe caller can break it, which is the property the whole
+arrangement exists to rule out. That count is ratcheted and may fall but
+never rise.
 
 ## Source Gates
 
 | Gate | Purpose |
 |------|---------|
-| Unsafe boundary | Keep unsafe out of kernel crates outside OSTD and documented exemptions |
+| Unsafe boundary | Keep unsafe out of kernel crates outside OSTD, and assert every crate the kernel links carries the lint |
+| Unsafe expansion | Keep macro-injected unsafe out of what the compiler actually sees |
+| Registry sections | Keep the built image to the linker sections the script declares |
+| Contract surface | Ratchet OSTD's safe functions that still carry a caller obligation |
 | Allocation boundary | Keep direct allocation policy inside OSTD |
 | Async boundary | Keep async out of kernel crates |
 | Stack bound | Catch excessive final stack frames |
@@ -28,9 +42,23 @@ in the actual kernel dependency closure. The current public target is less than
 
 ## Allowed exemptions outside OSTD
 
-The source policy documents narrow exemptions for the allocator entry point and
-for macro-generated link-section attributes. Those exemptions do not open a
-general path for runtime unsafe in ordinary kernel crates.
+The exemptions are enumerated rather than described, and each has a reason
+recorded beside it:
+
+- The allocator entry point in the kernel binary, which must name `alloc`
+  directly.
+- Three C-ABI entry points whose callers are assembly, so the symbols have
+  to resolve at link time.
+- Linker-section attributes, but only for sections the linker script
+  declares — OSTD owns every label, so a kernel crate cannot name one of
+  its own.
+- `unsafe impl` of a small set of OSTD traits, listed with what discharges
+  each: the `Pod`/`Zeroable` derives check representation and field bounds;
+  the hermetic-state and PCR-stack markers carry an obligation that
+  genuinely belongs to the invoking crate.
+
+None of these opens a path to runtime unsafe in an ordinary kernel crate,
+and the expansion audit fails on anything not in the list.
 
 ## Contributor Rule
 

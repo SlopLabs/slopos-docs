@@ -10,13 +10,32 @@ machine interfaces, while the rest of the kernel is written against safe APIs.
 
 | Rule | Enforcement |
 |------|-------------|
-| `slopos-ostd` owns kernel unsafe | Crate-level unsafe bans plus an unsafe-boundary audit |
+| `slopos-ostd` owns kernel unsafe | Crate-level unsafe bans, a source audit, and an expansion audit |
+| No unsafe reaches the compiler in a kernel crate | Per-crate `-Zunpretty=expanded` scan over a feature matrix |
+| Linker sections are OSTD's to name | Post-link section and registry-entry audit |
 | Kernel services stay synchronous | Async-surface audit |
 | Kernel allocation routes through OSTD | Allocation-dependency audit |
 | Stack frames stay bounded | Final kernel stack-size audit |
+| OSTD's safe API does not delegate obligations | Contract-surface ratchet |
 | Trusted core is measured | TCB ratio report |
 | Critical invariants have proofs | `just verify` |
 | OSTD unsafe behavior is interpreted | `just check-miri` |
+
+## Why the lint is not enough on its own
+
+`#![forbid(unsafe_code)]` does not see `unsafe` that arrives from a macro
+defined in another crate. rustc cancels any `unsafe_code` diagnostic whose
+primary span is inside an external macro expansion, and the call site
+contains no keyword for a source scan to find either — so both of the
+obvious mechanisms are blind to the same construct, and `--force-warn` does
+not change it.
+
+The expansion audit is what closes that. It runs each kernel crate through
+`-Zunpretty=expanded` and holds the result to a fixed rule rather than to a
+recorded count: zero executable `unsafe`, and `unsafe impl`, `link_section`
+or `no_mangle` only from a named list with a reason recorded against each
+entry. It runs over each crate's feature configurations, because the test
+registrations that dominate the count live behind test features.
 
 `just check-framekernel` runs the composite gate:
 

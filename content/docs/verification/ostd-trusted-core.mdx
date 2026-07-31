@@ -22,14 +22,32 @@ kernel mechanism belongs here or behind its safe APIs.
 
 ## Safe API Contract
 
-Higher kernel crates should call OSTD helpers instead of spelling raw unsafe
-blocks. Typical examples:
+Higher kernel crates call OSTD helpers instead of spelling raw unsafe blocks.
+That indirection is the whole design, not a workaround: the unsafe operation
+lives in the trusted crate, and a service crate reaches it through an API the
+type system checks.
+
+The property it rests on is that those APIs are **sound** — that no possible
+safe caller can cause undefined behaviour. Folding `unsafe` behind a wrapper
+that holds is the framekernel working. Folding it behind a wrapper that
+merely *documents* what the caller must not do is not: the fault then lands
+in OSTD's code while the cause is an ordinary safe call somewhere else, which
+is the debugging cost of a trusted-core bug without the containment the
+trusted core is supposed to buy. The gate that ratchets OSTD's remaining
+`# Safety`-bearing safe functions exists to keep that set shrinking.
+
+Typical examples:
 
 - Use `KBox`, `KVec`, `KArc`, and `PinBox` instead of direct `alloc`.
 - Use `UserPtr`, `UserSlice`, and user-copy wrappers at syscall boundaries.
 - Use OSTD frame and VM cursor APIs instead of manual page-table mutation.
 - Use OSTD intrusive-list roles instead of open-coded raw task links.
-- Use OSTD FFI macros for required `extern "C"` symbols or link-section items.
+- Use OSTD FFI macros for required `extern "C"` symbols, and `registry_entry!`
+  for linker-section items — OSTD owns the section labels, so a kernel crate
+  names a registry rather than a string.
+- Use `#[derive(SlotFields)]` and the `write_field!` family to initialise a
+  large struct in place; the field tokens are built from `offset_of!` and cost
+  no unsafe at the call site.
 
 ## Audited-Only Surface
 

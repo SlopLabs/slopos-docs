@@ -13,7 +13,7 @@ exist only to connect assembly, bootloader, or linker contracts.
 |----------|------------|
 | Raw CPU and architecture operations | OSTD architecture modules |
 | Naked assembly entry and return paths | OSTD assembly or explicit bridge modules |
-| Linker symbols and link-section declarations | OSTD FFI helpers or narrow boot/kernel bridges |
+| Linker symbols and link-section declarations | OSTD, which owns every section label and every bracket symbol |
 | Bootloader protocol ABI | Boot protocol bridge |
 | Scheduler and interrupt assembly ABI | Dedicated boundary modules |
 | User pointer validation and raw copies | OSTD user-memory APIs |
@@ -25,9 +25,20 @@ policy; the scripts define the current mechanical rule.
 ## Rules
 
 - Prefer normal Rust functions and typed callback structs.
-- Put raw extern declarations behind OSTD wrappers or a dedicated boundary.
-- Keep linker symbols behind safe accessor functions.
+- Put raw extern declarations in OSTD, not behind a per-crate wrapper.
+- Register into a linker section with `registry_entry!`, naming a registry
+  rather than a section string. A crate that could name its own section
+  could name one the linker script's wildcards silently merge into an
+  existing output section, where no post-link check would see it.
 - Do not add ad hoc `extern "C"` blocks in feature code.
+- A C-ABI symbol whose only caller is Rust does not need C linkage. Route it
+  through a registration hook the way the task-exit and user-task-entry
+  paths do.
+
+Note that these rules are enforced against the *expansion*, not the source.
+A macro from another crate can inject `unsafe` past `#![forbid(unsafe_code)]`
+without a diagnostic, so following the rules by hand is not sufficient and
+not relied on.
 - If an ABI edge needs unsafe, keep the unsafe block small and give it a
   concrete safety argument.
 - Extend unsafe-check exemptions only with a narrow, documented reason.
