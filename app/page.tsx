@@ -135,7 +135,7 @@ export default function HomePage() {
               <Reveal>
                 <div className="proof__figures">
                   <div className="proof__fig">
-                    <div className="proof__n">54</div>
+                    <div className="proof__n">56</div>
                     <p className="proof__l">
                       <code>pub unsafe fn</code> in the trusted core
                     </p>
@@ -147,13 +147,13 @@ export default function HomePage() {
                     </p>
                   </div>
                   <div className="proof__fig">
-                    <div className="proof__n">16</div>
+                    <div className="proof__n">0</div>
                     <p className="proof__l">
-                      safe functions that still carry a prose contract
+                      safe functions left carrying a prose contract
                     </p>
                   </div>
                   <div className="proof__fig">
-                    <div className="proof__n">2,500+</div>
+                    <div className="proof__n">3,051</div>
                     <p className="proof__l">
                       tests that boot under QEMU on each change
                     </p>
@@ -168,8 +168,10 @@ export default function HomePage() {
                     maxWidth: '48ch',
                   }}
                 >
-                  Those first three numbers are what you must trust by reading
-                  rather than by type-checking. CI fails the build when they grow.
+                  The first two numbers are what you audit by reading rather than
+                  by type-checking, and CI fails the build when they grow. The
+                  third one reached zero: every safe function that once asked the
+                  caller to uphold something now encodes it in a type.
                 </p>
               </Reveal>
 
@@ -270,7 +272,7 @@ export default function HomePage() {
                   {'\n'}
                   <span className="g">just test</span>
                   {'       '}
-                  <span className="c"># 2,500+ tests under QEMU</span>
+                  <span className="c"># 3,051 tests under QEMU</span>
                   {'\n\n'}
                   <span className="p">root@sloptopia</span>:/#
                 </pre>

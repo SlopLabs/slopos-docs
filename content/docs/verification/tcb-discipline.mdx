@@ -25,7 +25,9 @@ and, the one that matters most, the safe functions that still carry a
 `# Safety` section. A `# Safety` section on a function that is not
 `unsafe fn` says a safe caller can break it, which is the property the whole
 arrangement exists to rule out. That count is ratcheted and may fall but
-never rise.
+never rise. It now stands at zero: every contract the gate once counted
+turned out to be expressible as a capability witness, a validated newtype, a
+linear handle, or a sealed trait.
 
 ## Source Gates
 
