@@ -5,21 +5,21 @@ import { Callout } from 'fumadocs-ui/components/callout';
 import { Card as FumadocsCard, Cards } from 'fumadocs-ui/components/card';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import {
-  BookOpen,
-  Code2,
-  Cog,
+  Books,
   Cpu,
+  GithubLogo,
+  Gear,
   Rocket,
   Terminal,
-  type LucideIcon,
-} from 'lucide-react';
+} from '@phosphor-icons/react/ssr';
+import type { Icon } from '@phosphor-icons/react/lib';
 import type { ComponentProps, HTMLAttributes, ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 
-const iconMap: Record<string, LucideIcon> = {
-  book: BookOpen,
-  gear: Cog,
-  github: Code2,
+const iconMap: Record<string, Icon> = {
+  book: Books,
+  gear: Gear,
+  github: GithubLogo,
   microchip: Cpu,
   rocket: Rocket,
   terminal: Terminal,
@@ -36,7 +36,7 @@ function resolveIcon(icon: ReactNode): ReactNode {
     return icon;
   }
 
-  return <Icon aria-hidden="true" className="size-4" />;
+  return <Icon aria-hidden="true" size={16} />;
 }
 
 function Card({ icon, ...props }: ComponentProps<typeof FumadocsCard>) {
@@ -84,7 +84,7 @@ function Frame({
   return (
     <div
       className={cn(
-        'not-prose my-6 overflow-hidden rounded-xl border bg-fd-card shadow-sm',
+        'not-prose my-6 overflow-hidden rounded-[6px] border bg-fd-card',
         className,
       )}
       {...props}

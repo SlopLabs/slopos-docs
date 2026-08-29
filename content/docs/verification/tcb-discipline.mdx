@@ -21,7 +21,7 @@ projects'. The denominator is raw first-party lines, including the vendored
 DWARF reader, and published comparators measure post-LTO linked code size.
 The number that actually bounds what has to be trusted is the size of OSTD's
 exported obligation surface: its `pub unsafe fn`s, its `pub unsafe trait`s,
-and — the one that matters most — the safe functions that still carry a
+and, the one that matters most, the safe functions that still carry a
 `# Safety` section. A `# Safety` section on a function that is not
 `unsafe fn` says a safe caller can break it, which is the property the whole
 arrangement exists to rule out. That count is ratcheted and may fall but
@@ -50,7 +50,7 @@ recorded beside it:
 - Three C-ABI entry points whose callers are assembly, so the symbols have
   to resolve at link time.
 - Linker-section attributes, but only for sections the linker script
-  declares — OSTD owns every label, so a kernel crate cannot name one of
+  declares. OSTD owns every label, so a kernel crate cannot name one of
   its own.
 - `unsafe impl` of a small set of OSTD traits, listed with what discharges
   each: the `Pod`/`Zeroable` derives check representation and field bounds;

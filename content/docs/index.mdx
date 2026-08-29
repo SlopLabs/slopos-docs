@@ -1,31 +1,32 @@
 ---
 title: "SlopOS"
-description: "Public architecture, ABI, verification, and developer documentation for SlopOS"
+description: "Architecture, ABI, verification, and developer documentation for SlopOS"
 ---
 
 ## What is SlopOS?
 
-**SlopOS is a from-scratch x86_64 operating system authored by AI.**
-The Wheel of Fate can decide a boot, the W/L currency system keeps score, and
-the shell runs on SlopOS's Rust kernel, documented ABI, constrained trusted core,
-and testable userland stack.
+**AI agents wrote SlopOS, an x86_64 operating system built from scratch in
+Rust.** The name owns what that usually produces. An agent will tell you its
+code is correct, which is worth nothing, so the build proves it instead: one
+crate, `slopos-ostd`, holds every line of `unsafe`, and Verus checks the
+invariants underneath it. It boots under QEMU and on a real laptop.
 
 <Frame>
-  <img src="/images/slopos-screenshot-2026-04-23.png" alt="SlopOS running with the Shell and Files applications - April 23, 2026" />
+  <img src="/images/slopos-on-hardware.jpg" alt="The SlopOS desktop running on a Lenovo laptop, showing the terminal, file manager, system monitor and image viewer" />
 </Frame>
 
 <Cards>
   <Card title="Quickstart" icon="rocket" href="/docs/getting-started/quickstart">
-    Install the host tools, build an ISO, and boot SlopOS in QEMU
+    Install the host tools, build an ISO, and boot it under QEMU
   </Card>
   <Card title="Architecture" icon="microchip" href="/docs/architecture/overview">
-    Read the current subsystem map and kernel design notes
+    How boot, memory, scheduling, drivers and the network fit together
   </Card>
   <Card title="ABI Reference" icon="book" href="/docs/abi/syscalls">
-    Review syscall families, SlopRing, KTAP, and window protocol surfaces
+    Syscall families, SlopRing, KTAP and the window protocol
   </Card>
   <Card title="Source" icon="github" href="https://github.com/SlopLabs/slopos">
-    Browse the SlopOS source tree
+    Browse the source tree on GitHub
   </Card>
 </Cards>
 
@@ -46,22 +47,22 @@ and testable userland stack.
 | **Userland** | libc layer, shell, compositor, terminal, windowing, appkit |
 | **Verification** | `slopos-ostd` trusted core, Verus proofs, KernMiri, framekernel gates |
 
-SlopOS has sharp edges. These docs state what works, what is deliberately odd,
-and which details belong to development notes.
+SlopOS has sharp edges. These pages say what works today, which parts we made
+strange on purpose, and which details belong to development notes.
 
 ## Documentation Map
 
 <Cards>
   <Card title="Getting Started" icon="rocket" href="/docs/getting-started/quickstart">
-    Host setup, build recipes, QEMU options, and troubleshooting
+    Set up the host, build an ISO, boot it, and fix what breaks
   </Card>
   <Card title="Verification" icon="book" href="/docs/verification/framekernel">
-    Framekernel discipline, trusted core, Verus status, and KernMiri
+    The gates CI runs, what Verus proves, and where Miri looks
   </Card>
   <Card title="Development" icon="gear" href="/docs/development/adding-a-syscall">
-    Guides for extending syscalls, drivers, tests, debugging, and security review
+    Add a syscall or driver, write tests, debug a wedged kernel
   </Card>
   <Card title="Status" icon="terminal" href="/docs/status/current-capabilities">
-    Capability matrix, limitations, hardware requirements, and roadmap links
+    What runs today, what does not, and which hardware we tested
   </Card>
 </Cards>

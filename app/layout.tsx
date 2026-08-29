@@ -1,28 +1,20 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
-import { Inter, JetBrains_Mono, Space_Grotesk } from 'next/font/google';
+import { Geist, Geist_Mono } from 'next/font/google';
 import { RootProvider } from 'fumadocs-ui/provider/next';
 import { cn } from '@/lib/cn';
+import { appName } from '@/lib/shared';
 import './global.css';
 
-const inter = Inter({
+const geist = Geist({
   subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-inter',
+  variable: '--font-geist',
   display: 'swap',
 });
 
-const spaceGrotesk = Space_Grotesk({
+const geistMono = Geist_Mono({
   subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-space-grotesk',
-  display: 'swap',
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '700', '800'],
-  variable: '--font-jetbrains-mono',
+  variable: '--font-geist-mono',
   display: 'swap',
 });
 
@@ -37,11 +29,11 @@ const siteUrl =
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
-    default: 'SlopOS Documentation',
-    template: '%s | SlopOS Documentation',
+    default: `${appName} Documentation`,
+    template: `%s | ${appName}`,
   },
   description:
-    'Documentation for SlopOS, a from-scratch x86_64 operating system written entirely by AI.',
+    'Documentation for SlopOS, a from-scratch x86_64 operating system written in Rust with an enormous amount of AI assistance.',
   icons: {
     icon: '/favicon.svg',
   },
@@ -49,7 +41,7 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   colorScheme: 'dark',
-  themeColor: '#07080e',
+  themeColor: '#0b0e0a',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
@@ -57,13 +49,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html
       lang="en"
       suppressHydrationWarning
-      className={cn(
-        inter.variable,
-        spaceGrotesk.variable,
-        jetbrainsMono.variable,
-      )}
+      className={cn(geist.variable, geistMono.variable)}
     >
-      <body className="flex min-h-screen flex-col">
+      <body className="flex min-h-dvh flex-col">
         <RootProvider
           theme={{
             defaultTheme: 'dark',

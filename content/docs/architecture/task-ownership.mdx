@@ -11,7 +11,7 @@ happens to hold.
 ## One task, one handle
 
 A task is reached through `KArc<Task>`, a strong reference-counted handle. The
-allocation is freed when its last strong reference drops — not when the task
+allocation is freed when its last strong reference drops, not when the task
 exits, and not when the scheduler reaps it. Exit and reap only release the
 references those stages own.
 
@@ -44,7 +44,7 @@ Two properties follow, and the rest of the ownership model leans on both.
 The registry can be a pure weak index. It observes tasks without keeping any
 alive, so a lookup is a liveness-checked upgrade rather than a fabricated strong
 reference, and an entry left behind by a missed unhash cannot resurrect a dead
-task — the upgrade simply fails.
+task. The upgrade simply fails.
 
 And while a task is live, every container's release is provably not the final
 one. That is what lets a container release stay a bare atomic decrement, safe to
@@ -135,7 +135,7 @@ Two properties make this correct, both borrowed from Linux's
 `put_task_struct` and its PREEMPT_RT deferral.
 
 Finality is decided *by* the decrement, never by reading the count first. A
-`strong_count == 1` pre-check cannot be made race-free — two holders can both
+`strong_count == 1` pre-check cannot be made race-free. Two holders can both
 observe two, and both then drop. A count-elected release is the shape that
 produced four separate use-after-free defects in this tree before the rule was
 made explicit.
@@ -160,7 +160,7 @@ registry and keeps its existence reference until that stops being true.
 > A task some CPU is running cannot be reaped, and therefore cannot be freed.
 
 This gate is what makes the current-task borrow sound. The guard for "the task
-running on this CPU" takes no reference count at all — it is a borrow, not an
+running on this CPU" takes no reference count at all. It is a borrow, not an
 owned handle. It is safe because a task's own execution pins its allocation: the
 reap gate declines while the task is dispatch-pinned, and one disjunct of that
 predicate tests precisely whether the task is some CPU's current task, which is
@@ -180,7 +180,7 @@ cells whose writes require a value proving the writer has exclusive access.
 
 A lock is the wrong instrument here. These fields are written on the
 context-switch path, which runs with interrupts off and must not acquire
-anything — a lock taken in the switch window has the same shape as the allocator
+anything. A lock taken in the switch window has the same shape as the allocator
 deadlock described above. Exclusivity in this case is not *arranged* by taking a
 lock; it is a fact about the CPU that already holds. Only the CPU running a task
 touches that task's registers, and only the CPU performing a switch touches
@@ -206,13 +206,13 @@ asserting it.
 
 ### Why the cell hands out a raw pointer
 
-The authorized accessor returns `*mut T` — never `&mut T`, and never `T` by
+The authorized accessor returns `*mut T`, never `&mut T`, and never `T` by
 value. Returning `T` is ruled out by size: one FPU state is 2.6 KiB on the
 caller's frame, which the kernel's stack-frame budget rejects outright.
 
 The `&mut T` case is the load-bearing one. Two witnesses for the same task can
-legitimately coexist in nested frames — an interrupt handler running above a
-syscall on the same task — and two `&mut` to one field are aliasing undefined
+legitimately coexist in nested frames (an interrupt handler running above a
+syscall on the same task), and two `&mut` to one field are aliasing undefined
 behavior even when the accesses are disjoint in practice. This is not a local
 judgement call about strictness. Memory inside an `UnsafeCell` carries shared
 read-write provenance, which composes with itself, whereas forming a `&mut`
@@ -234,7 +234,7 @@ exactly one caller wins the one-to-zero transition and destruction runs once; a
 reap never fires on a dispatch-pinned task; and a destroyed task is fully
 detached.
 
-The proof is load-bearing rather than vacuous — it encodes a count-elected
+The proof is load-bearing rather than vacuous. It encodes a count-elected
 release as a deliberately broken variant and shows that it reaches a state the
 invariant forbids.
 

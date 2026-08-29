@@ -27,7 +27,7 @@ That indirection is the whole design, not a workaround: the unsafe operation
 lives in the trusted crate, and a service crate reaches it through an API the
 type system checks.
 
-The property it rests on is that those APIs are **sound** — that no possible
+The property it rests on is that those APIs are **sound**: no possible
 safe caller can cause undefined behaviour. Folding `unsafe` behind a wrapper
 that holds is the framekernel working. Folding it behind a wrapper that
 merely *documents* what the caller must not do is not: the fault then lands
@@ -43,7 +43,7 @@ Typical examples:
 - Use OSTD frame and VM cursor APIs instead of manual page-table mutation.
 - Use OSTD intrusive-list roles instead of open-coded raw task links.
 - Use OSTD FFI macros for required `extern "C"` symbols, and `registry_entry!`
-  for linker-section items — OSTD owns the section labels, so a kernel crate
+  for linker-section items. OSTD owns the section labels, so a kernel crate
   names a registry rather than a string.
 - Use `#[derive(SlotFields)]` and the `write_field!` family to initialise a
   large struct in place; the field tokens are built from `offset_of!` and cost

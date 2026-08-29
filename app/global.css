@@ -1,32 +1,33 @@
 @import 'tailwindcss';
-@import 'fumadocs-ui/css/purple.css';
+@import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
 @import './tokens.css';
 
-/* ============================================================
-   Remap Fumadocs theme variables onto the SlopOS palette.
-   Forced-dark mode adds `.dark` on <html>; cover both scopes so
-   the design-system colors win regardless of how the preset
-   declares its dark values.
-   ============================================================ */
+/* next-themes still writes `.dark`; cover both so Fumadocs cannot fall
+   back to its own light values. */
 :root,
 .dark {
-  --color-fd-background: var(--void);
+  --color-fd-background: var(--bg);
   --color-fd-foreground: var(--ink);
-  --color-fd-muted: var(--surface-1);
+  --color-fd-muted: var(--surface-2);
   --color-fd-muted-foreground: var(--ink-faint);
-  --color-fd-popover: var(--surface-2);
+  --color-fd-popover: var(--surface);
   --color-fd-popover-foreground: var(--ink);
-  --color-fd-card: var(--surface-1);
+  --color-fd-card: var(--surface);
   --color-fd-card-foreground: var(--ink);
   --color-fd-border: var(--line);
-  --color-fd-primary: var(--violet);
-  --color-fd-primary-foreground: #ffffff;
+  --color-fd-primary: var(--accent);
+  --color-fd-primary-foreground: var(--on-accent);
   --color-fd-secondary: var(--surface-2);
   --color-fd-secondary-foreground: var(--ink);
-  --color-fd-accent: var(--violet-wash);
-  --color-fd-accent-foreground: var(--violet-bright);
-  --color-fd-ring: var(--violet);
+  --color-fd-accent: var(--accent-wash);
+  --color-fd-accent-foreground: var(--accent-ink);
+  --color-fd-ring: var(--accent);
+}
+
+@theme inline {
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, menlo, monospace;
 }
 
 html {
@@ -35,17 +36,21 @@ html {
 }
 
 body {
-  min-height: 100vh;
-  background: var(--void);
+  min-height: 100dvh;
+  background: var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
 }
 
 ::selection {
-  background: var(--violet);
-  color: var(--on-accent);
+  background: var(--accent-solid);
+  color: #0b0e0a;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 html > body[data-scroll-locked] {
@@ -53,57 +58,113 @@ html > body[data-scroll-locked] {
   --removed-body-scroll-bar-size: 0 !important;
 }
 
-/* ============================================================
-   Docs reading view — match the design-system docs surface.
-   Fumadocs wraps article content in `.prose`.
-   ============================================================ */
-.prose :is(h1, h2, h3, h4, h5, h6) {
-  font-family: var(--font-display);
-  letter-spacing: var(--tracking-tight);
+.prose :is(h1, h2, h3, h4) {
+  font-family: var(--font-sans);
+  letter-spacing: -0.021em;
+  font-weight: 600;
 }
 
-/* sidebar / nav section labels speak the OS mono voice */
-#nd-sidebar [data-radix-collection-item] > p,
-#nd-sidebar p[data-active='false'],
-.fd-sidebar-group-label {
-  font-family: var(--font-mono);
+.prose h1 {
+  letter-spacing: -0.032em;
 }
 
-/* inline code — violet on a faint wash, like the design */
-.prose
-  :not(pre)
-  > code {
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-  color: var(--violet-bright);
-  background: var(--violet-wash);
-  border: 1px solid var(--violet-line);
-  padding: 1px 5px;
-  border-radius: var(--radius-xs);
+.prose :is(h1, h2, h3, h4) {
+  color: var(--ink);
 }
 
-/* tables — hairline borders, mono uppercase headers */
-.prose table {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  overflow: hidden;
+.prose h2 {
+  padding-top: 0.6em;
+  border-top: 1px solid var(--line-faint);
 }
-.prose thead th {
+
+#nd-sidebar .fd-sidebar-group-label,
+#nd-sidebar [data-radix-collection-item] > p {
   font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--ink-faint);
-  background: var(--surface-1);
 }
+
+#nd-sidebar a {
+  border-radius: var(--r-sm);
+}
+
+#nd-sidebar a[data-active='true'] {
+  color: var(--accent-ink);
+  background: var(--accent-wash);
+  box-shadow: inset 2px 0 0 var(--accent);
+  font-weight: 550;
+}
+
+.prose :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.87em;
+  color: var(--accent-ink);
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-line);
+  padding: 0.1em 0.35em;
+  border-radius: var(--r-sm);
+}
+
+.prose :is(h1, h2, h3, h4) :not(pre) > code {
+  font-size: 0.9em;
+}
+
+.prose pre,
+figure[data-rehype-pretty-code-figure] pre {
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+}
+
+.prose table {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  font-size: 0.9rem;
+}
+
+/* Not --ink-faint: on the tinted header fill that lands at 4.14:1. */
+.prose thead th {
+  font-family: var(--font-mono);
+  font-size: 0.69rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8b9683;
+  background: var(--surface-2);
+}
+
 .prose tbody td {
   color: var(--ink-dim);
 }
 
-/* sidebar active link gets the violet rail from docs.html */
-#nd-sidebar a[data-active='true'] {
-  color: var(--violet-bright);
-  background: var(--violet-wash);
-  box-shadow: inset 2px 0 0 var(--violet);
-  font-weight: 600;
+.prose tbody tr:hover {
+  background: var(--accent-wash);
+}
+
+/* Fumadocs wraps heading text in a self-link; excluded so h2 stays ink. */
+.prose a:not(.not-prose a, :is(h1, h2, h3, h4, h5, h6) a) {
+  color: var(--accent-ink);
+  text-decoration-color: var(--accent-line);
+  text-underline-offset: 0.18em;
+}
+
+.prose a:not(.not-prose a, :is(h1, h2, h3, h4, h5, h6) a):hover {
+  text-decoration-color: var(--accent);
+}
+
+.prose :is(h1, h2, h3, h4, h5, h6) a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.prose :is(img, video),
+.prose blockquote {
+  border-radius: var(--r-md);
+}
+
+.prose blockquote {
+  border-left: 2px solid var(--accent-line);
+  color: var(--ink-dim);
 }

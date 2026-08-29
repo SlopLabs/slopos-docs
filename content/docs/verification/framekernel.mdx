@@ -26,7 +26,7 @@ machine interfaces, while the rest of the kernel is written against safe APIs.
 `#![forbid(unsafe_code)]` does not see `unsafe` that arrives from a macro
 defined in another crate. rustc cancels any `unsafe_code` diagnostic whose
 primary span is inside an external macro expansion, and the call site
-contains no keyword for a source scan to find either — so both of the
+contains no keyword for a source scan to find either, so both of the
 obvious mechanisms are blind to the same construct, and `--force-warn` does
 not change it.
 
