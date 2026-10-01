@@ -1,39 +1,331 @@
 ---
 title: "Filesystem"
-description: "VFS, ext2, devfs, ramfs, pipes, and fd operations"
+description: "What lives where on a running SlopOS system, why the system files are read-only, and how disks get mounted."
 ---
 
-The filesystem stack provides a VFS layer, an ext2 root image, in-memory files,
-device nodes, pipes, and file descriptor operations.
+import { FsLayout } from '@/components/diagrams/fs-layout';
 
-## Layers
+On a running SlopOS system, the files you create live on a writable ext4 disk
+and survive reboots. The operating system's own programs and libraries
+(`/bin`, `/lib` and a few other directories) don't: they come from a sealed,
+read-only image that was installed together with the kernel, and nothing,
+not even a privileged program, can change them while the system runs. `/tmp`
+lives in memory and `/dev` lists the machine's devices. You can mount more
+ext4 disks wherever you like outside the system directories, and the disk
+format is ordinary ext4, so Linux can read SlopOS disks and repair them with
+its standard tools.
 
-| Layer | Responsibility |
-|-------|----------------|
-| VFS | Mounts, path walking, object traits, common operations |
-| ext2 | Persistent root filesystem image for QEMU boots |
-| ramfs | In-memory files |
-| devfs | Device namespace |
-| File descriptors | Open-file descriptions, fd tables, fd operations |
-| Pipes | Kernel pipe buffers and pipe file ops |
-| Block devices | Backing storage abstraction for filesystems |
+None of the ideas here are new. The disk format is Linux's ext4, and the
+read-only system image follows systems that ship the operating system as a
+read-only partition, so that it is replaced as a whole instead of edited
+file by file. The difference in SlopOS is that the kernel enforces the
+split itself, where other systems leave it to a startup script.
 
-## Boot image
+## What lives where
 
-The build creates userland binaries first, then packs the root filesystem image.
-The normal image contains init, shell, terminal, compositor, roulette, file
-manager, image viewer, system monitor, and network tools. The test image adds
-userland test binaries.
+<FsLayout />
 
-## File descriptor surface
+| Path | Comes from | Survives a reboot? |
+|------|------------|--------------------|
+| `/` | The root disk (or memory, see [below](#how-the-root-is-chosen)) | Yes, on a disk |
+| `/bin`, `/sbin`, `/lib`, `/usr/bin`, `/usr/share`, `/etc/ssl` | The base image in the boot slot | Replaced only by installing a new system |
+| `/etc`, `/var`, `/home`, `/src`, `/usr/local` | The root disk | Yes |
+| `/tmp`, `/dev/shm` | Memory | No |
+| `/dev` | The kernel's list of devices | Rebuilt at every boot |
+| `/mnt` | The root disk, when it could only be mounted read-only and SlopOS booted from memory instead | |
 
-File descriptors cover regular files, device-backed files, pipes, TTYs, sockets,
-pidfds, signalfds, SlopRing fds, and memfd-backed shared memory. Polling is
-centralized through file operations, which lets sockets, process exits, signals,
-and ring harvest share the same wait protocol.
+A *mount* is how one filesystem appears inside another: the kernel keeps a
+table saying "below this directory, ask that filesystem instead". All of the
+rows above are mounts, set up by the kernel during boot.
 
-## Known limits
+## Why the system files are read-only
 
-The current persistent storage path is QEMU/VirtIO/ext2-oriented. Real hardware
-boot, journaling filesystems, package management, and a broader POSIX filesystem
-surface are not current public guarantees.
+A machine's state falls into two kinds. One is the operating system itself:
+its programs, its libraries, the certificates it trusts. The other is
+everything the machine did since it was installed: your configuration, your
+files, your builds. On most systems both kinds live on one writable disk, and
+that causes familiar problems. An update that dies halfway leaves a mix of
+old and new programs that may not work together. A program with enough
+privilege, or a bug in one, can overwrite a system binary. And it is hard to
+say what "this version of the system" even is, because every machine's copy
+has drifted.
+
+SlopOS keeps the two apart. Each *boot slot* on the disk's boot partition
+holds a kernel and a matching *base image*: an archive of the system's
+programs and libraries. The boot loader loads both into memory, and the
+kernel serves the base directories straight out of that archive. Nothing in
+them can be written, renamed or deleted, nothing can be mounted on top of
+them, and they
+can't be unmounted. The directories that lead to them (`/usr`, `/etc`) can't
+be renamed or removed either, so no one can move `/usr/bin` aside and put a
+different one in its place.
+
+So updating the system means installing a new kernel and base into the other
+slot and rebooting into it. The whole system changes at once, and the old
+slot is still there if the new one doesn't boot. Your files on the disk are
+untouched. [Installing a system](/docs/self-hosting/installing-a-system)
+covers slots and updates.
+
+This is also what makes program permissions safe. SlopOS can grant extra
+rights to a program at a specific path (see
+[Permissions](/docs/architecture/authority)), and that only means something
+if no one can swap in a different program at that path.
+
+## How the root is chosen
+
+When the kernel starts, it has to decide what `/` is. There are two
+candidates: the first disk it found, or a small filesystem in memory unpacked
+from the boot image (an *initramfs*, as Linux calls it). By default:
+
+1. If the first disk mounts read-write, it becomes `/`. This is the normal
+   case on the development machine.
+2. If it can only be mounted read-only (it was built that way, or its journal
+   couldn't be replayed after a crash), SlopOS boots from memory instead and
+   puts the disk at `/mnt`, so you can still read it.
+3. If there is no disk, SlopOS boots from memory. The live ISO always does.
+
+Either way, the base directories are then mounted from the base image over
+whatever `/` turned out to be. A root that has a symbolic link where a base
+directory should be fails to boot rather than getting a base in the wrong
+place.
+
+A root in memory works like any other, but nothing written to it survives a
+reboot.
+
+You can change this choice, insist on the disk, name a specific partition,
+and mount more disks at boot with the `root=` and `mount=` options listed in
+[Boot options](/docs/abi/boot-options). A system installed on a disk with
+its own root partition boots that way: each slot's boot entry names the root
+partition with `root=PARTUUID=...`. And `mount=LABEL=home:/home` mounts the
+volume labelled `home` at `/home` once the root is up. A mount that fails at
+boot is logged and the boot continues.
+
+## Mounting other disks
+
+A program holding the `Mount` [permission](/docs/architecture/authority) can
+mount and unmount ext4 volumes with the usual `mount` and `umount2` system
+calls, naming the disk in any of the ways the
+[Disks](/docs/architecture/storage#disk-and-partition-names) page lists:
+
+```c
+mount("LABEL=home", "/home", "ext4", 0, NULL);
+mount("/dev/nvme0n1p3", "/media/data", "ext4", MS_RDONLY, NULL);
+```
+
+A few rules are worth knowing:
+
+- **Only ext4 disks and RAM filesystems can be mounted.** The type `ext2`,
+  `ext3` or `ext4` mounts a disk (one driver serves all three); `ramfs` gives
+  you a fresh, empty RAM filesystem. Anything else fails with `ENODEV`.
+  Mount options other than `MS_RDONLY` aren't supported.
+- **Some places are off limits.** You can't mount over `/` or over something
+  already mounted (`EBUSY`), inside a base directory (`EPERM`), or at a path
+  a program permission is tied to (`EPERM`).
+- **One writer per disk.** A read-write mount claims the disk so nothing
+  else can write to it; read-only mounts can share. The
+  [Disks](/docs/architecture/storage#why-two-things-cant-write-one-disk) page
+  explains claims.
+- **Unmounting a busy disk** fails with `EBUSY` unless you pass
+  `MNT_DETACH`, in which case the name disappears at once and open files keep
+  working until they are closed. When the last mount of a disk goes away, the
+  kernel writes everything out, marks the disk clean and releases it, so it
+  can be mounted again.
+
+There is no FAT driver in the kernel. The boot slots live on a FAT32 boot
+partition, which the boot manager reads and writes itself, from user space.
+
+## The disk format
+
+Every disk image the build produces uses one fixed set of ext4 features,
+written down in one file (`ext4-core/profile`). The host's image scripts pass
+that file to `mke2fs`, and the kernel is held to writing exactly those
+features. In plain terms, that profile means:
+
+- **4 KiB blocks**, which work on drives with either 512-byte or 4 KiB
+  sectors.
+- **Extents.** A large file is described as a few runs of consecutive blocks
+  instead of a list of every block.
+- **Checksums on all metadata**, so damage is noticed rather than trusted.
+- **Nanosecond timestamps.**
+- **A journal**, so a crash can't leave the disk inconsistent.
+
+Because there is nothing SlopOS-specific in the format, the standard Linux
+tools (`e2fsck`, `debugfs`, `tune2fs`) work on SlopOS disks, and a Linux
+system can mount one. The kernel also reads older ext2 and ext3 disks and
+ext4 disks made with other settings, as long as they don't use a feature it
+can't handle safely; those it mounts read-only or refuses.
+
+## What happens after a crash
+
+A journal on every disk means a crash or power loss can't leave the
+filesystem inconsistent, and the disk is repaired by itself at the next
+boot. [Crash recovery](/docs/architecture/crash-recovery) explains how the
+journal works, what programs can rely on after a crash, and what happens if
+the journal itself is damaged.
+
+## When a disk mounts read-only
+
+Sometimes a disk mounts but refuses writes, and writes fail with `EROFS`.
+The boot log says which reason applies:
+
+| Reason | What to do |
+|--------|------------|
+| It was mounted with `MS_RDONLY` | Mount it without |
+| It carries a verity trailer that makes it read-only (see [below](#checksummed-disk-images)) | Rebuild the image without one |
+| It uses an ext4 feature SlopOS can read but not write | Nothing in SlopOS |
+| Its journal couldn't be replayed, or it has no journal and wasn't shut down cleanly | Run `e2fsck` on the host |
+| The disk records earlier errors | Run `e2fsck` on the host |
+| SlopOS found damage while running | It stays read-only until reboot; then run `e2fsck` |
+
+## Sealed files
+
+A file can be *sealed*. A sealed file can't be written, truncated, deleted,
+renamed, replaced by a rename, or have its permissions changed. Every file in
+the base image is sealed, and you can seal files on a disk too.
+
+On ext4 the seal is the standard *immutable* flag, the `i` that Linux's
+`lsattr` shows and `chattr +i` sets, so it survives moving the disk to Linux
+and back. Setting or clearing it needs the `Seal` permission, which only
+system programs have. A file that another system marked append-only is
+treated as sealed, which is stricter than Linux.
+
+## Checksummed disk images
+
+A disk image can carry an extra block of checksums at its end (a *verity
+trailer*) so the kernel can tell when a block has changed since the image was
+built. It catches accidental corruption, not a deliberate attacker. One
+variant makes the whole disk read-only, the other allows writes and stops
+checking the blocks that were written. The boot option `verity=require`
+refuses to boot from a root disk that has no valid trailer.
+
+## The development machine's disk
+
+On the [development machine](/docs/self-hosting/development-machine), the
+root disk is the file `fs/assets/ext2-persist.img` on the host. (The image
+files keep their old `ext2` names; they are ext4.) The build never deletes
+it. If the image is damaged, wasn't shut down cleanly, or was built with
+different settings, the build stops and prints the command that fixes it.
+`just boot` is the exception: it boots an image that was closed mid-write
+without touching it, so the kernel replays its journal. To start from a
+fresh root:
+
+```sh
+just reset root
+```
+
+That is the only command that deletes the image. Other images under
+`fs/assets/` (the test disk, the verified read-only disk, the self-hosting
+root) are rebuilt by the build as needed.
+
+## What this means for you
+
+- Put your files under `/home`, `/etc`, `/var`, `/src` or `/usr/local`.
+  Anything you put in `/tmp` is gone at reboot.
+- Install your own programs and tools under `/usr/local`. You can't add to
+  `/bin` except by building a new base image.
+- Use `fsync` for data that matters, and the write-temp-then-rename pattern
+  from [Crash recovery](/docs/architecture/crash-recovery#what-programs-can-rely-on)
+  for files you replace.
+- Format, check and resize disks on the host with e2fsprogs. SlopOS has no
+  `mkfs` or `fsck` of its own.
+- Every file is owned by user 0; SlopOS has a single user.
+
+## How it is tested
+
+The ext4 format code is tested on the host (`just test-host`) against images
+that `mke2fs` made, with `e2fsck` checking them afterwards. Kernel tests
+cover mounting, the protections on base directories, seals, and remounting.
+`just test-persist` writes and `fsync`s a file on one boot and reads it back
+on the next, and `just check-fs-image` runs `e2fsck` over a disk that a boot
+wrote to.
+
+## For contributors
+
+- **Layers.** The VFS (`fs/src/vfs`) owns the mount table and walks paths
+  one component at a time, consulting the mount table at each step. The ext4
+  driver lives in `fs/src/ext2` (the name predates ext4); the on-disk format
+  as pure data, with no I/O and no `unsafe`, is in `ext4-core`.
+- **Mount pool and locks.** Disk mounts come from a small fixed pool of
+  driver instances, each with its own lock and its own lock class. A path
+  walk that crosses from one mount into another holds the first lock while
+  taking the second, which is why the classes must stay separate.
+- **Caches validate by generation.** Per-mount name and attribute caches
+  (`fs/src/ext2_dcache.rs`) answer warm lookups without the mount lock.
+  The driver bumps generation counters under the mount lock whenever an inode
+  record is rewritten, a directory entry is added or removed, or an inode is
+  allocated or freed; an entry is answered only while its counters are
+  unchanged. Attach and detach bump every counter, so a pool slot handed a
+  new image can't answer from the old one. Negative entries are cached; `.`
+  and `..` never are.
+- **Writeback passes.** Each mount has at most one open writeback pass,
+  driven in bounded chunks by `sync`, the flusher thread or a writer short of
+  journal room, with the mount lock released between chunks. The pass
+  records where it started, so operations between chunks fall wholly outside
+  it and the data, journal, home order holds across the gaps. Mutations are
+  serialised per mount; there is no per-inode locking.
+- **Flusher gate.** The flusher writes dirty data with the mount lock
+  released, behind a per-mount gate that every other request to the device
+  waits on, so no read sees a home block the cache already counts as
+  written.
+- **Journal.** jbd2 format, `data=ordered` only. The write ordering a change
+  must keep is the one described in
+  [Crash recovery](/docs/architecture/crash-recovery#how-the-journal-prevents-it).
+  A failed operation rewinds its records, and a freed block isn't
+  reallocated until the free is durable. A volume built without a journal
+  (`FS_JOURNAL_SIZE=0`) mounts read-only after an unclean shutdown.
+- **Orphans.** A file unlinked while open goes on the on-disk orphan list;
+  the last close marks it releasable and the flusher frees it, because the
+  close may run where sleeping on I/O isn't allowed.
+- **Base image.** basefs (`fs/src/basefs.rs`) indexes the boot module's
+  `newc` cpio archive at boot and serves file bytes as slices of it, with no
+  copy. The base directories are `slopos_abi::fs::BASE_DIRS`; their mounts
+  are pinned, and the directories above them are held by identity (`EBUSY`
+  on rename or remove).
+- **Compatibility rules.** Block-mapped files keep their map; new files get
+  extents. Directories are linear: an htree index is read and dropped on the
+  first change. Block numbers are 32-bit, so volumes past 16 TiB are
+  refused. Extended attributes are read but never written.
+- **Verity.** `scripts/gen_verity.py` appends a CRC-32 per 4 KiB block. v1
+  (`VERITY=on`) write-protects the device; v2 (`VERITY=rw`) keeps a per-block
+  attested bitmap that writes clear. A present but invalid trailer refuses
+  the mount. CRC-32 detects corruption; it does not authenticate.
+- **Disk quota.** Block allocations are charged to the allocating process's
+  [resource account](/docs/architecture/resource-accounting) in memory, not
+  persisted, and refunded to the account that was charged.
+- **Known gaps.** Between a path walk resolving an inode and `open`
+  installing its reference, a concurrent `unlink` can still free the inode.
+  One delete is one transaction, which bounds the largest file one delete can
+  free by the journal's size.
+
+## Further reading
+
+- [*Files and Directories*](https://pages.cs.wisc.edu/~remzi/OSTEP/file-intro.pdf),
+  chapter 39 of *Operating Systems: Three Easy Pieces*. Start here: files,
+  directories, links, `fsync`, and what mounting is, from a program's point of
+  view.
+- [*File System Implementation*](https://pages.cs.wisc.edu/~remzi/OSTEP/file-implementation.pdf),
+  chapter 40 of the same book. How a filesystem lays out records, directories
+  and free-space maps on a disk. ext4 is a grown-up version of the design it
+  builds.
+- [The ext4 documentation](https://docs.kernel.org/filesystems/ext4/index.html)
+  in the Linux kernel. The on-disk format SlopOS follows, feature by feature.
+- [`mount(2)`](https://man7.org/linux/man-pages/man2/mount.2.html) and
+  [`chattr(1)`](https://man7.org/linux/man-pages/man1/chattr.1.html) on
+  man7.org. The Linux interfaces SlopOS's mount and seal follow; SlopOS
+  supports a subset of each.
+- [dm-verity](https://docs.kernel.org/admin-guide/device-mapper/verity.html)
+  in the Linux kernel. The full version of the idea behind verity trailers,
+  with cryptographic hashes where SlopOS uses CRC-32.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `fs/src/vfs/` | Mount table, path walks, root and base mounts at boot |
+| `fs/src/ext2/`, `fs/src/ext2_vfs.rs` | The ext4 driver, block cache, journal and writeback |
+| `ext4-core/` | The on-disk format and the `profile` file, host-tested |
+| `fs/src/basefs.rs` | The read-only base image |
+| `fs/src/ramfs/`, `fs/src/devfs/` | RAM filesystems and `/dev` |
+| `fs/src/verity.rs`, `scripts/gen_verity.py` | Verity trailers |
+| `boot/src/boot_services.rs` | Choosing the root at boot |
+| `scripts/build_fs_image.sh` | Building disk images on the host |

@@ -1,46 +1,319 @@
 ---
-title: "Adding A Syscall"
-description: "How to extend the SlopOS syscall ABI"
+title: "Add a syscall"
+description: "Add a new system call to SlopOS, from its number to the C library function that programs call."
 ---
 
-Syscalls are ABI. Treat every number and struct layout as durable once merged.
+By the end of this page you will have added a system call: given it a number,
+written the kernel code that runs when a program makes it, registered it,
+given programs a C function that makes it, and tested both sides. We'll
+reconstruct a real, small one that landed recently, `rt_sigpending`, so every
+snippet below is code that is in the tree today.
 
-## Checklist
+A system call is a program asking the kernel to do something on its behalf.
+[System calls](/docs/architecture/syscalls) explains how one travels from a
+program into the kernel and back; this guide only covers what you change.
 
-1. Add the next syscall constant in the ABI source.
-2. Keep the `SYSCALL_` prefix and group it with related syscalls.
-3. Confirm it is within the dispatch table size defined by the ABI.
-4. Add ABI structs or constants in the ABI crate when arguments cross the boundary.
-5. Implement the handler in the syscall layer.
-6. Use `define_syscall!` and typed arguments where possible.
-7. Register the handler in the central dispatch table.
-8. Add user wrappers in the appropriate userland runtime or libc layer.
-9. Add tests for dispatch registration, success, and at least one error path.
-10. Update the public ABI docs if the syscall is stable.
+## What you need first
 
-## Handler Shape
+- A working build. [Quickstart](/docs/getting-started/quickstart) gets you
+  there, and `just test` should pass before you start.
+- The behaviour you want, written down. If Linux has the call, its man page
+  is the specification: SlopOS numbers its calls as Linux on x86-64 does, and
+  a call at a Linux number must behave like Linux's. For our example that is
+  [`rt_sigpending(2)`](https://man7.org/linux/man-pages/man2/rt_sigpending.2.html):
+  it tells the caller which signals are waiting to be delivered but are
+  currently blocked.
 
-Handlers should parse user pointers through typed wrappers such as `UserPtr`,
-`UserSlice`, or byte wrappers. Do not manually trust raw register values.
+A call's number and the layout of anything it passes are permanent once they
+are merged, because compiled programs depend on them. Settle them before you
+write the handler.
 
-Keep ownership changes transactional. If a syscall installs an fd, task, buffer,
-or mapping, handle cleanup on every error path.
+## 1. Choose the number
 
-## Tests
+If Linux has the call, use Linux's number. SlopOS keeps a copy of Linux's
+table, so you can look it up:
 
-Useful test targets:
+```bash
+grep -w rt_sigpending scripts/gates/syscall/linux-x86_64.tbl
+```
 
-| Area | Test target |
-|------|-----------|
-| Dispatch and syscall behavior | Kernel syscall tests |
-| Userland ABI wrapper | Userland test binaries |
-| libc wrapper | libc unit tests |
-| Runtime wrapper | Runtime tests or userland integration tests |
+```
+127 rt_sigpending
+```
 
-For pollable resources, add a readiness test and a blocking/wakeup test. For
-memory or user-copy syscalls, add invalid pointer and boundary tests.
+If Linux has no such call, the call goes in SlopOS's private range instead,
+at the next free slot after `SYSCALL_PRIVATE_BASE`. Don't put a SlopOS
+variant on a Linux number because the real thing is hard: a call SlopOS
+can't match yet stays unimplemented at its Linux number.
 
-## Docs
+## 2. Add the constant
 
-Stable syscalls should update [Syscall Table](/docs/abi/syscalls). If the syscall
-changes windowing, SlopRing, KTAP, or other structured ABI, update that page too.
+Numbers live in `abi/src/syscall/numbers.rs`, the crate that both the kernel
+and programs build against. Add the constant with a comment that gives its C
+signature and anything that differs from Linux:
+
+```rust
+/// `rt_sigpending(set: *mut SigSet, sigsetsize)` — the caller's blocked
+/// pending signals, its own and its process's; `sigsetsize` must be 8.
+pub const SYSCALL_RT_SIGPENDING: u64 = 127;
+```
+
+Check it against Linux's table:
+
+```bash
+scripts/check_syscall_abi.sh
+```
+
+```
+check_syscall_abi: OK — every Linux-numbered constant matches Linux x86-64's
+check_syscall_abi: own allocation, and the private range is contiguous
+```
+
+A typo in either the name or the number fails here and names both sides:
+`number 127 belongs to Linux syscall rt_sigpending, but … puts … there`. If
+your call is private and its name is also a Linux call's name, the gate asks
+you to explain why in `scripts/gates/syscall/private-allowlist.txt`.
+
+If the call passes a structure between the program and the kernel, define it
+in the same `abi` crate with `#[repr(C)]` and compile-time checks on its size
+and field offsets. For a Linux call, the layout is Linux's. `rt_sigpending`
+only passes a 64-bit signal set, which already existed.
+
+## 3. Write the handler
+
+The handler is the kernel function that runs when a program makes the call.
+Signal calls live in `core/src/syscall/signal.rs`; put yours in the module
+for its family. This is the whole of `rt_sigpending`:
+
+```rust
+define_syscall!(syscall_rt_sigpending
+    (ctx, set_ptr: UserPtr<SigSet>, sigsetsize: u64)
+    cap(NoneSelf)
+    -> Result<(), Errno>
+{
+    if sigsetsize != core::mem::size_of::<SigSet>() as u64 {
+        return Err(Errno::EINVAL);
+    }
+    let task_ref = ctx.task();
+    let pending = task_ref.signal_pending() & task_ref.signal_blocked();
+    copy_to_user(set_ptr.inner(), &pending).map_err(|_| Errno::EFAULT)
+});
+```
+
+Three things in it are decisions you make for every call.
+
+**The arguments are typed.** `set_ptr` arrives in a register as a plain
+number, but declaring it `UserPtr<SigSet>` says it is an address in the
+calling program's memory. The kernel never reads or writes program memory
+directly; it copies through functions like `copy_to_user`, which return an
+error instead of crashing when the program passed a bad address. The handler
+turns that error into `EFAULT`, which is what Linux returns.
+
+**`cap(...)` says who may make the call.** It is required. `NoneSelf` means
+the call only affects the caller, so any program may make it. Choose the
+narrowest class that is true: `NoneFd` for a call on a file the caller
+already has open, `NoneRelation` when the handler itself checks that the
+caller may act on another process. Anything else (`Power`, `Mount`,
+`SysInspect` and so on) is a permission a program has to be given.
+[Permissions](/docs/architecture/authority) lists them.
+
+**Errors are Linux's.** Linux answers a wrong `sigsetsize` with `EINVAL`, so
+SlopOS does too. If your call needs an error number that doesn't exist yet,
+add it to `abi/src/errno.rs` with Linux's value.
+
+If your call takes something (opens a file, maps memory, holds a buffer), it
+must give it back on every error path. If it waits, it must wait through the
+kernel's wait functions so that a signal or a kill can interrupt it.
+[Scheduling and waiting](/docs/architecture/scheduler-wait-protocol) explains
+how.
+
+## 4. Register it
+
+The kernel finds handlers through a table in `core/src/syscall/handlers.rs`.
+Import the handler, then add a row giving the number, the handler and the
+name programs know it by:
+
+```rust
+[SYSCALL_RT_SIGPENDING]     => syscall_rt_sigpending,     "rt_sigpending";
+```
+
+The same file keeps two counts that you must update by hand: the total number
+of registered calls (`SYSCALL_ENTRY_COUNT`), and how many calls use each
+permission class (`CAP_COUNTS`). Our example adds one call in the `NoneSelf`
+class, so both go up by one.
+
+Build the kernel:
+
+```bash
+just build-kernel-only
+```
+
+If you forgot a count, the build stops with a compile-time error. The
+messages tell you which:
+
+- `a capability's entry-point count moved; re-record it in CAP_COUNTS and justify the growth in the commit message`
+- `the classification must cover every registered entry point` (the total is wrong)
+
+The counts are deliberately manual. Adding a call that needs a permission
+widens what privileged programs can do, and the edit to `CAP_COUNTS` puts
+that in front of a reviewer. Say in your commit message why the call needs
+the class you gave it.
+
+## 5. Give programs a C function
+
+Programs reach the kernel through slibc, SlopOS's C library, which is also
+what Rust's standard library uses on SlopOS. Four edits:
+
+1. Declare the raw call on the `Pal` trait in `slibc/src/pal/mod.rs`:
+
+   ```rust
+   fn rt_sigpending(set: *mut u64, sigsetsize: usize) -> Result<(), Errno>;
+   ```
+
+2. Implement it in `slibc/src/pal/slopos.rs`, which makes the actual call and
+   turns a negative return into an error:
+
+   ```rust
+   fn rt_sigpending(set: *mut u64, sigsetsize: usize) -> Result<(), Errno> {
+       let ret = unsafe { syscall2(SYSCALL_RT_SIGPENDING, set as u64, sigsetsize as u64) };
+       to_result(ret)?;
+       Ok(())
+   }
+   ```
+
+3. Write the C function on top of it. POSIX's `sigpending` lives in
+   `slibc/src/signal/mod.rs`:
+
+   ```rust
+   #[unsafe(no_mangle)]
+   pub unsafe extern "C" fn sigpending(set: *mut sigset_t) -> c_int {
+       if set.is_null() {
+           errno_set(EINVAL.raw());
+           return -1;
+       }
+       let mut pending = 0u64;
+       if Sys::rt_sigpending(&raw mut pending, SIGSET_SIZE).is_err() {
+           return -1;
+       }
+       *set = sigset_t::from_kernel_mask(pending);
+       0
+   }
+   ```
+
+4. Tell the header generator which header declares it: add `"sigpending"` to
+   the `signal.h` list in `slibc/build/decls.rs`. The files in
+   `slibc/include/` are generated from that list, so don't edit them by hand.
+   The build fails if a function has no header, or a header names something
+   the library doesn't define.
+
+`just build` rebuilds slibc and the programs, and the new prototype appears
+in `slibc/include/signal.h`.
+
+## 6. Test it
+
+Test the handler inside the kernel, and the C function from a real program.
+
+**In the kernel.** The example's test sits beside the other signal tests in
+`core/src/syscall/tests_build_floor_signal.rs`. It sets up two threads with
+different blocked signals, calls the handler as each, and checks the answer,
+including that a wrong `sigsetsize` gives `EINVAL`. Condensed:
+
+```rust
+pub fn test_sigpending_reports_the_blocked_pending_signals() -> TestResult {
+    // ... two threads; leave signals pending, some blocked, some not ...
+    let leaders = pending_of(leader);
+    let short = call_as(syscall_rt_sigpending, leader, [set_addr, 4, 0, 0]);
+    assert_eq_test!(leaders, (0, Some(own | shared)), "the leader's blocked pending set");
+    assert_eq_test!(short, slopos_abi::Errno::EINVAL.as_u64(),
+        "a sigsetsize other than 8 must be EINVAL");
+    pass!()
+}
+
+slopos_testing::stest!(
+    name = test_sigpending_reports_the_blocked_pending_signals,
+    suite = syscall_signal_build_floor
+);
+```
+
+Cover success, every error the man page lists, and a bad pointer. A test
+that calls the handler function directly skips the permission check, so if
+your call needs a permission, also test it through the dispatcher.
+
+**From a program.** `userland/libctest/probe.c` is a C program that checks
+slibc's functions as a C program sees them, and the `libc_abi_test` binary
+runs it. The example added a case that blocks `SIGUSR2`, raises it, and
+expects `sigpending` to report it:
+
+```c
+if (sigprocmask(SIG_BLOCK, &set, &old) != 0 || raise(SIGUSR2) != 0) {
+    return fail("could not leave SIGUSR2 pending");
+}
+sigemptyset(&pending);
+if (sigpending(&pending) != 0 || !sigismember(&pending, SIGUSR2)) {
+    sigprocmask(SIG_SETMASK, &old, NULL);
+    return fail("sigpending did not report the blocked pending signal");
+}
+```
+
+Run only these tests:
+
+```bash
+just test 'slopos_core::syscall::tests_build_floor_signal::*'
+just test '*ext2_aaa*,*libc_abi*'
+```
+
+The second filter includes `*ext2_aaa*` because the test that sets up the
+test filesystem must run before any test that writes files. When they pass,
+the raw log has a line like this for the kernel test:
+
+```
+ok 392 - slopos_core::syscall::tests_build_floor_signal::test_sigpending_reports_the_blocked_pending_signals # time_ms=11
+```
+
+[Write tests](/docs/development/adding-tests) covers filters, failures and
+the test harness.
+
+## 7. Check the whole change
+
+Run the full suite and the gates CI will run:
+
+```bash
+just test
+just build
+just check-framekernel-gates
+```
+
+`check-framekernel-gates` includes the number check from step 2 and one more
+that matters for a new call: it reads the compiled kernel and follows every
+function call from every handler. If yours can reach a function that powers
+off or reboots the machine, the gate fails unless the call is in the `Power`
+class or the reachability list in `scripts/gates/authority/` records why. To
+run only that check:
+
+```bash
+scripts/check_authority_reachability.sh --variant dev builddir/kernel-dev.elf
+```
+
+Finally, add the call to [System call ABI](/docs/abi/syscalls).
+
+## What usually goes wrong
+
+- **The build fails on `CAP_COUNTS`.** You added a row but didn't update the
+  counts, or gave the call a different class than you counted. See step 4.
+- **A test passes but a program gets `EFAULT`.** The handler read program
+  memory without the typed wrappers, or the program passed a structure whose
+  layout differs from the one in `abi`.
+- **The C function compiles in slibc but programs can't find it.** It is
+  missing from `slibc/build/decls.rs`, so no header declares it.
+- **A blocking call hangs a killed program.** It waited some other way than
+  through the kernel's wait functions. The architecture page on
+  [scheduling and waiting](/docs/architecture/scheduler-wait-protocol) shows
+  the pattern.
+- **A blocking call returns the wrong error after a signal.** A call with a
+  timeout that it doesn't write back returns `EINTR` when a signal interrupts
+  it, as on Linux.
+
+Read next: [System calls](/docs/architecture/syscalls) for how a call is
+dispatched and why permissions are attached to the table, and Linux's
+[*Adding a new system call*](https://docs.kernel.org/process/adding-syscalls.html),
+which covers the same decisions from the Linux side.

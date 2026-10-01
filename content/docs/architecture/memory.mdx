@@ -1,44 +1,228 @@
 ---
 title: "Memory"
-description: "Physical frames, VM spaces, process memory, and sharing"
+description: "How each program gets its own memory, how SlopOS fills it in only when it's used, and how the kernel manages its own."
 ---
 
-The memory system is split between trusted OSTD primitives and safe higher-level
-kernel policy.
+import { PageTranslation } from '@/components/diagrams/memory';
 
-## Layers
+Every program on SlopOS sees its own private memory, starting from the same
+addresses as every other program, and it can't read or damage anyone else's.
+Memory you ask for costs almost nothing until you use it, `fork` doesn't copy
+the parent's memory, and a hundred programs that load the same library share
+one copy of it in RAM. When the machine runs short, SlopOS usually refuses the
+request for memory rather than killing the program later; the exceptions are
+described on [Resource limits](/docs/architecture/resource-accounting).
 
-| Layer | Role |
-|-------|------|
-| Frame ownership | Ref-counted physical frame ownership and metadata |
-| User frames | Frames that can be mapped into user address spaces |
-| Page tables | Mapping, unmapping, and page-table walking |
-| VM spaces | Process address-space mutation |
-| Kernel heap | OSTD allocation surfaces for kernel data structures |
-| Process memory | Demand paging, copy-on-write fork, ELF loading, memfd, stack regions |
-| User buffers | Checked user access and pinned buffers for I/O and SlopRing |
+None of this was invented for SlopOS. It is *virtual memory*, the scheme every
+mainstream operating system has used for decades, and the x86-64 processor
+does most of the work. SlopOS behaves much like Linux here, and the
+[differences](#differences-from-linux) are listed below. If you know how page
+tables work, skip to [what SlopOS does with it](#what-slopos-does-with-it).
 
-## Key behaviors
+## Address spaces, pages and page tables
 
-- Anonymous process memory is mapped through `mmap`, `brk`, and demand paging.
-- Fork uses copy-on-write address spaces.
-- `memfd_create` and shared mappings back windowing buffers and IPC surfaces.
-- SlopRing fixed buffers are pinned once and referenced by later submissions.
-- Provided buffer rings let the kernel choose a receive buffer from a user-owned
-  buffer group.
+Each program gets its own *address space*: a large, private range of
+*virtual* addresses. When the program reads address `0x400000`, the processor
+translates that to some *physical* address in RAM, and another program's
+`0x400000` translates somewhere else. A program can only name addresses in its
+own space, so it has no way to reach anyone else's memory.
 
-## Framekernel constraints
+Translating every byte separately would need an enormous table, so memory is
+handled in fixed blocks of 4 KiB called *pages*. RAM is divided into blocks
+of the same size, which the kernel calls *frames*. For each program the
+kernel keeps a table (a *page table*) that says which frame backs each page
+and whether the program may read, write or run it. The processor consults
+this table on every access and keeps recent translations in a small cache
+(the *TLB*).
 
-Kernel code routes heap allocation through OSTD allocation wrappers. Large kernel
-objects should use OSTD in-place initialization so stack frames stay within the
-enforced budget.
+<PageTranslation />
 
-The load-bearing verified memory invariants are:
+When a program touches a page that has no entry, or writes a page it may only
+read, the processor stops it and hands control to the kernel. This is a *page
+fault*, and it isn't necessarily an error. The kernel checks what the program
+is allowed to have at that address. If the access is allowed, the kernel fills
+in the entry and the program carries on as if nothing happened; if not, the
+program gets `SIGSEGV`.
 
-| Invariant area | Proof status |
-|----------------|--------------|
-| Frame ref counts | Verus proof |
-| Slab slot lifetimes | Verus proof |
-| VM cursor map/unmap logic | Verus proof |
-| SlopRing cursor and layout logic | Verus proof |
-| Volatile user-frame accessors and weak-memory protocol | Audited and Miri-covered |
+## What SlopOS does with it
+
+### Memory is filled in when you first use it
+
+When a program calls `mmap` for a gigabyte of memory, or grows its heap with
+`brk`, SlopOS records the range as belonging to the program and creates no
+page table entries. The first time the program touches a page in the range,
+the fault handler takes a zeroed frame, maps it and returns, so pages the
+program never touches never cost a frame. This is called *demand paging*.
+
+Faulting one page at a time would be slow for a program that walks through a
+large buffer, so when it is safe the fault handler maps a few neighbouring
+pages at once (the stack excepted, which grows one page at a time). Idle
+processors also zero free frames ahead of time, and faults take those first.
+
+### How `fork` avoids copying memory
+
+`fork` creates a child that starts with an exact copy of its parent's memory.
+Copying all of it would be wasteful, because the child usually calls `exec`
+straight away and throws the copy out. So SlopOS gives the child page tables
+that point at the parent's frames and marks every private page read-only in
+both processes. When either one writes a page, the processor faults, and the
+kernel copies that one frame and gives the writer the copy with write
+permission. The other keeps the original. This is *copy-on-write*, and even
+`mprotect` won't make a shared copy-on-write page writable. To start a new
+program without copying an address space at all, SlopOS also has
+`posix_spawn` (see [Processes and signals](/docs/architecture/processes)).
+
+### Files mapped into memory are shared
+
+A program can map a file into its address space with `mmap` and read it as
+memory. SlopOS keeps one set of frames per file, so every process that maps
+the same file sees the same RAM. A shared mapping (`MAP_SHARED`) sees other
+processes' writes; a private one (`MAP_PRIVATE`) is copy-on-write, so the
+first write gives the process its own copy of that page.
+
+This matters most for libraries: every dynamically linked program maps the C
+library, and they all share one copy. When the last process unmaps a file,
+its frames stay cached, so a compiler that loads the same libraries on every
+run finds them already in RAM.
+
+### Sharing memory between programs with memfd
+
+To share memory that isn't a file, a program calls `memfd_create`, which
+returns a file descriptor for an anonymous block of memory. It sizes the block
+with `ftruncate`, maps it, and passes the descriptor to another process over a
+Unix socket, which maps the same frames. The desktop works this way: every
+window's pixels live in a memfd that the application draws into and the
+compositor reads (see
+[Desktop and windowing](/docs/architecture/userland-windowing)).
+
+A memfd can be sized only once, and its frames are allocated at that moment.
+They count against the limits of the process that sized it. If that process
+exits while another still holds the descriptor, the memory lives on and is
+counted against the system as a whole.
+
+### When RAM runs low
+
+SlopOS has no swap, so memory is never written out to disk to make room. When
+an allocation finds no free frame, the kernel first takes back memory it can
+drop without losing anything, in this order:
+
+1. frames from recently unmapped pages, once every processor has discarded
+   its cached translation for them;
+2. cached disk blocks whose contents are already on disk;
+3. cached files that no process has mapped.
+
+Changes that haven't reached the disk are never thrown away. Since most
+requests that can't be met are refused up front, running out here is rare;
+when it happens, the out-of-memory killer described on
+[Resource limits](/docs/architecture/resource-accounting) ends a process.
+
+### How the kernel reaches into a program's memory
+
+A system call like `read` writes into a buffer the program passed. The kernel
+checks that the whole buffer lies in the program's part of the address space
+(the rest is reserved for the kernel), then copies through the program's page
+tables, faulting in any page not yet backed. If the buffer is invalid, the
+call fails with `EFAULT`.
+
+## What programs can rely on
+
+- **Reserving memory is cheap.** A large mapping costs a little bookkeeping
+  until you touch it.
+- **If `mmap` or `brk` succeeds, the memory is there.** SlopOS checks that it
+  can back private memory when you ask for it, so a program isn't killed for
+  touching memory it was given. The exceptions (pages a `fork` child writes,
+  stack growth, and mappings made with `MAP_NORESERVE`) are explained on
+  [Resource limits](/docs/architecture/resource-accounting).
+- **New memory reads as zero.** Every frame a program receives was cleared.
+- **`fork` takes the same time whatever the parent's size.** Only page tables
+  are copied.
+- **Addresses differ between runs.** The stack and heap start at a random
+  offset each time a program starts, which makes memory-corruption bugs harder
+  to exploit.
+
+## Differences from Linux
+
+| | Linux (defaults) | SlopOS |
+|---|---|---|
+| Asking for more memory than can be backed | Usually allowed; a process is killed later if memory runs out | Refused with `ENOMEM` at `mmap`, `brk` or `exec` |
+| Swap | Optional | None |
+| Huge pages | Available | Not supported; every page is 4 KiB |
+| memfd | Can be resized and sealed | Sized once; no sealing |
+
+## How it is tested
+
+Kernel tests cover faults on fresh, file-backed and copy-on-write pages,
+`fork` followed by writes on both sides, memfd sharing, reclaim, and copies
+into buffers unmapped mid-call. Frame reference counts, the kernel's
+small-object allocator and page table changes have machine-checked proofs
+(see [Proofs](/docs/verification/verus-status)).
+
+## For contributors
+
+**One owner.** The trusted core (`slopos-ostd`) owns every frame, page table
+entry and heap allocation, and is the only code that may write one. The
+`slopos-mm` crate is safe Rust on top of it and holds the policy: demand
+paging, copy-on-write, memfd, reclaim, TLB flushing and the OOM killer. See
+[The trusted core](/docs/verification/ostd-trusted-core).
+
+**Frames.** Each frame's metadata slot (`MetaSlot`) is the only record of
+whether it is in use: `UNUSED` (owned by the allocator), `BUSY` (one thread
+building or tearing it down) or a live count of typed `Frame<M>` handles.
+Frames a program or device can write are `UFrame<M>`, which allow byte copies
+and atomic word access but never a Rust reference.
+
+**Kernel allocation.** Kernel code allocates only through
+`slopos_ostd::mm::heap` (`KBox`, `KVec`, `KArc` and friends). Every
+constructor is fallible, so running out of memory is an error the caller
+handles, not a panic. Build large objects in place with `KBox::try_init` or
+`PinBox::try_init`: a gate fails the build if any stack frame in the final
+ELF exceeds 2 KiB.
+
+**Address spaces.** A `VmSpace` changes only through a `CursorMut`, which only
+the per-process VM lock hands out, so there is one writer at a time. Entries
+are relaxed atomics because the processor sets accessed and dirty bits
+concurrently. `CursorMut::map` returns the frame in the error if the map is
+refused, so nothing frees it twice.
+
+**TLB flushing.** Unmapped frames wait in quarantine until every CPU that
+might cache the old translation has flushed it; mapping a previously empty
+page needs no shootdown, because x86 doesn't cache missing translations.
+There is no kernel page-table isolation (KPTI): the kernel half stays mapped,
+supervisor-only, in every process's table.
+
+**User access.** `copy_from_user` and `copy_to_user` keep preemption off
+while they hold the address-space reference, so a fault that needs the
+address space exclusively waits for them. Vectored I/O revalidates each
+segment as it goes, so a concurrent `munmap` becomes an error.
+
+**Reclaim.** Taking a reference on a parked file page set unparks it, so
+reclaim can't free a frame a fault is about to map. How regions are charged
+is on [Resource limits](/docs/architecture/resource-accounting#for-contributors).
+
+## Further reading
+
+- [*The Abstraction: Address Spaces*](https://pages.cs.wisc.edu/~remzi/OSTEP/vm-intro.pdf),
+  [*Paging: Introduction*](https://pages.cs.wisc.edu/~remzi/OSTEP/vm-paging.pdf)
+  and [*Paging: Faster Translations (TLBs)*](https://pages.cs.wisc.edu/~remzi/OSTEP/vm-tlbs.pdf),
+  chapters 13, 18 and 19 of *Operating Systems: Three Easy Pieces* by Remzi
+  and Andrea Arpaci-Dusseau. Start here: they build virtual memory up from
+  nothing, with worked examples.
+- [*Complete Virtual Memory Systems*](https://pages.cs.wisc.edu/~remzi/OSTEP/vm-complete.pdf),
+  chapter 23 of the same book. How VAX/VMS and Linux combine demand paging,
+  copy-on-write and file mapping.
+- [*Concepts overview*](https://docs.kernel.org/admin-guide/mm/concepts.html)
+  in the Linux kernel documentation. The same ideas in Linux's terms.
+- The man pages for [`mmap(2)`](https://man7.org/linux/man-pages/man2/mmap.2.html)
+  and [`memfd_create(2)`](https://man7.org/linux/man-pages/man2/memfd_create.2.html),
+  whose Linux semantics SlopOS follows.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `slopos-ostd/src/mm/` | Frame metadata, the kernel heap, page tables and address spaces |
+| `mm/src/page_fault.rs`, `mm/src/demand.rs` | The page fault handler and demand paging |
+| `mm/src/cow.rs` | Copy-on-write |
+| `mm/src/memfd.rs` | memfd |
+| `mm/src/tlb.rs` | TLB flushing |
+| `mm/src/user_copy.rs` | Copies between the kernel and a program's memory |

@@ -1,58 +1,217 @@
 ---
-title: "Unsafe And FFI Boundaries"
-description: "Where ABI and unsafe edges belong"
+title: "Unsafe code and FFI"
+description: "Where unsafe code, assembly entry points and linker symbols go in SlopOS, and how to add a new one without the build rejecting it."
 ---
 
-SlopOS is Rust-first. Raw unsafe, naked assembly, linker symbols, and C ABI
-edges should stay inside the trusted core or inside narrow bridge modules that
-exist only to connect assembly, bootloader, or linker contracts.
+By the end of this guide you'll know where `unsafe` code is allowed in the
+SlopOS kernel, how to add a new `unsafe` operation to the trusted core and use
+it from safe code, and how to handle the three kinds of foreign interface the
+kernel has: symbols defined by the linker, tables assembled by the linker, and
+functions called from assembly. [The framekernel](/docs/verification/framekernel)
+explains why the rules are what they are; this page is about following them.
 
-## Boundary categories
+## Before you start
 
-| Category | Belongs in |
-|----------|------------|
-| Raw CPU and architecture operations | OSTD architecture modules |
-| Naked assembly entry and return paths | OSTD assembly or explicit bridge modules |
-| Linker symbols and link-section declarations | OSTD, which owns every section label and every bracket symbol |
-| Bootloader protocol ABI | Boot protocol bridge |
-| Scheduler and interrupt assembly ABI | Dedicated boundary modules |
-| User pointer validation and raw copies | OSTD user-memory APIs |
-| MMIO, port I/O, DMA, and PCI raw access | OSTD device and memory APIs |
-
-The exact allowlist is enforced in the source repo. Public docs describe the
-policy; the scripts define the current mechanical rule.
-
-## Rules
-
-- Prefer normal Rust functions and typed callback structs.
-- Put raw extern declarations in OSTD, not behind a per-crate wrapper.
-- Register into a linker section with `registry_entry!`, naming a registry
-  rather than a section string. A crate that could name its own section
-  could name one the linker script's wildcards silently merge into an
-  existing output section, where no post-link check would see it.
-- Do not add ad hoc `extern "C"` blocks in feature code.
-- A C-ABI symbol whose only caller is Rust does not need C linkage. Route it
-  through a registration hook the way the task-exit and user-task-entry
-  paths do.
-
-Note that these rules are enforced against the *expansion*, not the source.
-A macro from another crate can inject `unsafe` past `#![forbid(unsafe_code)]`
-without a diagnostic, so following the rules by hand is not sufficient and
-not relied on.
-- If an ABI edge needs unsafe, keep the unsafe block small and give it a
-  concrete safety argument.
-- Extend unsafe-check exemptions only with a narrow, documented reason.
-
-## Checks
-
-Use targeted `rg` scans around the code you touched when reviewing a boundary
-change:
+You need a working build (see [Building and testing](/docs/getting-started/build-test-recipes)),
+because the gates that check this work read the compiled kernel:
 
 ```bash
-rg 'extern "C"' <changed-subsystem>
-rg 'unsafe' <changed-subsystem>
-just check-framekernel
+just build
+just check-framekernel-gates
 ```
 
-The first scans are review aids. The framekernel gate is the policy-enforcing
-check.
+## Where `unsafe` may live
+
+Only in `slopos-ostd` (OSTD). Every other crate the kernel links starts with
+`#![forbid(unsafe_code)]`, and the build also checks the macro expansion of
+each crate, so `unsafe` arriving through a macro is rejected too. The table
+shows where each kind of low-level code goes:
+
+| You need to | Put it in |
+|---|---|
+| Read or write a CPU register, run a special instruction | OSTD's `arch` and `cpu` modules |
+| Write assembly that enters or leaves the kernel | OSTD's naked functions (context switch, task entry, CPU start-up, user-mode entry) |
+| Refer to a symbol defined by the linker or by assembly | `extern_block!` inside OSTD |
+| Add an entry to a table the linker assembles | `registry_entry!`, from any crate |
+| Define a function that assembly calls | `extern_c_entry!`, only for the three allowed names |
+| Ask the bootloader for something | `limine_request!` |
+| Read or write user memory | OSTD's user pointers and copy helpers |
+| Access device registers, I/O ports, DMA buffers, PCI configuration | OSTD's device and memory APIs |
+| Build a large struct without putting it on the stack | `Init<T, E>` and `#[derive(SlotFields)]` ([The trusted core](/docs/verification/ostd-trusted-core#building-large-values-in-place)) |
+
+If the API you need already exists in OSTD, use it and stop here.
+
+## Add an unsafe primitive to OSTD
+
+1. **Find its module.** Put the new code next to the OSTD code that does
+   similar things: port I/O in `slopos-ostd/src/io/`, page-table work in
+   `slopos-ostd/src/mm/`, and so on. Keep it to the mechanism; the decision
+   of when to use it belongs in the safe crate that calls it.
+
+2. **Write the smallest `unsafe` block you can, with a `// SAFETY:` comment.**
+   The comment says why the block is correct, naming the condition it relies
+   on. OSTD's clock read is a good model:
+
+   ```rust
+   pub fn read(&self, _irq: &IrqDisabled<'_>, reg: u8) -> u8 {
+       // SAFETY: the PC/AT protocol for CMOS is "write the register number to
+       // the index port, then read the data port"; the two together are one
+       // register read and have no other effect. Bit 7 is cleared, leaving
+       // NMI unmasked.
+       unsafe {
+           self.index.write(reg & INDEX_MASK);
+           self.data.read()
+       }
+   }
+   ```
+
+3. **Turn every condition the caller must meet into a type.** Here, the
+   caller must have interrupts off, so the function takes the
+   `&IrqDisabled` token that only exists while they are. Other shapes OSTD
+   uses: a type that validates its value when built, a handle that can be
+   used once, a sealed trait, a slice instead of a pointer and length. They
+   are described on [The trusted core](/docs/verification/ostd-trusted-core#how-safety-rules-become-types).
+
+   Don't write a `# Safety` section on a safe function. The build rejects
+   it:
+
+   ```text
+   check_safe_contract_surface: 1 safe fns carry a '# Safety' section (baseline 0)
+     A '# Safety' section on a fn that is not 'unsafe fn' says the caller must
+     uphold something the compiler will not check. Express it — a guard, a
+     capability token, a closure-scoped borrow, a witness type — or mark the
+     function 'unsafe fn' so the obligation is visible where it is taken on.
+   ```
+
+   Marking the function `unsafe fn` is only an option if its callers are all
+   inside OSTD, because no other crate can call it.
+
+4. **Give it a host body.** If the primitive touches hardware, add a
+   `#[cfg(not(target_os = "none"))]` version that works on a normal computer,
+   so OSTD's tests and [Miri](/docs/verification/kernmiri) can exercise its
+   callers. Look at the existing fallbacks in the same module for the pattern.
+
+5. **Test it.** Add a test in the module or under `slopos-ostd/tests/`, then
+   run the host tests and Miri:
+
+   ```bash
+   just test-host
+   just check-miri
+   ```
+
+   Both should pass with your test listed. If Miri reports undefined
+   behaviour, fix the primitive, not the test.
+
+6. **Use it from safe code.** Call the new API from the kernel crate that
+   needed it. That crate should still compile under `#![forbid(unsafe_code)]`
+   with no changes to its attributes.
+
+7. **Check whether a proof covers the module.** If the code you changed is
+   modelled in `verification/proofs/` (see [Proofs](/docs/verification/verus-status)),
+   update the model and run `just verify`.
+
+## Refer to a linker or assembly symbol
+
+Symbols that the linker script or an assembly file defines are declared inside
+OSTD with `extern_block!`, never in other crates. For a `static`, the macro
+generates a safe accessor, `<name>_addr()`, that returns the symbol's address
+as a raw pointer; reading through that pointer is then OSTD's job. An
+external function gets no accessor, because whether calling it is safe
+depends on the function. Wrap it in a safe OSTD function with its own
+`// SAFETY:` argument.
+
+## Add an entry to a linker table
+
+The kernel keeps several tables that the linker assembles from entries spread
+across many crates: boot steps (one table per boot phase), PCI and platform
+drivers, tests, saved test state, kernel console commands and resource-charge
+audits. At run time OSTD reads each one back as a slice. These are called
+*registries*.
+
+To add an entry, use `registry_entry!` with the registry's name. You never
+write a section name yourself:
+
+```rust
+slopos_ostd::registry_entry! {
+    tests,
+    pub static TEST_DESC_MY_TEST: TestDesc = TestDesc { /* ... */ };
+}
+```
+
+In practice you'll rarely call it directly. Most registries have their own
+macro that wraps it, such as `pci_driver!` for drivers (see
+[Add a driver](/docs/development/adding-a-driver)) and the test macros (see
+[Write tests](/docs/development/adding-tests)). The entry's type has to
+declare, through the `RegistryEntry` trait, which registries it belongs to,
+and the macro refuses a static whose type doesn't.
+
+Adding a whole new registry touches several files, because the linker script,
+OSTD and two gates all have to agree on it:
+
+1. Declare the output section and its start and stop symbols in `link.ld`.
+2. Add a variant to `RegistryId`, its bounds to `bounds()` and an arm to
+   `registry_entry!`, all in `slopos-ostd/src/ffi/registry.rs`.
+3. Add the section and its entry size to `ENTRY_SIZE` in
+   `scripts/check_registry_sections.sh`.
+4. Add the section to `SECTION_ALLOWLIST` in `scripts/check_unsafe_expansion.sh`.
+5. Implement `RegistryEntry` for the entry type, listing the new id.
+
+## Functions called from assembly
+
+Only three functions outside OSTD have C linkage, because assembly calls them
+and their names must resolve when the kernel is linked:
+
+- `kernel_main`, which the boot assembly calls once it has set up a stack;
+- `common_exception_handler`, which the assembly exception stubs call with the
+  saved register frame;
+- `isr_iret_frame_corrupt`, called when an interrupt's return frame is
+  corrupt, so the kernel panics instead of the CPU resetting.
+
+They are defined with `extern_c_entry!` in `boot/src/ffi_boundary.rs`:
+
+```rust
+slopos_ostd::extern_c_entry! {
+    /// Entry point called from limine_entry.s
+    pub fn kernel_main() {
+        crate::early_init::kernel_main_impl();
+    }
+}
+```
+
+Don't add a fourth if you can avoid it. If the only caller is Rust, or the
+function can be looked up at run time, register it with OSTD as a hook
+instead, the way the task-entry and task-exit paths do
+(`register_task_entry_hook` and `register_task_exit_hook`). The three above
+can't be hooks because a fault early in boot, before any hook is registered,
+would reset the machine instead of panicking. A new C-ABI symbol has to be
+added to `SYMBOL_ALLOWLIST` in `scripts/check_unsafe_expansion.sh` with its
+reason.
+
+## Check the result
+
+```bash
+just build
+just check-framekernel-gates
+just check-miri        # if you changed OSTD
+just verify            # if you changed a module with a proof
+```
+
+Each command should finish without an error. CI runs all four.
+
+## What the gates reject
+
+| You wrote | Gate that fails |
+|---|---|
+| `unsafe` in a kernel crate outside OSTD, or `#[allow(unsafe_code)]` | `check_unsafe_outside_ostd.sh` |
+| A new kernel crate without `#![forbid(unsafe_code)]` | `check_unsafe_outside_ostd.sh` |
+| A macro from another crate that expands to `unsafe` in a kernel crate | `check_unsafe_expansion.sh` |
+| `#[unsafe(link_section = "...")]` or `#[unsafe(no_mangle)]` by hand outside OSTD | `check_unsafe_expansion.sh` |
+| A safe OSTD function with a `# Safety` section | `check_safe_contract_surface.sh` |
+| A crates.io dependency that places data in its own linker section | `check_registry_sections.sh` |
+| A registry entry type whose size changed without updating `ENTRY_SIZE` | `check_registry_sections.sh` |
+| `alloc::` containers in a kernel crate | `check_alloc_dep.sh` |
+
+The full list, with the command for each, is on
+[Safety gates](/docs/verification/tcb-discipline). If a gate fails on code you
+didn't touch, rebuild first: the image gates read `builddir/kernel-*.elf`, and
+a stale image gives stale answers.

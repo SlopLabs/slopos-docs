@@ -1,0 +1,402 @@
+---
+title: "Processes and signals"
+description: "How programs start, run side by side, end and get signals on SlopOS, and where that differs from Linux."
+---
+
+Programs on SlopOS start, run and end the way they do on Linux. A shell
+starts a command with `fork` and `exec` and waits for it with `waitpid`, and
+Ctrl-C and Ctrl-Z behave as you'd expect. A threaded program gets real
+threads that share its memory. Signals, process groups and sessions follow
+POSIX. Because SlopOS uses Linux's x86-64 system call numbers and meanings,
+most software ported from Linux needs no changes in this area. The
+[differences](#differences-from-linux) are few, and most of them are about
+who may do what.
+
+None of this was invented for SlopOS. The process model is the one Unix has
+had since the 1970s, as POSIX later wrote it down, and the details follow
+Linux's man pages. The one thing SlopOS leans on more than Linux does is
+starting a program in a single step with *spawn* rather than `fork`
+followed by `exec`; the reasons are [below](#starting-a-new-program-in-one-step-spawn).
+
+This page covers how programs start and end, how a shell uses process groups
+to run jobs, and how signals work.
+
+## Threads, tasks and process IDs
+
+Inside the kernel a thread is a *task*, and tasks and processes are separate
+objects. The scheduler runs tasks; the memory, open files, working directory
+and [resource limits](/docs/architecture/resource-accounting) belong to the
+process that its tasks share. Some signals go to one thread and others to the
+whole process.
+
+`getpid` returns the number of the process's first thread, and `gettid` the
+calling thread's own. SlopOS hands these numbers out in increasing order and
+never reuses them, so unlike on Linux, a pid you saved earlier can't come to
+mean a different program.
+
+## How a program starts
+
+There are three ways to get a new program running, and a shell uses all of
+them.
+
+### Copying a running program: fork
+
+`fork` doesn't copy the parent's memory. Parent and child share every page,
+marked read-only, and a page is copied only when one of them writes to it
+(*copy-on-write*; [Memory](/docs/architecture/memory) explains how). Because
+nothing is copied yet, `fork` doesn't count the child's memory against the
+machine's memory limit; each page is charged when the child gets its own copy
+of it. SlopOS has no `vfork`.
+
+### Replacing the program: exec
+
+`exec` (the `execve` call) keeps the pid, the open files and the working
+directory, and replaces the memory with a new program. SlopOS can run three
+kinds of file:
+
+- **A static ELF program**, which the kernel maps into memory and starts.
+- **A dynamic ELF program.** The file names the *dynamic loader*
+  (`/lib/ld-slopos.so.1`), which the kernel loads alongside it and starts
+  first. The loader finds the shared libraries, links them in, and then jumps
+  to the program.
+- **A script** whose first line starts with `#!`, such as
+  `#!/bin/sh`. The kernel runs the named interpreter and passes it the script's
+  path, following the rules in Linux's `execve(2)`: the line is read from the
+  first 256 bytes of the file, it may carry one extra argument after the
+  interpreter's name, and an interpreter may itself be a script, up to five
+  levels deep, before `exec` fails with `ELOOP`. A `#!` line cut off by the
+  256-byte limit fails with `ENOEXEC`. A path that is a loop of symbolic links
+  fails with `ELOOP`, not `ENOEXEC`, so a shell searching `PATH` doesn't try to
+  run the loop as a shell script.
+
+`exec` checks that the new program fits in memory before it lets go of the
+old one, so a program too big to load fails with `ENOMEM` and the caller
+keeps running. Once the old program is gone, the kernel closes every
+descriptor marked close-on-exec and resets any signal handlers to their
+defaults, because the handler code no longer exists. Signals the old program
+chose to ignore stay ignored.
+
+A script never gets more authority than its interpreter. Any special
+permission a program is entitled to (see
+[Permissions](/docs/architecture/authority)) is decided by the interpreter
+the kernel actually loads, never by the script file.
+
+### Starting a new program in one step: spawn
+
+`fork` then `exec` has a cost that shows up with large programs. Forking a
+compiler that holds a gigabyte of memory means setting up a second gigabyte
+of copy-on-write mappings, only to throw them away a moment later at `exec`.
+It also makes the child start life holding everything the parent had open,
+which is a common source of leaked descriptors.
+
+So SlopOS has a system call that does the whole job at once: it creates a
+process running a given program, with given arguments, environment and
+working directory, without copying anything from the caller. The C library's
+`posix_spawn` family is built on it, and so is Rust's
+`std::process::Command::spawn`, which falls back to `fork` only for the
+features spawn can't express (such as a `pre_exec` closure).
+
+The child of a spawn starts with no open files at all. The caller lists the
+descriptors it should get: share this one of mine as your 0, move this one
+of mine to you as your 3, close that one. Every action can only hand over or
+drop something the caller already holds, which is the point: a spawn can
+never give a child a file its parent couldn't open.
+
+### Threads: clone
+
+`clone` is the general form of `fork`. Its flags say what the new task
+shares with its creator instead of copying: the memory (`CLONE_VM`), the
+open files (`CLONE_FILES`), the working directory (`CLONE_FS`), the signal
+handlers (`CLONE_SIGHAND`), and membership of the same process
+(`CLONE_THREAD`). `pthread_create` uses all of them, which is what makes a
+thread a thread. SlopOS supports the flags threads need and rejects any
+other with `EINVAL`.
+
+When a thread finishes, the kernel clears a word in memory that the thread
+named when it was created and wakes anyone waiting on it. That is how
+`pthread_join` knows the thread is done.
+
+## How a program ends and who waits for it
+
+A process ends when it calls `exit`, when it returns from `main` (which
+calls `exit` for it), when a signal kills it, or when it crashes. In every
+case the whole process ends, all of its threads together.
+
+What happens next is the part of Unix that surprises people. The kernel frees
+the process's memory and closes its files, but it keeps a small record: the
+pid and how the process ended (its exit code, or the signal that killed it).
+A process in that state is a *zombie*. It stays one until its parent asks how
+it ended, with `wait4` or `waitpid`, which is called *reaping* it. Only then
+is the pid's record gone. A shell reaps each command when it finishes and
+prints its status as `$?`.
+
+`wait4` can also report a child that has been stopped (with `WUNTRACED`) or
+continued (with `WCONTINUED`), which is how a shell notices that you pressed
+Ctrl-Z.
+
+If the parent dies first, the child is an *orphan*. On Linux an orphan is
+handed to process 1 (`init`), whose job includes reaping it. SlopOS has no
+user program doing that job, so the kernel takes it on: an orphan has
+no parent any more, and when it exits it is cleaned up at once instead of
+becoming a zombie. The same happens to the children of a parent that set
+`SIGCHLD` to `SIG_IGN`, which is POSIX's way of saying "I will never wait for
+my children".
+
+## How the shell runs jobs
+
+When you type `make | less` at a shell and press Ctrl-C, both programs stop,
+but the shell doesn't. When you press Ctrl-Z, both pause and the shell gives
+you a prompt back. This works because of two groupings the kernel keeps.
+
+A *process group* is the set of processes that make up one job, such as the
+two halves of that pipeline. The shell puts each job in its own group (with
+`setpgid`) so that it can signal the job as a whole.
+
+A *session* is everything started from one login or one terminal window. A
+session has a *controlling terminal*, and at any moment one process group in
+the session is the terminal's *foreground* group. The shell sets it with
+`tcsetpgrp` each time it starts a job in the foreground, and takes it back
+when the job finishes.
+
+The terminal does the rest:
+
+- **Ctrl-C** makes the terminal send `SIGINT` to the foreground group, so
+  every process in the job gets it, and the shell (in its own group) doesn't.
+  Ctrl-\\ sends `SIGQUIT` the same way.
+- **Ctrl-Z** sends `SIGTSTP`, which stops every process in the job. The shell's
+  `wait4` reports the stop, the shell takes back the terminal and prints a
+  prompt. `fg` gives the terminal back to the job and sends `SIGCONT`; `bg`
+  sends `SIGCONT` without giving it the terminal.
+- **A background job that reads from the terminal** gets `SIGTTIN`, which stops
+  it until you bring it to the foreground. One that tries to make itself the
+  terminal's foreground job (`tcsetpgrp`) gets `SIGTTOU`.
+- **Closing the terminal** sends `SIGHUP` (followed by `SIGCONT`, so that
+  stopped jobs see it) to the session, which is why programs started from a
+  terminal end when you close its window.
+
+`SIGKILL` ends a stopped process directly; it doesn't need a `SIGCONT` first.
+
+## Signals
+
+### What a signal is
+
+A signal is a small notification the kernel delivers to a process or thread:
+a number, plus a record of who sent it and why. Some come from other
+programs (`kill`), some from the terminal (Ctrl-C), and some from the kernel
+itself, such as `SIGSEGV` when a program touches memory it doesn't own,
+`SIGCHLD` when a child ends, or `SIGPIPE` when a program writes to a pipe
+nobody reads any more.
+
+For each signal a process chooses one of three things: the default action
+(for most signals that is to end the process; for a few, such as `SIGCHLD`,
+to do nothing), to ignore it, or to run a function of its own, a *handler*.
+Two signals can't be caught or ignored: `SIGKILL` always ends the process and
+`SIGSTOP` always stops it. That is what makes them reliable tools for
+someone else to use on a program that misbehaves.
+
+### How a signal is delivered
+
+Sending a signal doesn't run anything straight away. The kernel marks the
+signal *pending* on the target and wakes it if it is waiting. The next time
+the target is about to go back from the kernel to its own code, the kernel
+checks what is pending. If a handler is installed, the kernel arranges for
+the thread to resume in the handler instead of where it left off, and when
+the handler returns (through `rt_sigreturn`), the thread resumes where it was.
+
+A thread can *block* signals with `sigprocmask` or `pthread_sigmask`. A
+blocked signal stays pending until it is unblocked, rather than being lost.
+A signal sent to a whole process is delivered once, to one of its threads
+that doesn't block it. `pthread_kill` (the `tgkill` call) aims at one
+particular thread. Stopping, continuing and `SIGKILL` always act on the
+whole process.
+
+If the target is in the middle of a slow system call, such as reading from a
+pipe that has nothing in it, a signal with a handler interrupts the call. When
+the handler was installed with `SA_RESTART`, the kernel restarts the call
+afterwards and the program never notices; otherwise the call fails with
+`EINTR`. A program can also wait for signals instead of handling them, with
+`sigwait`, `sigtimedwait` or `sigsuspend`.
+
+### Standard and realtime signals
+
+SlopOS has 64 signals, numbered 1 to 64 as on Linux. The first 31 are the
+*standard* signals with familiar names (`SIGINT`, `SIGTERM`, `SIGCHLD` and so
+on). If the same standard signal is sent three times before the target gets to
+it, the target sees it once: the kernel only remembers that it is pending.
+
+Signals 32 to 64 are *realtime* signals, which POSIX added for programs that
+use signals to carry messages. Each one sent is queued separately, with the
+value its sender attached (`sigqueue`), and they are delivered in order,
+lowest signal number first. On Linux the C library keeps the first two
+realtime signals for itself; SlopOS's C library keeps none, so `SIGRTMIN` is
+32.
+
+The queue is limited per process and per thread. Once it is full, `sigqueue`
+fails with `EAGAIN`. A `kill` or a signal from the kernel is never refused
+for that reason: it is still delivered, only without its own record of who
+sent it. That record (`siginfo`) is always accurate when it exists, because
+the kernel fills in the sender's pid itself and refuses a `sigqueue` that
+tries to pass a signal off as coming from the kernel.
+
+### Who may signal whom
+
+On Linux, whether you may signal a process depends on which user each of you
+runs as. SlopOS has no users yet (every process runs as user 0), so it uses a
+different rule, based on the special permissions some programs are started
+with:
+
+- A program may signal another only if it holds every special permission the
+  other holds. So an ordinary program can't kill the compositor, but programs
+  without special permissions can signal each other freely.
+- Nothing may signal init, the first program the kernel starts.
+- Kernel threads aren't processes and can't be signalled at all.
+
+A signal sent to a whole group skips the members the sender may not signal,
+and fails with `EPERM` only if it reached none of them.
+[Permissions](/docs/architecture/authority) explains where the special
+permissions come from. When memory runs out, the kernel's
+[out-of-memory killer](/docs/architecture/resource-accounting) uses the same
+rule to decide which process it may end.
+
+### How a kill takes effect
+
+A thread is never torn down from outside. When a process is killed, every one
+of its threads is marked as killed and woken. A thread that was waiting
+inside the kernel wakes up, sees the mark, and returns from whatever it was
+doing, releasing what it held on the way. A thread that was running its own
+code stops the next time it enters the kernel, and the CPU's timer makes sure
+that happens within one tick even for a program stuck in an endless loop.
+[Scheduling and waiting](/docs/architecture/scheduler-wait-protocol#killing-a-task-that-is-waiting)
+explains why it is done this way.
+
+## Waiting for processes and signals with file descriptors
+
+Classic Unix gives you two awkward interfaces here: you learn that a child
+ended through a signal (`SIGCHLD`) or by calling `waitpid` repeatedly, and
+you handle signals in a function that interrupts your program at any point.
+Both are hard to combine with a program built around one event loop, such
+as a server waiting in `poll`. Linux added two kinds of file descriptor to
+fix that, and SlopOS has both.
+
+- **pidfd.** `pidfd_open(pid)` returns a descriptor for one of your
+  children. It becomes readable when the child exits, so you can wait for it
+  with `poll` or [SlopRing](/docs/abi/slopring) alongside everything else.
+  You still reap the child with `waitpid`. Asking for a process that isn't
+  your child fails with `EPERM`.
+- **signalfd.** `signalfd4` returns a descriptor you read signals from, in the
+  same 128-byte record format Linux uses. You block the signals you want with
+  `sigprocmask` (so they stay pending instead of running a handler), and then
+  read them as ordinary data, in your event loop. It accepts
+  `SFD_NONBLOCK` and `SFD_CLOEXEC`.
+
+## Differences from Linux
+
+| | Linux | SlopOS |
+|---|---|---|
+| Process and thread numbers | Reused once free | Handed out in increasing order, never reused |
+| Orphaned children | Adopted and reaped by process 1 | Have no parent; cleaned up by the kernel when they exit |
+| Who may signal whom | Depends on user ids | Depends on special permissions; init can't be signalled |
+| First realtime signal (`SIGRTMIN`) | Usually 34 (glibc keeps two) | 32 |
+| `vfork` | Supported | Not provided; use spawn or `posix_spawn` |
+| Spawn file actions | `posix_spawn` may open files for the child | The child only gets descriptors the parent already holds |
+| `pidfd_open` | Any process; accepts `PIDFD_NONBLOCK` | Your own children only; no flags |
+
+## How it is tested
+
+Kernel tests cover the rules one at a time: which `clone` flags are accepted,
+how `#!` lines are parsed, who may signal whom, how pending and queued signals
+behave. Userland tests run real programs through the paths a shell uses:
+starting programs each way, delivering signals, waiting through a pidfd,
+killing a program stuck in a loop, pressing Ctrl-C on a job blocked writing to
+a full terminal, and ending hundreds of processes at once on every CPU.
+
+## For contributors
+
+**Two kinds of process number.** The pid a program sees is a task id: the id
+of the process's first thread, from a counter that never goes back. The
+kernel's process object has a second, internal number, drawn lowest-free
+from a bitmap and reused as soon as it is free. Nothing inside the kernel
+looks a process up by a bare number. Process-keyed tables (address spaces,
+descriptor tables) are reached through `Handle<Process>`, a slot plus a
+generation, or through `ProcessId` and `FdTable`, which can only be built
+from a live process. A stale handle fails its generation check instead of
+naming whoever holds the slot now. A build-time gate refuses a bare pid
+parameter on those entry points.
+
+**The process object carries identity only.** `Process` (in `slopos-ostd`)
+holds ids, handles to itself and its parent, resource accounts, a live-task
+count and an exited flag; address spaces and descriptor tables keep their own
+storage, keyed on its registry slot. The wait parent and the accounting
+parent are separate fields on purpose: changing who waits for a process must
+never move whose budget it spends.
+
+**What is per process and what is per thread.**
+
+| State | Scope |
+|-------|-------|
+| Address space | Process; shared by every `CLONE_VM` task |
+| Descriptor table | Process; close-on-exec descriptors close after `exec` passes its point of no return |
+| Working directory and umask | Process; held in a reference-counted `FsContext`, replaced whole by `chdir` |
+| Signal dispositions | Thread group; shared under `CLONE_SIGHAND` |
+| Signal mask, pending set, signal queue | Task |
+
+**Clone flags.** The accepted set is `CLONE_SUPPORTED_MASK`. `CLONE_THREAD`
+requires `CLONE_VM` and `CLONE_SIGHAND`, and `CLONE_SIGHAND` and
+`CLONE_FILES` each require `CLONE_VM`. A `CLONE_VM` child joins the caller's
+process rather than creating one.
+
+**Spawn.** The primitive is `spawn_path` (a SlopOS-private syscall number),
+with up to 64 descriptor actions: `CloneFd`, `TransferFd`, `Close`.
+Discriminant 4 was the retired `Open` action and must not be reused. Asking
+for a privileged spawn flag is `EPERM`; those come only from the program
+grant table (`core/src/exec/grants.rs`), keyed on the canonical path of the
+image actually loaded.
+
+**Signals.** The signal-permission rule is `signal_dominates` plus
+`signal_is_init` in `core/src/syscall/signal.rs`, and the nice-value calls
+(`setpriority`) apply the same rule, so change them together.
+
+**Job-control objects.** `Session` and `ProcessGroup` are reference-counted.
+Each member task holds a strong reference to its group and each group one to
+its session, so the strong graph `Task -> ProcessGroup -> Session` has no
+cycles. A terminal holds its foreground group and session weakly, so once the
+last member is reaped the reference upgrades to nothing.
+
+## Further reading
+
+- [*Processes*](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-intro.pdf) and
+  [*Process API*](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-api.pdf),
+  chapters 4 and 5 of *Operating Systems: Three Easy Pieces* by Remzi and
+  Andrea Arpaci-Dusseau. Start here. What a process is, and `fork`, `exec`
+  and `wait` with small C programs you can run.
+- [*Job Control*](https://www.gnu.org/software/libc/manual/html_node/Job-Control.html)
+  and [*Implementing a Shell*](https://www.gnu.org/software/libc/manual/html_node/Implementing-a-Shell.html)
+  in the GNU C Library manual. Process groups, sessions and the foreground
+  from the shell's side, with the code a shell needs.
+- [*A fork() in the road*](https://www.microsoft.com/en-us/research/uploads/prod/2019/04/fork-hotos19.pdf)
+  by Baumann, Appavoo, Krieger and Roscoe, HotOS 2019. The case against
+  `fork` as the way to start programs, and for spawn-style calls instead.
+- [`signal(7)`](https://man7.org/linux/man-pages/man7/signal.7.html). Linux's
+  overview of signals: default actions, masks, realtime signals, and which
+  system calls `SA_RESTART` restarts.
+- The man pages for [`fork(2)`](https://man7.org/linux/man-pages/man2/fork.2.html),
+  [`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html) (including
+  its rules for `#!` scripts), [`posix_spawn(3)`](https://man7.org/linux/man-pages/man3/posix_spawn.3.html),
+  [`pidfd_open(2)`](https://man7.org/linux/man-pages/man2/pidfd_open.2.html) and
+  [`signalfd(2)`](https://man7.org/linux/man-pages/man2/signalfd.2.html), which
+  SlopOS follows except where this page says otherwise.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `slopos-ostd/src/process/` | The process object, its registry and handles |
+| `sched/src/task/task_lifecycle.rs` | Creating tasks, exit, zombies and orphans |
+| `core/src/exec/` | Loading programs, `#!` scripts, the program grant table |
+| `core/src/syscall/process_handlers.rs` | `fork`, `clone`, spawn, `wait4`, process groups and sessions |
+| `core/src/syscall/signal.rs`, `slopos-ostd/src/task/sigqueue.rs` | Sending signals, the permission rule, pending and queued signals |
+| `drivers/src/tty/` | The terminal side of job control: Ctrl-C, Ctrl-Z, hangup |
+| `pidfd/`, `signalfd/` | The two descriptor types |
+| `abi/src/spawn.rs`, `abi/src/signal.rs` | The spawn and signal ABI |
+
+[System call ABI](/docs/abi/syscalls) lists every call by number.

@@ -1,0 +1,224 @@
+---
+title: "Resource limits"
+description: "What the kernel limits for each program, why it refuses memory up front, and what happens when memory runs out anyway."
+---
+
+SlopOS stops any one program from taking the whole machine. Each program has
+a budget for memory, open files, threads, child processes, disk space and
+some kinds of kernel memory. A call that would go over budget fails with the
+error it already uses when that resource runs out (`ENOMEM`, `EMFILE`,
+`EAGAIN`, `ENOSPC`), so programs written for Linux need no changes. Memory is
+handled more strictly than on Linux: SlopOS refuses memory when a program asks
+for it, so a program that runs out almost always gets an error it can handle
+and is not killed. The main exception is `fork`, and when a forked child does
+run the machine out of memory, the kernel ends one process, chosen by a rule
+described below.
+
+The per-process budgets are Unix resource limits, read with `getrlimit` as on
+Linux. Refusing memory at the time it is promised is what Linux calls *strict
+overcommit accounting*, an option there and the default here.
+
+## What is limited
+
+| What | Counts | When it runs out |
+|---|---|---|
+| Open files | Descriptors in the program's table | `EMFILE` |
+| Kernel objects | Pipes, sockets and other kernel objects the program created | `ENFILE` |
+| Threads | Threads in the program | `EAGAIN` |
+| Processes | Processes started by the program and all their descendants | `EAGAIN` |
+| Address space | Memory the program has mapped or reserved | `ENOMEM` |
+| Pinned memory | Memory that must stay in RAM, such as buffers registered for direct I/O and mapped files | `ENOMEM` |
+| Kernel memory | Kernel memory used on the program's behalf: thread stacks, page tables | `ENOMEM` |
+| Disk blocks | Blocks the program has allocated on a mounted disk | `ENOSPC` |
+
+The process limit counts grandchildren too. If it counted only direct
+children, each child of a fork bomb would start its own children against a
+fresh budget.
+
+The disk limit applies to blocks a program allocates while it runs. A file it
+wrote stays on disk after it exits and is charged to nobody, so this is not a
+disk quota.
+
+The kernel also counts each process's *resident* memory (the RAM it holds
+now) and *committed* memory (the private memory the kernel has promised to
+back) without capping them per process. Committed memory has a ceiling for
+the whole machine, described next.
+
+## Why SlopOS refuses memory up front
+
+When a program gets memory from `mmap` or `brk`, no RAM is used yet. Each page
+is filled in the first time the program touches it (see
+[Memory](/docs/architecture/memory)), so the kernel can say no either when the
+memory is requested or when it is touched.
+
+Linux by default mostly says yes at the request. If programs then touch more
+memory than the machine has, no call is left to fail, so Linux kills a
+process, which may not be the one that asked for too much.
+
+SlopOS keeps a running total of the private memory it has promised. Each
+request (by `mmap`, `brk`, `exec`, or an `mprotect` that makes a reserved
+range usable) is added to it and refused with `ENOMEM` if the total would pass
+the ceiling, which by default is all of the machine's usable RAM. Memory
+already accounted for elsewhere, such as a shared file mapping or a memfd,
+isn't counted twice.
+
+So a `malloc` that can't be backed fails in `malloc`, with an error the
+program can report. `exec` is checked before the old program is thrown away,
+so a program too large to fit gets `ENOMEM` and keeps running the old one.
+
+A program that will use only a little of a large reservation, such as a
+language runtime that reserves a gigabyte of address space, can map it with
+`MAP_NORESERVE`. That memory is counted a page at a time as it is used, which
+brings back the risk described next.
+
+## Why `fork` is the exception
+
+`fork` gives the child a copy of its parent's memory, shared until one of them
+writes to a page (see [Memory](/docs/architecture/memory)). If `fork` had to
+promise that memory again, a 2 GiB build tool running a one-line shell command
+would need another 2 GiB promised for the moment between `fork` and `exec`.
+Unix software assumes `fork` is cheap, so SlopOS never refuses it for lack of
+memory.
+
+Instead the child is charged a page at a time, as it writes a page and gets
+its own copy, so a child that calls `exec` straight away costs almost
+nothing. A child that writes to every page needs memory nobody promised,
+though, and a memory write can't return an error. Forked children, stacks
+growing into new pages and `MAP_NORESERVE` memory are the only ways a SlopOS
+program can use more memory than it was promised.
+
+## What the out-of-memory killer does
+
+When one of those writes finds no memory, because the commit ceiling is
+reached or RAM is full and nothing can be reclaimed, the kernel ends a process
+to make room and retries the write. This is the *out-of-memory killer* (OOM
+killer). It chooses a victim like this:
+
+1. It considers only processes the writer could `kill` itself. A program
+   can't kill a process holding privileges it lacks (see
+   [Permissions](/docs/architecture/authority)), so an ordinary program's
+   memory use never takes down the compositor or another system service.
+   Init and kernel threads are never chosen.
+2. Of those, it picks the one holding the most of what ran out: promised
+   memory if the ceiling was reached, RAM if RAM was. Shared memory counts
+   against its owner, so mapping someone else's doesn't make you look bigger.
+3. It ends that process with `SIGKILL`, waits for its memory to be freed, and
+   retries the write. Nobody picks another victim while one is dying, and if
+   the victim still holds its memory a few seconds later, the kernel stops
+   waiting for it.
+
+If nobody is eligible, the writer itself dies with `SIGKILL`, and the kernel
+records the reason as running out of memory, so its parent can tell this from
+a crash. Only init may take any process, because the machine can't run
+without it.
+
+## How a program sees its limits
+
+Programs read their limits with `getrlimit`, `prlimit` or the shell's
+`ulimit`, which all use the `prlimit64` system call. Four of the standard
+limits are supported:
+
+| Limit | What it controls |
+|---|---|
+| `RLIMIT_NOFILE` | Open files |
+| `RLIMIT_NPROC` | Processes |
+| `RLIMIT_AS`, `RLIMIT_DATA` | Address space |
+| `RLIMIT_MEMLOCK` | Pinned memory |
+
+Any other limit fails with `EINVAL`, so a program can tell "not supported"
+from "unlimited". The soft and hard limits are always equal. A program may
+lower its own limits but can't raise them or change another process's
+(`EPERM`).
+
+A build driver deciding how many jobs to run can call `sys_info` for the
+commit ceiling, how much of it is promised, and the OOM killer's count of
+victims since boot and its last one.
+
+We set the default limits by measuring real workloads. Two settings on
+[Boot options](/docs/abi/boot-options) change the policy: `quota=` turns
+enforcement off or into warnings, for measuring what a workload needs, and
+`mem.commit=` sets the commit ceiling as a percentage of RAM or turns it off.
+
+## What programs can rely on
+
+- **A successful `mmap`, `brk` or `exec` is backed.** Touching the memory
+  won't get the program killed, unless it was mapped with `MAP_NORESERVE`.
+- **`fork` doesn't fail for lack of memory**, but a child that writes much of
+  its parent's memory can trigger the OOM killer.
+- **Limits fail with the errors programs already handle.**
+- **The OOM killer only takes a process the writer could have killed anyway.**
+
+## How it is tested
+
+Kernel tests charge and refund every kind of resource and check each refusal's
+error, and the OOM killer's tests cover each rule in its choice of victim. An
+in-kernel audit cross-checks the running totals against the memory they
+describe. The ledger's arithmetic has a machine-checked proof (see
+[Proofs](/docs/verification/verus-status)) as a sequential state machine; the
+per-row atomics and account release are covered by the audit, KernMiri and
+tests.
+
+## For contributors
+
+**Charges are tokens.** Each process has a row in a fixed arena in `.bss`,
+under a kernel-owned root. `try_charge` debits the row and every ancestor and
+returns a linear `Reservation`, which the charged object's constructor turns
+into a `Charge` that its `Drop` refunds. Only the trusted core can build one,
+so nothing can forge, copy or skip a charge. Refunds touch only atomics in
+`.bss` and must stay legal in an interrupt handler, under a spinlock and
+during a dying task's unwind. Tokens are unique by type, but only
+`ledger_audit` can catch wrong totals.
+
+**Kinds** live in `slopos_abi::quota` with their unit, refund point, scope and
+errno. `Process` and `CommitPages` count the whole subtree, the rest one
+process.
+
+**The account tree** has its own parent edge, so an orphan reparented to init
+keeps spending its original budget. The edge carries the parent's generation
+so a reused row is never credited by mistake. Chains stop at
+`MAX_ACCOUNT_DEPTH`; deeper processes debit through their nearest ancestor
+with room, which keeps every walk bounded.
+
+**Commit classes** decide how each memory region is charged. A class never
+moves back; only `Unreserved` changes, the first time a protection lets its
+pages be populated.
+
+| Class | Regions | Charged |
+|---|---|---|
+| `Unreserved` | Shared memfd, SlopRing share, shared file mappings, `PROT_NONE` reservations | Nothing |
+| `Extent` | Lazy anonymous memory, writable private file mappings | Whole span at creation |
+| `Frames` | The loader's eager segments, the stack and its growth range, `MAP_NORESERVE` | A page at a time as each is placed |
+| `Forked` | A fork's copy of a region its parent had charged | A page from the moment the child owns it |
+
+**The OOM path** (`mm::oom`) weighs `CommitPages` when the ceiling refused the
+page and `ResidentPages` when the frame allocator was empty after reclaim.
+The victim unwinds through the kill flag in its own context (see
+[Scheduling and waiting](/docs/architecture/scheduler-wait-protocol)); a
+writer with nothing to take dies with `TaskFaultReason::UserOom`. Kernel
+writes for a task take the same path where they may block; where they can't,
+a user copy returns `EFAULT` and a failed signal frame push ends in `SIGSEGV`.
+
+## Further reading
+
+- [*Swapping: Mechanisms*](https://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys.pdf),
+  chapter 21 of *Operating Systems: Three Easy Pieces* by Remzi and Andrea
+  Arpaci-Dusseau. What a kernel does when memory is short. SlopOS has no swap,
+  but the chapter covers the page faults and memory pressure behind this page.
+- [*Overcommit accounting*](https://docs.kernel.org/mm/overcommit-accounting.html)
+  in the Linux kernel documentation. Linux's three overcommit modes on one
+  page. SlopOS's default is close to strict mode, with `fork` handled
+  differently.
+- [*Taming the OOM killer*](https://lwn.net/Articles/317814/), LWN (2009). Why
+  choosing a victim is hard.
+- The man page for [`getrlimit(2)`](https://man7.org/linux/man-pages/man2/getrlimit.2.html),
+  the limits interface programs use, including `prlimit`.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `abi/src/quota.rs` | The kinds of resource, their defaults and the `RLIMIT_` mapping |
+| `slopos-ostd/src/process/quota/` | The ledger |
+| `mm/src/commit.rs` | The commit ceiling |
+| `mm/src/oom.rs` | The OOM killer |
+| `mm/src/tests/tests_oom_killer.rs` | OOM killer tests |

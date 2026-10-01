@@ -1,91 +1,231 @@
 ---
 title: "SlopRing"
-description: "Submission/completion ring ABI"
+description: "The shared-memory queues a program uses to hand the kernel many I/O operations at once and collect the results."
 ---
 
-SlopRing is SlopOS's io_uring-style async edge. The kernel side remains
-synchronous; userland batches work in a shared SQ/CQ ring and drives futures
-through the SlopOS runtime.
+A normal system call does one thing and waits for it: one `read`, one `accept`,
+one `send`. A server handling hundreds of connections pays for hundreds of
+calls, and any one of them can stop the whole program while it waits. With
+SlopRing the program writes a batch of requests into memory it shares with the
+kernel, makes one call, and later reads the results back from the same memory.
+Each request carries a number the program chose (`user_data`), so results can
+arrive in any order and still be matched to their requests.
 
-The source ABI defines exact numeric syscall assignments, opcode values, feature
-bits, limits, and struct layout. This page describes the public behavior and the
-names to look for in generated or source ABI reference.
+The design is Linux's io_uring (Jens Axboe, 2019), cut down to the operations
+SlopOS needs: one queue of requests (submissions) and one of results
+(completions), both in shared memory. SlopRing is not binary-compatible with
+io_uring. This page lists the calls, memory layouts, opcodes and rules. The
+layouts, opcodes, flags and limits are defined in `abi/src/ring.rs`; the kernel
+side is the `ring` crate and `core/src/syscall/ring_handlers.rs`.
+[Userland](/docs/architecture/userland) describes the runtime that drives the
+ring.
 
-## Syscalls
+## System calls
 
-| Name | Purpose |
-|------|---------|
-| `ring_setup` | Create a ring, map the shared region, and return a ring fd |
-| `ring_enter` | Submit SQEs, harvest CQEs, and optionally block for completions |
-| `ring_register` | Register or unregister fixed buffers and provided-buffer rings |
+All three are SlopOS-only calls (see [System call ABI](/docs/abi/syscalls)).
 
-## Layout
+| Call | Arguments | Returns |
+|---|---|---|
+| `ring_setup` | `entries`, pointer to a `RingParams` | A ring descriptor. Maps the shared region into the caller and copies the layout to the `RingParams` |
+| `ring_enter` | `ring_fd`, `to_submit`, `min_complete`, `flags` | The number of submissions consumed. Consumes up to `to_submit` submissions, then, if `min_complete > 0`, waits until that many completions are ready |
+| `ring_register` | `ring_fd`, `op`, `arg`, `nr_args` | `0`. Registers or unregisters buffers (see [Registering buffers](#registering-buffers)) |
 
-| Struct | Role |
-|--------|------|
-| `RingParams` | Header and offsets for the single shared mapping |
-| `Sqe` | Submission queue entry |
-| `Cqe` | Completion queue entry |
-| `BufIovec` | One registered fixed buffer |
-| `RegisterBufRingCmd` | Provided-buffer ring registration |
-| `IouringBuf` | One provided-buffer descriptor |
+- `entries` is the submission queue size: a power of two from 1 to 4096
+  (`SLOPRING_MAX_ENTRIES`). The completion queue is twice as large
+  (`SLOPRING_SQ_TO_CQ`).
+- `ring_enter` returns `-EINTR` only if a signal interrupts the wait and it
+  submitted nothing; otherwise it returns the submission count.
+- `ring_enter`'s `flags` are currently ignored. `SLOPRING_ENTER_GETEVENTS` is
+  reserved.
+- Every call on a ring from a process other than the one that created it
+  fails with `-EBADF`.
 
-The region is one mapping with header, SQ control words, CQ control words, SQE
-array, and CQE array. SQ and CQ use split-ownership head/tail counters. The
-kernel snapshots SQE bytes through volatile user-frame accessors and never takes
-a Rust reference directly into user-writable ring memory.
+## Shared region
 
-## Feature names
+`ring_setup` allocates one region, maps it into the caller and writes a
+`RingParams` at its start. All offsets in `RingParams` are bytes from the start
+of the region.
 
-| Feature | Meaning |
-|---------|---------|
-| `SLOPRING_FEAT_SINGLE_MMAP` | One shared region for all ring state |
-| `SLOPRING_FEAT_MULTISHOT` | Multishot accept, receive, and poll behavior |
-| `SLOPRING_FEAT_REG_BUFFERS` | Fixed and provided buffer registration |
+```text
+RingParams
+SQ control words   head (kernel writes), tail (program writes), mask, dropped
+CQ control words   head (program writes), tail (kernel writes), mask, overflow, flags
+SQE array          submission i is slot i; there is no indirection array
+CQE array
+```
 
-## Opcode names
+| `RingParams` field | Meaning |
+|---|---|
+| `sq_entries`, `cq_entries` | Queue sizes |
+| `flags` | Feature bits the kernel supports |
+| `sq_off_head`, `sq_off_tail`, `sq_off_mask`, `sq_off_dropped`, `sq_off_array` | Offsets of the submission queue's control words and array |
+| `cq_off_head`, `cq_off_tail`, `cq_off_mask`, `cq_off_overflow`, `cq_off_array`, `cq_off_flags` | Offsets of the completion queue's control words and array |
+| `region_addr`, `region_bytes` | Where the region is mapped, and its size |
 
-| Opcode name | Summary |
-|-------------|---------|
-| `OP_NOP` | Complete immediately |
-| `OP_READ` | File or socket read path |
-| `OP_WRITE` | File or socket write path |
-| `OP_RECVMSG` | Receive a message, including AF_UNIX paths |
-| `OP_SEND` | Send buffer contents |
-| `OP_ACCEPT` | Accept a socket connection |
-| `OP_POLL_ADD` | Register and probe fd readiness |
-| `OP_TIMEOUT` | Harvest wait deadline |
-| `OP_CANCEL` | Cancel in-flight ops by `user_data` |
-| `OP_RECVFROM` | Receive a datagram and source address |
-| `OP_OPENAT` | Open a path and install an fd |
-| `OP_CLOSE` | Close an fd |
-| `OP_SEND_ZC` | Zero-copy send from a registered fixed buffer |
-| `OP_CONNECT` | Async, non-blocking socket connect |
+| Feature bit | Meaning |
+|---|---|
+| `SLOPRING_FEAT_SINGLE_MMAP` | The whole ring is one mapping (the only mode) |
+| `SLOPRING_FEAT_MULTISHOT` | `SLOPRING_SQE_MULTISHOT` is honoured |
+| `SLOPRING_FEAT_REG_BUFFERS` | Fixed and provided buffers are supported |
 
-## Fixed buffers
+Each control word has one writer. The kernel keeps its own copy of the indices
+it owns and trusts that copy, not the shared one. It reads and writes the
+region with bounded copies and acquire/release loads and stores, and never
+holds a Rust reference into memory the program can change.
 
-`ring_register` can pin a fixed-buffer set once and let later SQEs select a
-buffer by index. SQEs use `SLOPRING_SQE_FIXED_BUFFER` and `Sqe.buf_index`.
-Unregistering fails while any in-flight operation holds a registered buffer.
+## Submission entry (`Sqe`, 64 bytes)
 
-## Provided buffers
+| Field | Type | Meaning |
+|---|---|---|
+| `opcode` | `u8` | Operation |
+| `flags` | `u8` | `SLOPRING_SQE_BUFFER_SELECT` (bit 0) or `SLOPRING_SQE_FIXED_BUFFER` (bit 1); not both |
+| `fd` | `i32` | Target descriptor; `-1` for `OP_NOP` and `OP_TIMEOUT` |
+| `off` | `u64` | File offset for `OP_READ`/`OP_WRITE`; nanoseconds for `OP_TIMEOUT` |
+| `addr` | `u64` | Buffer, `msghdr` or socket address; for `OP_CANCEL`, the `user_data` to cancel |
+| `len` | `u32` | Length of the buffer at `addr` |
+| `op_flags` | `u32` | Per-operation flags: poll mask, send/receive flags, open flags, cancel flags |
+| `user_data` | `u64` | Copied unchanged into the completion |
+| `addr2` | `u64` | Second pointer (the address-length out-pointer for `OP_ACCEPT`, the source address for `OP_RECVFROM`) |
+| `sqe_flags2` | `u16` | `SLOPRING_SQE_MULTISHOT` (bit 0) |
+| `buf_group` | `u16` | Provided-buffer group, with `SLOPRING_SQE_BUFFER_SELECT`; `0` otherwise |
+| `buf_index` | `u16` | Fixed-buffer index, with `SLOPRING_SQE_FIXED_BUFFER` |
+| reserved | `u16`, `u64` | Must be zero |
 
-Provided-buffer rings let userland publish a group of receive buffers. Receive
-SQEs use `SLOPRING_SQE_BUFFER_SELECT` and `Sqe.buf_group`; completions set
-`SLOPRING_CQE_F_BUFFER` and carry the selected buffer id in `Cqe.flags`.
+## Completion entry (`Cqe`, 16 bytes)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `user_data` | `u64` | From the submission |
+| `res` | `i32` | Result, or a negated errno |
+| `flags` | `u32` | Completion flags below; with `SLOPRING_CQE_F_BUFFER`, bits 16 to 31 hold the provided-buffer id |
+
+| Completion flag | Bit | Meaning |
+|---|---|---|
+| `SLOPRING_CQE_F_MORE` | 0 | More completions follow for this operation |
+| `SLOPRING_CQE_F_BUFFER` | 1 | The upper 16 bits carry a provided-buffer id |
+| `SLOPRING_CQE_F_BUF_MORE` | 2 | Reserved; not emitted |
+| `SLOPRING_CQE_F_NOTIF` | 3 | Final completion of `OP_SEND_ZC`: the buffer may be reused |
+
+## Opcodes
+
+| Value | Opcode | Operation | Notes |
+|---|---|---|---|
+| 0 | `OP_NOP` | Nothing | Completes with `0` |
+| 1 | `OP_READ` | `read`/`pread` on a file or socket | |
+| 2 | `OP_WRITE` | `write`/`pwrite` on a file or socket | |
+| 3 | `OP_RECVMSG` | `recvmsg`, including Unix sockets and passed descriptors (`SCM_RIGHTS`) | `addr` is the `msghdr`; multishot |
+| 4 | `OP_SEND` | Send a buffer | |
+| 5 | `OP_ACCEPT` | Accept a connection and install its descriptor | Multishot |
+| 6 | `OP_POLL_ADD` | Wait until a descriptor is ready | `op_flags` is the poll mask; multishot |
+| 7 | `OP_TIMEOUT` | Deadline for the current wait | `off` is nanoseconds; completes with `-ETIME` when it passes |
+| 8 | `OP_CANCEL` | Cancel in-flight operations | See below |
+| 9 | `OP_RECVFROM` | Receive a datagram and its source address | Source address written to `addr2` |
+| 10 | `OP_OPENAT` | Open a path and install a descriptor | `addr` is the path, `len` its length, `op_flags` the open flags; same path rules as `open` |
+| 11 | `OP_CLOSE` | Close a descriptor | Completes at once |
+| 12 | `OP_SEND_ZC` | Send from a fixed buffer without copying | Requires `SLOPRING_SQE_FIXED_BUFFER`; otherwise `-EINVAL` |
+| 13 | `OP_CONNECT` | Connect a socket | `addr` is a `SockAddrIn` or `SockAddrUn`; one completion, `0` or a negated errno |
+
+- An opcode above 13 (`OP_MAX`), or one outside the ring's allowed set,
+  completes with `-EPERM`.
+- Each ring has a set of allowed opcodes fixed at `ring_setup`; nothing can
+  widen it later. `ring_setup` currently allows all fourteen.
+- Every opcode has a capability class fixed at compile time, like a system
+  call, and a compile-time check requires that none needs a capability beyond
+  the descriptors it names. A ring therefore carries no copy of its creator's
+  credentials. See [Permissions](/docs/architecture/authority).
+- Descriptors named in a submission are looked up in the creating process's
+  descriptor table.
+
+`OP_CANCEL` removes the in-flight operation whose `user_data` equals the
+cancel entry's `addr`, posts `-ECANCELED` for it, then posts the cancel
+entry's own result: `0` if it found one, `-ENOENT` if not. With
+`SLOPRING_ASYNC_CANCEL_ALL` in `op_flags` it removes every match.
+
+## Completion rules
+
+- `ring_enter` first tries each submission without blocking. If it finishes,
+  the completion is posted at once.
+- If it would block, the operation stays in flight. The kernel resolves its
+  descriptor once, at submission, and holds the open file until the operation
+  ends, so closing or reusing the descriptor number does not affect it.
+- With `min_complete > 0`, the caller sleeps until the files its in-flight
+  operations wait on become ready, retries them, and returns once
+  `min_complete` completions are ready, a signal arrives, or the nearest
+  `OP_TIMEOUT` passes.
+- Completions are posted only inside `ring_enter`. No kernel thread completes
+  operations in the background, and the ring descriptor never becomes
+  readable.
+- If the completion queue is full, a completion that can be dropped is
+  counted in the overflow word and sets `SLOPRING_CQ_OVERFLOW` (bit 1) in the
+  completion flags word. The flag stays set until the ring is set up again.
+- `OP_ACCEPT` and `OP_OPENAT` (which create a descriptor) and `OP_READ`,
+  `OP_RECVMSG` and `OP_RECVFROM` (which consume data) reserve a completion slot
+  before they run, so their completion is never dropped.
+- A multishot operation (`SLOPRING_SQE_MULTISHOT`, honoured for `OP_ACCEPT`,
+  `OP_RECVMSG` and `OP_POLL_ADD`) stays in flight and posts one completion per
+  event with `SLOPRING_CQE_F_MORE` set. The last completion has the flag clear.
+  Cancelling it posts one `-ECANCELED` with the flag clear.
+
+## Registering buffers
+
+| `op` | Value | `arg` | `nr_args` |
+|---|---|---|---|
+| `RING_REGISTER_PBUF_RING` | 1 | Pointer to a `RegisterBufRingCmd` | unused |
+| `RING_REGISTER_BUFFERS` | 2 | Pointer to an array of `BufIovec` | Array length |
+| `RING_UNREGISTER_PBUF_RING` | 3 | Group id | unused |
+| `RING_UNREGISTER_BUFFERS` | 4 | unused | unused |
+
+Any other `op` returns `-ENOSYS`.
+
+**Fixed buffers.** `RING_REGISTER_BUFFERS` pins up to 1024 buffers
+(`SLOPRING_MAX_FIXED_BUFFERS`), each `{addr: u64, len: u32, _pad: u32}` and at
+most 1 GiB (`SLOPRING_MAX_REG_BUF_BYTES`). A submission uses one by setting
+`SLOPRING_SQE_FIXED_BUFFER` and `buf_index`. The buffer is reserved from
+submission until the operation's final completion or cancellation, and
+`RING_UNREGISTER_BUFFERS` returns `-EBUSY` while any reservation is held.
+
+**Provided buffers.** `RING_REGISTER_PBUF_RING` pins a ring of buffers the
+program refills, for one buffer group:
+
+| `RegisterBufRingCmd` field | Type | Meaning |
+|---|---|---|
+| `ring_addr` | `u64` | Address of the buffer ring |
+| `ring_entries` | `u32` | Power of two, at most 32768 (`SLOPRING_PBUF_RING_MAX_ENTRIES`) |
+| `buf_group` | `u16` | Group id, 1 to 64 (`SLOPRING_MAX_BUF_GROUPS`); `-EEXIST` if already registered |
+| `flags` | `u16` | `SLOPRING_PBUF_RING_INC` (bit 0) reserved for incremental consumption |
+
+Each ring entry is an `IouringBuf` `{addr: u64, len: u32, bid: u16, resv: u16}`.
+The program publishes buffers by advancing a `u16` tail at byte offset 14 of
+the ring, which overlaps `bufs[0].resv` as in Linux's `io_uring_buf_ring`. A
+receive submission sets `SLOPRING_SQE_BUFFER_SELECT` and `buf_group`; the
+kernel takes the next published buffer, fills it, advances the ring head and
+reports the buffer id in the completion. `RING_UNREGISTER_PBUF_RING` returns
+`-EBUSY` while any in-flight operation selects that group.
 
 ## Zero-copy send
 
-`OP_SEND_ZC` requires a registered fixed buffer. It posts a result CQE first and
-later posts a terminal notification CQE with `SLOPRING_CQE_F_NOTIF` when the
-buffer is reusable.
+`OP_SEND_ZC` posts a result completion with `SLOPRING_CQE_F_MORE`, then a final
+completion with `SLOPRING_CQE_F_NOTIF` once the kernel has released the buffer.
 
-The network stack has separate one-shot and TCP retransmit-safe models. TCP
-keeps the registered buffer pinned across retransmit and releases it only after
-ACK or teardown.
+| Socket | Behaviour |
+|---|---|
+| IPv4 datagram | The network card reads directly from the pinned buffer; the final completion follows once the card has finished with it |
+| TCP | The pinned pages stay queued, including for retransmission; the final completion follows once the data is acknowledged and the card has finished with it |
+| Anything else, or when zero copy is not possible (no checksum offload, address not yet resolved, Unix sockets) | The kernel copies the data once and posts both completions at once |
 
-## Connect
+## Ring descriptor
 
-`OP_CONNECT` submits a socket connect and completes with success or a negated
-errno. It does not install a new fd and does not select a buffer. The probe can
-defer while a TCP handshake is in progress and is re-driven during harvest.
+- The descriptor can be closed and duplicated within the process. It is not
+  inherited across `fork` or `exec`.
+- It cannot be polled; `read` and `write` on it fail.
+- Rings live in a table of handles with generation numbers, so a closed and
+  reused descriptor, a descriptor of another kind, or a stale handle gets an
+  error rather than someone else's ring.
+
+## See also
+
+- [*Efficient IO with io_uring*](https://kernel.dk/io_uring.pdf) by Jens Axboe:
+  the design SlopRing follows, with the reasoning behind shared queues,
+  registered buffers and polling.
+- [`io_uring(7)`](https://man7.org/linux/man-pages/man7/io_uring.7.html): the
+  Linux interface, for comparison with the fields above.

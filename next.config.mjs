@@ -19,7 +19,8 @@ const nextConfig = {
       destination: `/docs/${section}/:path*`,
       permanent: true,
     })).concat([
-      { source: '/quickstart', destination: '/docs/quickstart', permanent: true },
+      { source: '/quickstart', destination: '/docs/getting-started/quickstart', permanent: true },
+      { source: '/docs/quickstart', destination: '/docs/getting-started/quickstart', permanent: true },
     ]);
   },
 };

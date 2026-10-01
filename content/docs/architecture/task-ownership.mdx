@@ -1,248 +1,292 @@
 ---
-title: "Task Ownership"
-description: "One owning handle per task, and who is allowed to free it"
+title: "Task lifetimes"
+description: "How the kernel decides when a thread's memory can be freed, when other CPUs may still be using it."
 ---
 
-Every task in SlopOS is an individually allocated, reference-counted object.
-Destruction is decided by the reference count and by nothing else: no path frees
-a task by name, and no path infers that a task is alive from a pointer it
-happens to hold.
+When a thread exits or is killed, SlopOS frees the record the kernel kept
+about it exactly once, and only when nothing can use it any more: no CPU is
+running it, no queue holds it, and no other part of the kernel is in the
+middle of looking at it. That rules out a family of kernel crashes, the ones
+where one CPU reads a thread's record just after another CPU freed it. Both a
+machine proof and tests check the rules.
 
-## One task, one handle
+The record (we'll call it the *task*) holds the thread's registers, its
+kernel stack, its signals and its place in the scheduler. The technique for
+freeing it is not ours. Counting references and freeing at zero is how Rust's
+`Arc` works and how Linux manages its task records, and the two refinements
+below, a task holding a reference to itself and deferring the free when the
+moment is wrong, also come from Linux. SlopOS adds enforcement: the Rust types
+permit only the sanctioned moves, and a build check rejects code that goes
+around them.
 
-A task is reached through `KArc<Task>`, a strong reference-counted handle. The
-allocation is freed when its last strong reference drops, not when the task
-exits, and not when the scheduler reaps it. Exit and reap only release the
-references those stages own.
+Nothing here changes how you write programs, but it explains why exit and
+kill behave as described in
+[Processes and signals](/docs/architecture/processes) and
+[Scheduling and waiting](/docs/architecture/scheduler-wait-protocol). Only the
+[last section](#for-contributors) assumes kernel experience.
 
-> A task's memory is freed by the drop of its final strong reference, and by
-> nothing else.
+## Why freeing a task is hard
 
-`KArc<Task>` yields a shared `&Task`, never `&mut Task`. That is deliberate: a
-published task is reachable from other CPUs, so a Rust mutable borrow of it
-would be unsound no matter how carefully it were scheduled. The fields the
-kernel must still write after publication are reached a different way, described
-under exclusivity below.
+In an ordinary program you usually know when you are done with an object: the
+function that made it returns, or the list that held it is cleared. A task is
+harder, because many unrelated parts of the kernel point at it, on several
+CPUs at once, and none of them is in charge:
 
-## The existence reference
+- the scheduler's run queue, if the task is waiting for a turn;
+- a wait queue, if it is waiting for something;
+- the task table, so that `kill` and `waitpid` can find it by number;
+- its parent, which will ask how it ended;
+- the CPU running it, which is using the task's own kernel stack.
 
-Containers do not cover every state a live task can be in. A blocked kernel
-thread sits in no queue and is named by its waiter node only through an opaque
-handle. A task holding a placement reservation has not reached its queue yet. A
-freshly created task is registered before it is published, and a forked child is
-registered before it joins its parent's child list. In each of those states no
-container holds a reference.
+None of those let go when the thread exits, so freeing the task at exit goes
+wrong in concrete ways:
 
-So a task also owns one reference to itself. It is handed over at registration
-and taken back exactly once, at reap. Linux gives `task_struct` the same
-self-reference and takes it back in `release_task`.
+- **A lookup on another CPU.** CPU 1 looks up pid 42 to deliver a signal and
+  gets a pointer to its task. Meanwhile pid 42 exits on CPU 2 and its record
+  is freed. CPU 1 now writes the signal into memory that belongs to something
+  else.
+- **A late wake.** A task blocked on a pipe is killed and exits. A moment
+  later the pipe's writer wakes the pipe's wait queue, which still points at
+  the dead task.
+- **Freeing the stack it runs on.** A task's last act is to run the code that
+  cleans it up. If that code frees the task's kernel stack, it frees the
+  memory it is executing on.
 
-> A task is registered if and only if it holds its own existence reference.
+All three are *use-after-free* bugs. They are among the worst a kernel can
+have because the crash doesn't happen where the mistake is: the freed memory
+gets reused, and the corruption surfaces somewhere unrelated, later, usually
+only under load.
 
-Two properties follow, and the rest of the ownership model leans on both.
+## How reference counting solves it
 
-The registry can be a pure weak index. It observes tasks without keeping any
-alive, so a lookup is a liveness-checked upgrade rather than a fabricated strong
-reference, and an entry left behind by a missed unhash cannot resurrect a dead
-task. The upgrade simply fails.
+The fix is to free the task when nobody holds it any more, whether or not it
+has exited. Each task carries a count of *references*, one for each holder in
+the list above. Taking a reference adds one, giving it back subtracts one,
+and whoever brings the count to zero frees the task, so no holder needs to
+know about the others or the order in which they let go.
 
-And while a task is live, every container's release is provably not the final
-one. That is what lets a container release stay a bare atomic decrement, safe to
-perform under a lock and with interrupts disabled.
+That fixes the first failure: CPU 1's lookup takes a reference, so the record
+stays put until CPU 1 is done with it, even if the thread exits in the
+meantime. The second is handled with a lighter kind of reference. The pipe's
+wait queue records only the task's number, which doesn't keep the task alive.
+To wake the task, the queue first asks the task table for a real reference to
+that number. If the task is gone the request fails and the wake does nothing;
+otherwise the wake holds the task safely while it works.
 
-```text
-register:
-  insert the weak registry entry
-  retain one reference for the task itself
-  claim the existence flag
+Two rules keep the count reliable:
 
-reap:
-  release the existence flag
-  drop the reference the task held for itself
-  remove the weak registry entry
-```
+- **The subtraction decides who is last.** It is tempting to write "if the
+  count is 1, I'm the last holder, so free it". But two CPUs can both read 2,
+  both subtract, and neither frees; or a new holder can appear between the
+  read and the free. One atomic operation lowers the count and reports what
+  it was, and exactly one holder ever sees it go from one to zero.
+- **Only references keep a task alive.** Code that has a pointer to a task
+  may not assume the task is alive. If it needs the task, it holds a
+  reference.
 
-The two sequences run in opposite orders, both under the registry lock, so the
-biconditional holds between operations rather than at every instant inside one.
-Within registration, the retain happens before the flag is claimed, never after:
-a releaser that observes the flag must be guaranteed that the count it is about
-to take back already exists.
+## Why each task holds a reference to itself
 
-## Containers own their members
+Some states of a living task have no natural holder. A kernel thread blocked
+in a wait sits in no run queue, and a new task is in the task table before it
+is in any queue. If nothing held a reference at those moments, the count could
+reach zero and the task would be freed while alive.
 
-The per-CPU ready queue, the remote-wake inbox, the deferred previous-task slot,
-and the wait maps hold their member by an intrusive link plus one strong
-reference parked as a raw pointer. A small placement state machine is the sole
-sanctioned way to move a reference into or out of such a slot.
+So every task holds one reference to itself, its *existence reference*, as
+Linux's task records do. It is handed over when the task is entered in the
+task table, and taken back only when the task is *reaped*: removed from the
+table after it has exited and its parent has collected its exit status (or it
+had no parent to collect it).
+
+Because every live task keeps itself alive, the task table doesn't have to.
+It holds only *weak* references, which say where a task is without keeping it
+alive. A lookup by number turns a weak reference into a real one if the task
+still exists and fails cleanly if it doesn't, so a stale entry can never bring
+a dead task back.
+
+## Who owns the running task
+
+The third failure, freeing the stack a task is running on, needs one more
+holder: the CPU itself. Each CPU keeps a reference to the task it is running
+in a slot of its own, so that task can't be freed. A task also can't be reaped
+while any CPU is running it, has it marked as its current task, or uses it as
+its idle task; the kernel refuses and tries again later.
+
+Switching from task A to task B is the delicate moment, because the CPU must
+give up its reference to A while it is still running on A's stack. So it
+moves B's reference into its slot, sets A's reference aside in a second slot,
+switches stacks, and only once it is on B's stack gives A's reference back.
+Because of this a CPU can switch straight from one task to the next, without
+passing through its idle task in between.
+
+## When a task can't be freed immediately
+
+Freeing a task is a lot of work. Its kernel stack and saved registers go back
+to the memory allocator, and the allocator may need to tell every other CPU
+to forget cached addresses and wait for them all to answer. The last
+reference is often given back somewhere that work can't be done:
+
+- **With interrupts switched off.** The other CPUs answer with interrupts, so
+  a CPU that waits for them with interrupts off waits forever.
+- **While holding a lock.** If another CPU needs the same lock before it can
+  answer, each waits for the other forever (a *deadlock*).
+- **On the dying task's own stack**, as above.
+
+The task table gives back lookup references while holding its lock, and the
+scheduler gives them back with interrupts off, so this is the common case.
+
+So giving back a reference happens in two parts. The subtraction is always
+immediate. If it was the last reference and the moment is safe (interrupts
+on, no lock held, the task not running anywhere), the task is freed on the
+spot. Otherwise it goes on a list of dead tasks, which SlopOS calls the
+*graveyard*, and the CPU frees everything on that list at its next safe
+moment: when it releases its last lock, returns from a system call, or goes
+idle. Whether the moment is safe depends only on what the CPU is doing, never
+on the count. Linux's real-time configuration defers the last release of a
+task in the same way.
+
+## How Rust's ownership rules help
+
+Most of the rules above are about ownership, which the Rust compiler can
+check:
+
+- **There is one way to hold a task.** Outside
+  [the trusted core](/docs/verification/ostd-trusted-core), code holds a task
+  only through a handle type (`TaskRef`), the kernel's equivalent of an
+  `Arc<Task>`. Copying a handle takes a reference, and when a handle goes out
+  of scope Rust gives the reference back through the routine that decides
+  whether to free now or later. Code can't forget to give one back or give
+  one back twice, and a killed task unwinding its stack releases everything
+  it held without special code for the kill.
+- **A task other CPUs can see is read-only.** It is reachable only as a
+  shared reference (`&Task`), and Rust forbids changing data through a shared
+  reference unless the type allows it. So fields that change after the task
+  is published are atomics, or live in cells that demand proof of exclusive
+  access.
+- **Exclusive access has to be proved.** Only the CPU running the task, or
+  the CPU switching to or from it, may write its saved registers. The switch
+  can't take a lock, so the writing code must instead hold a small value (a
+  *witness*) that can be created only in those situations and can't be
+  passed to another CPU.
+
+## How we know it works
+
+The logic is proved with Verus, a tool that checks a mathematical proof
+against a model of the code. The proof covers seven properties, among them
+that a task with references is never freed, that exactly one holder sees the
+count reach zero, that a task is in the table exactly when it holds its
+existence reference, and that a task a CPU is running is never reaped. It
+also includes the tempting wrong version ("if the count is 1, free it") and
+shows that it reaches a forbidden state, so the properties aren't trivially
+true.
+
+The ordering of memory operations between CPUs and the pointer handling
+inside the queues are outside the model. Those are checked by running the
+code under KernMiri, an interpreter that detects undefined behaviour, and by
+kernel tests. See [Proofs](/docs/verification/verus-status) and
+[Miri](/docs/verification/kernmiri).
+
+## For contributors
+
+The invariants a change must keep, and why.
+
+**Only the final strong reference frees a task.** Outside OSTD a task
+(`KArc<Task>`) is held only through `TaskRef`, and every drop goes through
+`task_put`. Raw task pointers exist only in the placement and link
+primitives, the per-CPU control region and the pre-heap boot stubs;
+`scripts/check_task_ownership.sh` enforces this.
+
+**Finality comes from the decrement, deferral from the context.** The
+one-to-zero winner in `task_put` gets a `ParkedTask` token that graveyard
+operations take by value, so a double destroy doesn't type-check. It destroys
+inline only if `drop_context_is_safe()` and the task isn't dispatch-pinned;
+otherwise it pushes onto the graveyard, a lock-free stack drained at the
+[bottom-half point](/docs/architecture/scheduler-wait-protocol#for-contributors).
+Never decide finality from a `strong_count` read, and never key the deferral
+on a count.
+
+**A task is registered if and only if it holds its existence reference.**
+`register_task` claims the flag only after the reference exists, and
+`reap_task_registration` drops it only after releasing the registry lock,
+because that drop may be final. While the existence reference is held, no
+container's release can be final, which is why those releases may be a bare
+decrement under a lock with interrupts off.
+
+**A container owns what it links.** The ready queue, the remote-wake inbox,
+the deferred previous-task slot and the wait maps each hold a member by an
+intrusive link plus one strong reference parked as a raw pointer, and the
+placement state machine (`slopos-ostd/src/task/placement.rs`) is the only way
+in or out:
 
 | Operation | Effect on the strong count |
 |-----------|----------------------------|
 | Clone | Mints one reference from a still-live task pointer |
-| Retain | Parks one reference into a container without materializing a handle |
+| Retain | Parks one reference into a container without making a handle |
 | Leak | Parks an owning handle as a raw pointer |
 | Reclaim | Takes a parked reference back out as a handle |
 
-> A task linked into a container is owned by that container.
+Every retain or leak pairs with exactly one reclaim. An unmatched park leaks
+the task forever; a double reclaim is a use-after-free.
 
-The operations balance one-to-one: every retain or leak pairs with exactly one
-reclaim, or with a matching drop of the cloned handle. The two failure modes are
-symmetric and both fatal. An unmatched park inflates the strong count forever,
-so the allocation never returns to the heap. A double reclaim frees one
-reference too many, which is a use-after-free with extra steps.
+**The reap gate must stay a disjunction.** `task_is_dispatch_pinned` holds if
+the task is on a CPU, or some CPU's control region names it as current, or it
+is some CPU's idle task. The `CurrentTask` and `IdleTask` borrow guards
+(both `!Send` and `!Sync`) take no reference and rest on the second and third
+disjuncts. Weakening the gate breaks those guards while the Verus proof keeps
+verifying, because its model sees only the atomic step.
 
-Because these are the only sanctioned transitions, "is this task still alive?"
-never has to be asked at a container boundary. Membership answers it.
+**No owning reference crosses a switch in a stack frame.** The incoming
+task's reference goes into `current_task_ref` and the outgoing one into the
+deferred previous-task slot before the register switch; the successor
+releases it.
 
-## Release is decided by the decrement
+**Fields written after publication need a witness.** The saved register
+context, FPU area and user-mode round-trip slots live in `TaskOwnCell`, and
+writing needs a sealed `TaskExclusive` witness (`CurrentTask` or
+`SwitchWindow`). A registered but unpublished task is *not* exclusive, since
+the registry and diagnostics can reach it; before publication, use
+`KArc::get_mut` on the sole strong reference. The accessor returns `*mut T`,
+not `&mut T`, because two witnesses can coexist in nested frames (an
+interrupt handler above a syscall on the same task) and two `&mut T` would be
+undefined behaviour. Rust-for-Linux's
+[`Opaque<T>`](https://rust.docs.kernel.org/kernel/types/struct.Opaque.html)
+makes the same choice.
 
-A task's destructor is allocator-heavy. It returns the kernel stack, the FPU
-area, and the address space to the buddy allocator, whose reuse path performs
-synchronous cross-CPU TLB shootdowns. Three contexts cannot survive that:
+**FPU state is switched eagerly**, because lazy switching leaks a stale
+register file across a privilege boundary (CVE-2018-3665). The CPU's owner
+slot is compared, never dereferenced, so a dead task's address left there is
+harmless.
 
-- **Interrupts disabled.** The shootdown waits on remote CPUs that cannot
-  answer.
-- **Under a lock.** The allocator's own reuse path is a hidden cross-CPU wait,
-  so the destructor becomes a lock held across a global rendezvous.
-- **On the dying task's own stack.** The destructor would free the stack it is
-  standing on.
+The proof (`verification/proofs/task_ownership.rs`) models each operation as
+one atomic step, so a change to memory ordering, the intrusive links or the
+weak count also needs KernMiri and targeted tests.
 
-The last reference to a task is nonetheless released from exactly those
-contexts: a registry lookup guard dropped inside the registry spinlock, a batch
-of guards dropped on the timer tick, a ready-queue entry released under the
-queue lock, the outgoing dispatch reference in the interrupts-off switch tail.
+## Further reading
 
-So release splits into two halves. The decrement always happens immediately. The
-destruction runs inline only when the context provably allows it, and otherwise
-the now uniquely owned allocation is parked in a graveyard for the idle
-dispatcher to destroy later, with interrupts on and no lock held.
+- [*Shared-State Concurrency*](https://doc.rust-lang.org/book/ch16-03-shared-state.html)
+  in the Rust Book, and its chapter on
+  [`Rc<T>`](https://doc.rust-lang.org/book/ch15-04-rc.html). Start here:
+  reference counting from first principles, and why `Arc` is the thread-safe
+  kind.
+- [*Arc*](https://doc.rust-lang.org/nomicon/arc-mutex/arc.html), from the
+  Rustonomicon's chapter on implementing `Arc`. How the counting works inside,
+  including why the final decrement decides and which memory orderings it
+  needs.
+- [*Adding reference counters (krefs) to kernel objects*](https://docs.kernel.org/core-api/kref.html)
+  in the Linux kernel documentation. The same idea as used throughout Linux,
+  with the rules for taking a reference while another CPU may be dropping the
+  last one.
+- [*Common Concurrency Problems*](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf),
+  chapter 32 of *Operating Systems: Three Easy Pieces*. The deadlock
+  conditions behind not freeing a task while a lock is held.
 
-```text
-release one reference:
-  decrement the strong count
-  if this decrement was not the final one
-      done
-  else if the context permits destruction
-      destroy inline
-  else
-      push onto the graveyard stack
+## In the source
 
-idle dispatcher:
-  pop the graveyard, interrupts on, no lock held
-  run the destructor
-```
-
-Two properties make this correct, both borrowed from Linux's
-`put_task_struct` and its PREEMPT_RT deferral.
-
-Finality is decided *by* the decrement, never by reading the count first. A
-`strong_count == 1` pre-check cannot be made race-free. Two holders can both
-observe two, and both then drop. A count-elected release is the shape that
-produced four separate use-after-free defects in this tree before the rule was
-made explicit.
-
-The deferral decision keys on *context*, never on a count. Whether it is safe to
-destroy here is a question about interrupts, locks, and which stack is
-executing; it has nothing to do with how many references remain.
-
-The graveyard stack itself needs no lock. A pusher arrives only by winning the
-one-to-zero strong transition, and exactly one thread can win that per
-allocation, so the pusher owns the node outright and its link slot has no
-contention at all. That is what lets a push happen under the registry lock,
-where taking any further lock would risk the very deadlock the graveyard exists
-to avoid.
-
-## The reap gate
-
-A reap never fires on a dispatch-pinned task. A task that some CPU is executing,
-or that some CPU's per-CPU region names as its current task, stays in the
-registry and keeps its existence reference until that stops being true.
-
-> A task some CPU is running cannot be reaped, and therefore cannot be freed.
-
-This gate is what makes the current-task borrow sound. The guard for "the task
-running on this CPU" takes no reference count at all. It is a borrow, not an
-owned handle. It is safe because a task's own execution pins its allocation: the
-reap gate declines while the task is dispatch-pinned, and one disjunct of that
-predicate tests precisely whether the task is some CPU's current task, which is
-exactly the condition under which the guard can exist.
-
-Deleting that disjunct would delete the guard's soundness argument, so the
-dependency is stated at both ends rather than left to be rediscovered. The guard
-is also neither `Send` nor `Sync`, so it cannot travel to a CPU whose per-CPU
-region names a different task.
-
-## Exclusivity without a lock
-
-Some fields must still be written after publication: the saved register context,
-the FPU area, the user-mode round-trip slots. They cannot be reached through
-`&mut`, because the handle only ever yields a shared reference. They live in
-cells whose writes require a value proving the writer has exclusive access.
-
-A lock is the wrong instrument here. These fields are written on the
-context-switch path, which runs with interrupts off and must not acquire
-anything. A lock taken in the switch window has the same shape as the allocator
-deadlock described above. Exclusivity in this case is not *arranged* by taking a
-lock; it is a fact about the CPU that already holds. Only the CPU running a task
-touches that task's registers, and only the CPU performing a switch touches
-either endpoint's. The witness makes that fact checkable instead of commented.
-
-| Witness | Proves |
-|---------|--------|
-| Current task | This CPU is running the task |
-| Switch window | This CPU is switching between two tasks and owns both endpoints |
-
-Both are neither `Send` nor `Sync`, so a witness cannot be observed from a CPU
-other than the one that minted it, and the trait is sealed, so no crate outside
-the trusted core can forge a third.
-
-A witness authorizes less than it might appear to. It does not cover the atomic
-fields, which need no witness. It does not cover states that merely look
-exclusive: a registered-but-unpublished task is still reachable through every
-registry lookup, the active-task walk, the address-space scan, the job-control
-handles, and the diagnostic dump. Being unschedulable is not the same as being
-unobservable. Exclusive access before publication comes instead from proving the
-handle is the sole strong reference, which establishes uniqueness rather than
-asserting it.
-
-### Why the cell hands out a raw pointer
-
-The authorized accessor returns `*mut T`, never `&mut T`, and never `T` by
-value. Returning `T` is ruled out by size: one FPU state is 2.6 KiB on the
-caller's frame, which the kernel's stack-frame budget rejects outright.
-
-The `&mut T` case is the load-bearing one. Two witnesses for the same task can
-legitimately coexist in nested frames (an interrupt handler running above a
-syscall on the same task), and two `&mut` to one field are aliasing undefined
-behavior even when the accesses are disjoint in practice. This is not a local
-judgement call about strictness. Memory inside an `UnsafeCell` carries shared
-read-write provenance, which composes with itself, whereas forming a `&mut`
-pushes a unique provenance that pops its sibling.
-
-Rust-for-Linux reached the identical fork with `Opaque<T>` and chose the same
-signature, `get(&self) -> *mut T`, listing "no uniqueness for mutable
-references: it is fine to have multiple `&mut Opaque<T>` point to the same
-value" as a design property rather than a caveat. SlopOS holds the same claim
-under both aliasing models, Stacked Borrows and Tree Borrows.
-
-## What is machine-checked
-
-The ownership logic above is verified with Verus: the existence reference is
-handed out and taken back at most once and elected by a flag rather than a
-count; container transitions conserve the strong count; registered and holding
-the existence reference are equivalent; a referenced task's body is live;
-exactly one caller wins the one-to-zero transition and destruction runs once; a
-reap never fires on a dispatch-pinned task; and a destroyed task is fully
-detached.
-
-The proof is load-bearing rather than vacuous. It encodes a count-elected
-release as a deliberately broken variant and shows that it reaches a state the
-invariant forbids.
-
-Several things are deliberately excluded rather than assumed: the weak-memory
-ordering of the flag exchange and of the reference-count release loop, the
-intrusive placement links and the provenance of the raw pointers the placement
-operations pass around, the saturation arm of the reference count, and the weak
-count itself. Those stay covered by KernMiri and by targeted tests.
-
-See [Verus Status](/docs/verification/verus-status) for current proof coverage and
-[KernMiri](/docs/verification/kernmiri) for what the interpreter catches instead.
+| Where | What |
+|---|---|
+| `sched/src/task/task_table.rs` | `TaskRef`, the task table, registering and reaping |
+| `sched/src/task/task_reclaim.rs` | Giving references back, and the graveyard |
+| `slopos-ostd/src/task/placement.rs` | Moving references into and out of queues |
+| `slopos-ostd/src/task/cell.rs` | Exclusive-access witnesses for task fields |
+| `slopos-ostd/src/task/fpu_owner.rs` | The FPU owner tag |
+| `scripts/check_task_ownership.sh` | The build check for raw task pointers |
+| `verification/proofs/task_ownership.rs` | The Verus proof |

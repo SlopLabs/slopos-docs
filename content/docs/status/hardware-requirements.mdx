@@ -1,44 +1,77 @@
 ---
-title: "Hardware Requirements"
-description: "Expected QEMU and platform features"
+title: "Hardware"
+description: "What you need to run SlopOS in QEMU, and what works on the one laptop it has run on."
 ---
 
-The supported runtime is QEMU, not bare metal.
+You run SlopOS in QEMU on a Linux or macOS computer. The only real machine it
+has run on is one Lenovo laptop, which boots the live ISO from a USB stick.
 
-## Required QEMU Shape
+## What your computer needs
 
-| Feature | Requirement |
-|---------|-------------|
-| Machine | `q35` |
-| Firmware | OVMF UEFI |
-| Bootloader | Limine binary release cached in `third_party/limine` |
-| CPU | x86_64 with APIC support; `host` with KVM/HVF or `max` with TCG |
-| SMP | `QEMU_SMP` power of two, default `4` |
-| Memory | Default `512M`, adjustable with `QEMU_MEM` |
-| Timers | HPET and LAPIC timer |
-| Interrupts | LAPIC, IOAPIC, MSI/MSI-X |
-| Storage | VirtIO block with legacy mode disabled |
-| Network | VirtIO net with legacy mode disabled |
-| Input | PS/2 keyboard and mouse |
-| Display | VGA framebuffer device with Limine-provided mode |
-
-## Host Packages
+QEMU emulates a whole PC, so the host needs QEMU itself, a few image tools and
+enough memory for the guest:
 
 | Host | Packages |
 |------|----------|
-| macOS | `qemu xorriso e2fsprogs just go` via Homebrew |
-| Debian/Ubuntu | `qemu-system-x86 xorriso e2fsprogs golang-go` plus `just` |
 | Arch | `qemu-full xorriso e2fsprogs just go` |
+| Debian or Ubuntu | `qemu-system-x86 xorriso e2fsprogs golang`, plus `just` |
+| macOS | `qemu xorriso e2fsprogs just go` from Homebrew |
 
-Rust is installed through `rustup` and pinned by `rust-toolchain.toml`.
+Go runs the test harness behind `just test`, and `openssl` is needed for the
+TLS tests in `just test-host`. `just setup` installs the pinned Rust nightly and
+the rest. The [Quickstart](/docs/getting-started/quickstart) walks through it.
 
-## Optional Acceleration
+QEMU is much faster when it can use the processor's virtualisation support:
+KVM on Linux, HVF on macOS. Without it, QEMU falls back to emulating every
+instruction in software (TCG), which works but is slow.
 
-| Host | Preferred accelerator |
-|------|-----------------------|
-| Linux | KVM |
-| macOS | HVF |
-| Other or restricted | TCG |
+## Memory for each way of booting
 
-When acceleration is unavailable, the QEMU wrapper switches from `-cpu host` to
-`-cpu max` and forces TCG.
+| What you boot | Guest memory | Change it with |
+|---------------|--------------|----------------|
+| Live ISO (`just boot-live`) | 512 MB | `QEMU_MEM` |
+| Test suite (`just test`) | 1 GB | `QEMU_MEM` |
+| Development machine (`just boot`, `just boot-fast`) | 4 GB | `DEV_QEMU_MEM` |
+| Self-hosted builds of the test kernel | 8 GB | `DEV_QEMU_MEM=8G` |
+
+The guest gets 4 CPUs by default (`QEMU_SMP`, which must be a power of two).
+So the development machine wants a host with comfortably more than 4 GB free.
+Every QEMU setting is listed on [QEMU options](/docs/getting-started/qemu-options).
+
+## The emulated machine
+
+QEMU presents a modern PC (the `q35` machine) with UEFI firmware (OVMF) and the
+Limine boot loader. Disks are NVMe, plus one virtio disk the tests still use;
+the network card and the display are virtio devices, and the keyboard and mouse
+are the classic PS/2 kind. The development machine boots from an NVMe disk
+holding two boot slots and keeps its files on another; the live ISO boots from
+an emulated CD with no disk at all. [Disks](/docs/architecture/storage) explains
+how those disks are laid out.
+
+## The tested laptop
+
+The live ISO (`just iso`, written to a USB stick) boots a Lenovo laptop with an
+Intel Raptor Lake-P processor, with Secure Boot turned off. It runs from memory
+and does not touch the laptop's disk.
+
+| Part | What works |
+|------|------------|
+| Processor (12 hardware threads) | All threads run, with per-CPU timers |
+| Display (Intel UHD Graphics) | Our Intel Xe display driver draws the desktop |
+| Keyboard | Works, found through the firmware's ACPI tables |
+| Touchpad (I2C-HID) | Works, found through ACPI, over the I2C controller |
+| NVMe disk | Driver loads; the live system does not mount it |
+| Firmware | Reset and power-off through UEFI |
+
+The kernel log, and any panic message, appear on screen.
+
+## What real hardware still lacks
+
+The laptop has no network under SlopOS, because its Realtek wired card and
+Intel Wi-Fi have no drivers. Its USB controllers have no driver either, so USB
+devices stop working once the kernel starts. The disk layout SlopOS boots from
+can already share a disk with the laptop's existing OS, but nothing inside
+SlopOS can create that layout, so it cannot install itself onto the laptop's
+disk yet. A panic still leaves no record after the machine resets.
+The [Roadmap](/docs/status/roadmap) covers what is planned for each, and
+[Known limitations](/docs/status/known-limitations) lists the rest.

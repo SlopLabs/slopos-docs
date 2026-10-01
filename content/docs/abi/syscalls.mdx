@@ -1,43 +1,110 @@
 ---
-title: "Syscall Table"
-description: "Overview of the SlopOS syscall ABI"
+title: "System call ABI"
+description: "How SlopOS numbers its system calls, which registers they use, and what they return."
 ---
 
-The syscall table is part of the SlopOS ABI. The source tree defines the exact
-numeric assignments, table size, and constants. These docs describe the shape of
-the interface and the rules for keeping it stable.
+This page lists the rules of the SlopOS system call interface: numbering,
+registers, return values and the families of calls. The authoritative table of
+numbers is `abi/src/syscall/numbers.rs` (crate `slopos_abi`); errno values are
+in `abi/src/errno.rs`. [System calls](/docs/architecture/syscalls) explains how
+the kernel handles a call.
 
-## Groups
+## Numbering
 
-| Group | Examples |
-|-------|----------|
-| Core | yield, exit, time, system information, reboot |
-| Random and roulette | entropy and Wheel of Fate calls |
-| Filesystem | path operations, fd operations, metadata, directory listing |
-| Memory | heap break, mappings, protection, memfd, truncate |
-| Process | spawn, wait, terminate, exec, fork, clone, identity |
-| SMP | CPU count, current CPU, affinity |
-| Signals | actions, masks, delivery, return, signalfd |
-| Poll and descriptors | poll, select, pipe, dup, fcntl, ioctl, pidfd |
-| Networking | sockets, bind/listen/accept/connect, TCP/UDP I/O, DNS, options |
-| UI and TTY | framebuffer, input, clipboard, font, pty, terminal I/O |
-| SlopRing | setup, enter, fixed/provided buffer registration |
-| Testing | kernel/userland test reporting and test-phase control |
+| Range | Contents | Rule |
+|---|---|---|
+| `0` to `472` (`SYSCALL_LINUX_MAX`) | Linux-numbered calls | Number, name, arguments and behaviour are those of the Linux x86-64 call |
+| `1024` (`SYSCALL_PRIVATE_BASE`) upwards | SlopOS-only calls | Numbered `1024 + k`, contiguous from `k = 0`; the private table holds 48 slots (`SYSCALL_PRIVATE_TABLE_SIZE`) |
 
-## Stability rules
+- A number below 1024 always means the Linux call with that number. If SlopOS
+  does not implement it, the number returns `-ENOSYS`; it is never reused for
+  something else.
+- 1024 is above every number Linux has assigned and below the x32 marker bit
+  (bit 30), so a private number cannot be mistaken for either. ARM uses the same
+  scheme with `__ARM_NR_BASE`.
+- SlopRing uses private numbers, not io_uring's (425 to 427), because it does
+  not implement io_uring's interface.
+- `scripts/check_syscall_abi.sh` enforces these rules. It compares every
+  number below 1024 with a vendored copy of Linux's `syscall_64.tbl` and
+  fails if a name sits on a number Linux gave to another call, if the private
+  range has a gap, if a number or name is used twice, or if a private name
+  matches a Linux call without an allowlist entry explaining why.
+- Numbers changed in September 2026 (a breaking change). Programs built
+  against older numbers do not run on current kernels.
 
-- Numeric assignments are canonical in the ABI source, not in prose.
-- Assigned numbers stay stable. Removed or reserved syscalls leave gaps.
-- New syscalls use the next available assignment from the source ABI module.
-- Structs shared across the boundary use fixed representation and explicit
-  layout tests.
-- Userland wrappers should import ABI constants instead of duplicating numbers.
-- Public docs should describe behavior and link to generated or source ABI when
-  exact values are required.
+## Registers
 
-## Return convention
+The calling convention is the Linux x86-64 one.
 
-Handlers return non-negative values on success and negative errno values on
-failure. Unknown table slots return `-ENOSYS`.
+| Register | Use |
+|---|---|
+| `rax` | System call number on entry, return value on exit |
+| `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9` | Arguments 1 to 6 |
+| `rcx`, `r11` | Overwritten by the `syscall` instruction |
 
-See [Adding a syscall](/docs/development/adding-a-syscall) before extending the ABI.
+The fourth argument is in `r10`, not `rcx`, because the `syscall` instruction
+stores the return address in `rcx`.
+
+## Return values and errors
+
+- Success returns a value of zero or more.
+- Failure returns a negated errno, so any value from `-4095` to `-1` is an
+  error.
+- Errno values use Linux's numbers (`EPERM` is 1, `ENOSYS` is 38).
+- A number with no handler, in either range or outside both, returns
+  `-ENOSYS`.
+- `ERESTARTSYS` (512) and `ERESTARTNOHAND` (514) are kernel-internal and never
+  reach a program. When a signal interrupts a call that returned one of them,
+  the kernel either restarts the call after the signal handler runs or returns
+  `-EINTR`, following Linux's `SA_RESTART` rules.
+
+## Families
+
+Linux-numbered calls:
+
+| Family | Calls |
+|---|---|
+| File I/O | `read`, `write`, `open`, `openat`, `close`, `pread64`, `pwrite64`, `readv`, `writev`, `lseek`, `fcntl`, `ioctl`, `flock`, `fsync`, `fdatasync`, `truncate`, `ftruncate` |
+| Paths and metadata | `stat`, `fstat`, `lstat`, `newfstatat`, `access`, `faccessat`, `faccessat2`, `getdents64`, `getcwd`, `chdir`, `fchdir`, `mkdir`, `mkdirat`, `rmdir`, `rename`, `renameat`, `link`, `linkat`, `unlink`, `unlinkat`, `symlink`, `symlinkat`, `readlink`, `readlinkat`, `chmod`, `fchmod`, `fchmodat`, `fchmodat2`, `mknod`, `mknodat`, `umask`, `utimensat`, `statfs`, `fstatfs` |
+| Descriptors and polling | `dup`, `dup2`, `dup3`, `pipe`, `pipe2`, `poll`, `ppoll`, `select`, `pselect6`, `memfd_create`, `pidfd_open`, `signalfd4` |
+| Memory | `mmap`, `munmap`, `mprotect`, `msync`, `brk` |
+| Processes and threads | `fork`, `clone`, `execve`, `wait4`, `exit`, `exit_group`, `getpid`, `getppid`, `gettid`, `getpgid`, `setpgid`, `getsid`, `setsid`, `getuid`, `getgid`, `geteuid`, `getegid`, `arch_prctl`, `futex`, `prlimit64`, `vhangup` |
+| Signals | `rt_sigaction`, `rt_sigprocmask`, `rt_sigreturn`, `rt_sigsuspend`, `rt_sigtimedwait`, `rt_sigpending`, `rt_sigqueueinfo`, `rt_tgsigqueueinfo`, `kill`, `tgkill`, `sigaltstack` |
+| Scheduling and time | `sched_yield`, `sched_setaffinity`, `sched_getaffinity`, `getcpu`, `getpriority`, `setpriority`, `nanosleep`, `clock_gettime`, `clock_settime` |
+| Networking | `socket`, `bind`, `listen`, `accept`, `accept4`, `connect`, `sendto`, `recvfrom`, `sendmsg`, `recvmsg`, `getsockname`, `getpeername`, `setsockopt`, `getsockopt`, `shutdown` |
+| System | `uname`, `sysinfo`, `getrandom`, `mount`, `umount2`, `sync`, `reboot` |
+
+SlopOS-only calls:
+
+| Family | Calls |
+|---|---|
+| Introspection and logging | `klog_write`, `sys_info`, `process_list`, `cpu_info`, `percpu_stats` |
+| Terminal | `ctty_read` |
+| Process launch | `spawn_path`, `sigdefault` |
+| Network control | `resolve`, `net_query`, `net_iface_ctl`, `net_addr_ctl`, `net_route_ctl`, `net_resolver_set`, `net_monitor` |
+| Display and input | `fb_info`, `fb_flip`, `cursor_set_image`, `cursor_move`, `set_display_mode`, `screen_acquire`, `input_sink_acquire`, `input_poll_batch`, `clipboard_copy`, `clipboard_paste`, `font_set`, `keymap_load`, `keymap_get_name` |
+| SlopRing | `ring_setup`, `ring_enter`, `ring_register` (see [SlopRing](/docs/abi/slopring)) |
+| Wheel of Fate | `roulette`, `roulette_result`, `roulette_draw` |
+| Testing | `test_report`, `run_userland_tests`, `test_panic` |
+| Firmware variables | `efivar_get`, `efivar_set` |
+
+Each call also has a capability class fixed at compile time, which decides who
+may make it. [Permissions](/docs/architecture/authority) lists the classes.
+
+## Rules for changing the ABI
+
+- `abi/src/syscall/numbers.rs` is the only place a number is written down.
+  Userland imports the constant; documentation does not repeat numbers.
+- A Linux-numbered slot holds only the Linux call of that number, with
+  Linux's arguments.
+- A new SlopOS-only call takes the next free `1024 + k`. When the private
+  table is full, `SYSCALL_PRIVATE_TABLE_SIZE` grows.
+- Every struct passed between a program and the kernel is `#[repr(C)]` and has
+  compile-time checks on its size and field offsets.
+
+[Add a syscall](/docs/development/adding-a-syscall) walks through adding one.
+The Linux [`syscall(2)`](https://man7.org/linux/man-pages/man2/syscall.2.html)
+and [`errno(3)`](https://man7.org/linux/man-pages/man3/errno.3.html) man pages
+document the conventions SlopOS follows, and Linux's
+[`syscall_64.tbl`](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl)
+is the numbering it follows.

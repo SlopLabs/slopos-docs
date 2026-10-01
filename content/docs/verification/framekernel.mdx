@@ -1,61 +1,226 @@
 ---
-title: "Framekernel"
-description: "The SlopOS trusted-core discipline"
+title: "The framekernel"
+description: "Why all of the kernel's unsafe Rust lives in one crate, and what that lets you trust."
 ---
 
-SlopOS uses a framekernel split: one trusted core crate owns unsafe and raw
-machine interfaces, while the rest of the kernel is written against safe APIs.
+import { FramekernelLayers } from '@/components/diagrams/framekernel';
 
-## Rules
+SlopOS is written in Rust, and all of the kernel's `unsafe` code lives in one
+crate, the *trusted core*. The scheduler, the memory manager, the filesystem,
+the network stack and every driver are written in safe Rust, and the compiler
+refuses `unsafe` in them. So if you are reading a driver and wondering whether
+a bug in it could corrupt the kernel's memory, the answer is no, provided the
+trusted core is correct. You get a much smaller thing to check: one crate
+instead of the whole kernel.
 
-| Rule | Enforcement |
-|------|-------------|
-| `slopos-ostd` owns kernel unsafe | Crate-level unsafe bans, a source audit, and an expansion audit |
-| No unsafe reaches the compiler in a kernel crate | Per-crate `-Zunpretty=expanded` scan over a feature matrix |
-| Linker sections are OSTD's to name | Post-link section and registry-entry audit |
-| Kernel services stay synchronous | Async-surface audit |
-| Kernel allocation routes through OSTD | Allocation-dependency audit |
-| Stack frames stay bounded | Final kernel stack-size audit |
-| OSTD's safe API does not delegate obligations | Contract-surface ratchet |
-| Trusted core is measured | TCB ratio report |
-| Critical invariants have proofs | `just verify` |
-| OSTD unsafe behavior is interpreted | `just check-miri` |
+The design is called a *framekernel*, and it is not ours. It comes from
+[Asterinas](https://asterinas.github.io/book/kernel/the-framekernel-architecture.html),
+a Rust kernel whose authors described it in their USENIX ATC '25 paper. SlopOS
+follows it closely, down to the name of the trusted crate, `slopos-ostd`
+(OSTD, after Asterinas's own). This page explains why a kernel needs `unsafe`
+at all, what changes when you keep it in one place, how the build makes sure
+it stays there, and what that does and doesn't promise.
 
-## Why the lint is not enough on its own
+## Why a kernel needs `unsafe`
 
-`#![forbid(unsafe_code)]` does not see `unsafe` that arrives from a macro
-defined in another crate. rustc cancels any `unsafe_code` diagnostic whose
-primary span is inside an external macro expansion, and the call site
-contains no keyword for a source scan to find either, so both of the
-obvious mechanisms are blind to the same construct, and `--force-warn` does
-not change it.
+Safe Rust rules out using memory wrongly: reading memory after it was freed,
+writing past the end of a buffer, two threads changing one value without a
+lock. Inside an `unsafe` block you may do a few things the compiler can't
+verify, such as following a raw pointer or running inline assembly, and the
+block is your promise that the rules still hold. If the promise is wrong, the
+program has *undefined behaviour*, which can surface as a crash, as silently
+wrong data, or as a security hole far from the cause.
 
-The expansion audit is what closes that. It runs each kernel crate through
-`-Zunpretty=expanded` and holds the result to a fixed rule rather than to a
-recorded count: zero executable `unsafe`, and `unsafe impl`, `link_section`
-or `no_mangle` only from a named list with a reason recorded against each
-entry. It runs over each crate's feature configurations, because the test
-registrations that dominate the count live behind test features.
+A kernel can't do its job without such blocks. It writes the CPU's control
+registers to switch to another program's memory or to turn interrupts off,
+edits the page tables that decide which memory each program may see (see
+[Memory](/docs/architecture/memory)), reads and writes device memory, and
+saves and loads registers when it switches tasks. The compiler has no idea
+that writing a number to a register can make all of memory look different,
+so it can't check any of that. Every kernel written in Rust therefore
+contains some `unsafe` code, and the design choice is where to put it.
 
-`just check-framekernel` runs the composite gate:
+## What changes when it lives in one crate
+
+In most kernels, Rust or not, the `unsafe` code sits next to the code that
+needs it: a driver contains the few lines that poke its device, the scheduler
+contains its own context switch. That works, but it means a memory-safety bug
+can start in any file. To be confident the kernel is memory-safe you would
+have to read all of it.
+
+A framekernel splits the kernel in two.
+
+<FramekernelLayers />
+
+The trusted core contains every operation that needs `unsafe`, and it wraps
+each one in a function or type that is safe to use. Everything else in the
+kernel calls those safe functions. The rest of the kernel is still one program
+in one address space, so a call into the trusted core is an ordinary function
+call, not a message to another process as in a microkernel.
+
+The split only helps if those safe functions are safe in every use. Asterinas calls
+this property *soundness*: no safe code, however it is written, can cause
+undefined behaviour by calling them. A function that is only safe "as long as
+you call it correctly" doesn't count, because it moves the bug into the
+trusted core while the cause stays in an ordinary safe call somewhere else.
+
+### A worked example: reading the clock
+
+The PC's battery-backed clock is read through two I/O ports: you write the
+number of the register you want to one port, then read its value from the
+other. If an interrupt arrives between those two steps and its handler also
+talks to the clock, the second read returns the wrong register.
+
+The port accesses are `unsafe`, so they live in the trusted core. The danger is
+the interrupt, and the trusted core turns "interrupts must be off" into a
+value the caller has to hold. Its clock-reading function takes a token that
+proves interrupts are disabled, and the only way to get the token is to run
+your code inside a helper that disables interrupts first and restores them
+afterwards. The real-time clock driver, in safe Rust, reads a register like
+this:
+
+```rust
+IrqDisabled::with(|irq| cmos.read(irq, reg))
+```
+
+A driver that forgets to turn interrupts off doesn't compile, because it has
+no token to pass. The rule that would otherwise be a comment in the driver is
+checked by the compiler instead. The
+[trusted core](/docs/verification/ostd-trusted-core) page lists the other
+shapes OSTD uses for the same trick.
+
+## How the build keeps `unsafe` in one place
+
+People forget rules, and a kernel gains new crates over time, so the build
+checks this one.
+
+**Every other kernel crate forbids `unsafe`.** Each crate the kernel links
+starts with `#![forbid(unsafe_code)]`, which makes any `unsafe` in it a
+compile error that can't be switched off further down. A check script also
+reads the kernel's list of dependencies and fails if any crate on it lacks the
+attribute, so a newly added crate is covered from its first build.
+
+**A source scan backs that up.** A second check searches every kernel crate
+outside OSTD for the `unsafe` keyword, so an `#[allow(unsafe_code)]` that
+slipped in somewhere is caught even if the lint was weakened.
+
+**The macro expansion is checked too.** Neither of those catches `unsafe` that
+arrives through a macro. When a macro defined in another crate expands to
+`unsafe` code, rustc doesn't report the lint at the place where the macro was
+used, and the source there contains no `unsafe` keyword for a search to find.
+So the build expands every kernel crate the way the compiler does
+(`-Zunpretty=expanded`), with each crate's feature combinations, and searches
+the result. The rule is fixed rather than a recorded count: no executable
+`unsafe` at all, and only a short named list of `unsafe` attributes, such as
+the names of the three functions that assembly code calls.
+
+**The linked kernel is checked last.** A crate pulled in from crates.io
+expands its own macros where no source scan sees them. The final check reads
+the linked kernel image and fails if it contains a linker section the kernel's
+linker script doesn't declare.
+
+Every check also tests itself first: it is run against planted violations and
+must reject them, so a check that has quietly stopped matching fails the build
+instead of passing it. [Safety gates](/docs/verification/tcb-discipline) lists
+all of them.
+
+## What you have to trust in the trusted core
+
+Counting `unsafe` keywords in OSTD tells you little. Wrapping `unsafe` behind
+a sound safe function is the design working, and hundreds of OSTD functions do
+exactly that. What you have to check by reading is the set of places where
+OSTD hands an obligation to its caller, and there are three kinds:
+
+| What | What it means |
+|---|---|
+| `pub unsafe fn` | Functions a caller can only use inside `unsafe`, which means only from inside OSTD or the few listed exceptions |
+| `pub unsafe trait` | Traits whose implementer promises something the compiler can't check, mostly "this type is valid when every byte is zero" and similar |
+| Safe functions with a written safety contract | Functions that are safe to call but document conditions the caller must meet |
+
+The last kind is the one that matters. A safe function with a `# Safety`
+section admits that safe code can break it, which is exactly what a
+framekernel must not allow. A check holds the number of such functions at
+zero, and every contract it once counted has been turned into a type. The
+current counts for the other two are on [Safety gates](/docs/verification/tcb-discipline).
+
+The build also prints the share of kernel source lines that are `unsafe` and
+fails above 1 percent. Watch it as a trend. It counts source lines, while
+published figures for other kernels measure compiled code, so the two can't
+be compared.
+
+## What it doesn't promise
+
+The framekernel narrows where memory-safety bugs can start. It doesn't make
+the kernel correct, and it doesn't make the trusted core trustworthy by
+itself.
+
+- **Safe code can still be wrong.** A driver in safe Rust can deadlock, panic,
+  leak memory or send a device the wrong data. What it can't do is corrupt
+  memory through the CPU.
+- **Devices can write memory directly.** Disks and network cards copy data
+  straight into RAM, at addresses the driver gives them. SlopOS doesn't yet
+  program the hardware unit (an *IOMMU*) that would confine each device to its
+  own buffers, and a driver must stop its device before freeing a buffer the
+  device might still write to.
+- **The trusted core has to be right.** That is why it is tested under
+  [Miri](/docs/verification/kernmiri), which catches undefined behaviour as it
+  happens, and why its most important parts carry machine-checked
+  [proofs](/docs/verification/verus-status).
+- **Some code outside OSTD is trusted too.** The kernel links two vendored
+  libraries, a stack unwinder and the debugging-information reader it uses,
+  and they contain `unsafe`. They are pinned to an exact upstream version and
+  content hash instead of being rewritten. The kernel binary's own crate also
+  contains the global allocator declaration, which Rust requires there.
+- **The compiler and the hardware are trusted,** as in every Rust program.
+
+## For contributors
+
+If a change seems to need `unsafe` outside OSTD, it belongs in OSTD as a small
+safe API. Any obligation on the caller has to be a type, not a sentence in the
+documentation, because the safe-contract check will reject the sentence.
+[Unsafe code and FFI](/docs/development/unsafe-ffi-boundaries) walks through
+adding such an API. Run the checks locally after a build:
 
 ```bash
 just build
-just check-framekernel
+just check-framekernel-gates
 ```
 
-The build step gives the stack-size audit a final kernel image to inspect.
+## Further reading
 
-## Kernel Async Boundary
+- [*The Framekernel Architecture*](https://asterinas.github.io/book/kernel/the-framekernel-architecture.html)
+  in the Asterinas book. A short, readable statement of the idea and the four
+  requirements on the trusted part: soundness, expressiveness, minimalism and
+  efficiency. Start here.
+- [*Asterinas: A Linux ABI-Compatible, Rust-Based Framekernel OS with a Small
+  and Sound TCB*](https://arxiv.org/abs/2506.03876) by Peng et al., USENIX ATC
+  '25 ([conference page](https://www.usenix.org/conference/atc25/presentation/peng-yuke)).
+  The full design, the invariants the trusted core must keep, and how it was
+  tested with Miri. SlopOS's 2 KiB limit on stack frames comes from section 4.3.
+- [*Unsafe Rust*](https://doc.rust-lang.org/book/ch20-01-unsafe-rust.html),
+  a chapter of the Rust Book. What `unsafe` lets you do, if you haven't
+  written any.
+- [*The Scope of Unsafe*](https://www.ralfj.de/blog/2016/01/09/the-scope-of-unsafe.html)
+  by Ralf Jung. A short essay on why the correctness of an `unsafe` block
+  depends on the safe code around it, which is the reason soundness is a
+  property of a whole module's API.
+- [*The Rustonomicon*](https://doc.rust-lang.org/nomicon/working-with-unsafe.html).
+  The reference for writing `unsafe` Rust correctly, for when you start
+  working inside OSTD.
+- [*Limited Direct Execution*](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-mechanisms.pdf),
+  chapter 6 of *Operating Systems: Three Easy Pieces*. Why a kernel has to
+  control the hardware directly, explained from the ground up.
 
-The kernel has no `async fn` surface. Blocking is represented with `WaitQueue`,
-`EventBus`, poll/select shape, sleeps, futexes, and synchronous syscall handlers.
-SlopRing is the async edge, but the async runtime lives in userland
-(`slopos-rt` and `slopfut`).
+## In the source
 
-## Trusted-Core Goal
+| Where | What |
+|---|---|
+| `slopos-ostd/` | The trusted core |
+| `slopos-ostd/src/io/cmos.rs`, `drivers/src/rtc.rs` | The clock example above, both halves |
+| `scripts/check_unsafe_outside_ostd.sh` | The source scan and the `forbid` check over the kernel's dependencies |
+| `scripts/check_unsafe_expansion.sh` | The macro-expansion check and its short allowlists |
+| `scripts/check_registry_sections.sh` | The check on the linked kernel image |
+| `scripts/check_safe_contract_surface.sh`, `scripts/tcb_ratio.sh` | The two numbers above |
 
-The practical goal is to keep the amount of trusted code small enough that it can
-be reviewed, interpreted under Miri where possible, and gradually proved with
-Verus. The public claim depends on both the measured TCB ratio and the presence
-of machine-checked critical-path proofs.
+[Safety gates](/docs/verification/tcb-discipline) lists every check, with the
+command that runs it.

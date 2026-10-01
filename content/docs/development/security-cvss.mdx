@@ -1,53 +1,179 @@
 ---
-title: "Security And CVSS"
-description: "Confidence-gated vulnerability triage"
+title: "Security triage"
+description: "How to record a security problem you found in SlopOS, decide how sure you are, score it, and fix it."
 ---
 
-`CVSS.md` in the source repo is the living ledger for open guaranteed findings.
-SlopOS is pre-alpha, so resolved findings are removed rather than retained as a
-fixed-history ledger.
+By the end of this guide you will have taken a security problem in SlopOS
+from suspicion to fix: decided whether it counts as a finding, rated how sure
+you are of it, scored how bad it is, written it into the ledger and fixed it
+with a test. The ledger is `CVSS.md` at the root of the source tree. The steps
+below follow the process that file describes, with real entries from its
+history as examples.
 
-## Triage Order
+## What counts as a finding
 
-1. List raw findings first. Do not assign CVSS yet.
-2. Assign confidence from 0 to 100.
-3. Only confidence `>= 80` findings are guaranteed issues.
-4. Only guaranteed issues receive CVSS vectors and scores.
-5. Use the source repo's CVSS helper, or an equivalent CVSS v3.1 calculator,
-   for vector scoring.
+A finding is a defect that an attacker can trigger. For SlopOS, the usual
+attacker is any program running on the machine: SlopOS has no user accounts
+yet, so every program that can run code counts as an unprivileged local
+attacker. A finding is something such a program can use to get more than it
+should: read or change memory or files that aren't its own, act with a
+permission it wasn't given, or take the machine (or part of it) away from
+everyone else.
 
-## Confidence Model
+A weakness that no attacker can reach (a limit that only trusted code can
+hit, a missing check in code that only runs at boot) isn't a finding. Write
+it up as a plan in `plans/` instead.
 
-| Category | Points |
-|----------|--------|
-| Evidence quality | 0-40 |
-| Exploitability clarity | 0-30 |
-| Reproducibility | 0-30 |
+## 1. List what you found
 
-Speculation should stay in raw triage until it has enough evidence.
+Write down every candidate first, without scoring any. Scoring as you go
+tends to make you stop looking once you've found something that scores well.
 
-## Ledger Entry Requirements
+## 2. Rate how sure you are
 
-Each open guaranteed issue in `CVSS.md` needs:
+Give each candidate a confidence score out of 100, in three parts:
 
-- Stable ID such as `SLOPOS-2026-0001`.
-- Status: `open` or `needs-retest`.
-- Confidence score and reasoning.
-- CVSS vector and score.
-- Exact evidence paths and line references.
-- Minimal repro or a clear reason no safe repro is possible.
+| Part | Points | Full marks means |
+|------|--------|------------------|
+| Evidence | 0 to 40 | You read the code that's wrong, and can cite each claim as an exact `path:line` |
+| Exploitability | 0 to 30 | You can describe a realistic path from an attacker's program to the effect |
+| Reproducibility | 0 to 30 | You have a repeatable way to trigger it, or a step-by-step argument strong enough to stand in for one |
 
-## Sweep Targets
+**80 or more** means the problem is real: a *confirmed* finding. Below 80, it
+is still recorded if an attacker could reach it, but without a severity
+score, and the entry says what evidence would raise it.
 
-Prioritize newly written or recently changed code. At minimum, rescan:
+This is a real entry from the ledger's history, which stopped at 74:
+
+> **Confidence:** 74. Evidence 36 (the caps, the system-wide `held` sum and
+> the absence of any charge were read directly…), exploitability 20 (any
+> unprivileged process, but only for as long as it holds the mappings…),
+> reproducibility 18 (the code path is unconditional; the denial was not
+> observed under QEMU, only derived).
+>
+> **CVSS vector/score:** omitted, confidence is below 80. What would raise
+> it: a utest that holds `MAX_MAPPED_INODES` mappings in one process and
+> observes a second process's `mmap` answer `ENOMEM`.
+
+Leaving the score out keeps a guess from reading like a confirmed
+vulnerability, which is the main thing this process exists to prevent.
+
+## 3. Score how bad it is
+
+A confirmed finding gets a severity score using
+[CVSS 3.1](https://www.first.org/cvss/v3.1/specification-document), the
+Common Vulnerability Scoring System maintained by FIRST. A CVSS *vector* is a
+short string of answers to fixed questions (how is it reached, how hard is it,
+what privileges does it need, what does it affect), and a formula turns the
+vector into a score from 0 to 10.
+
+Don't compute the score by hand or with a web calculator. Run the script in
+the tree, so that every reviewer gets the same number from the same vector:
+
+```bash
+python3 scripts/cvss_calc.py "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:L/I:L/A:N"
+```
+
+```
+vector=CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:L/I:L/A:N
+base_score=3.6
+severity=LOW
+exploitability=1.0483
+impact=2.5141
+```
+
+That vector is from a real finding: three ways of mapping memory into a
+program ignored the program's request that the memory not be executable. It
+is local (`AV:L`) and needs only an ordinary program (`PR:L`); it is hard to
+use (`AC:H`) because it only removes a protection, so an attacker needs a
+second bug in the victim program to take advantage of it; and the damage is
+limited (`C:L/I:L`, no availability impact).
+
+Scores map to severities as CVSS defines them: 0.1 to 3.9 Low, 4.0 to 6.9
+Medium, 7.0 to 8.9 High, 9.0 to 10.0 Critical. A few SlopOS-specific rules
+keep scores consistent:
+
+- **An ordinary program is `AV:L/PR:L`.** There are no accounts, so there is
+  no lower privilege level to score.
+- **A panic in code that can't use `unsafe` is an availability problem.**
+  Code in a crate marked `#![forbid(unsafe_code)]` can crash but can't
+  corrupt memory, so the impact is `A:`, never `C:` or `I:`.
+- **Say which build you scored.** The debug and test kernels check arithmetic
+  for overflow and the release kernel doesn't, so the same bug is a panic in
+  one and a silently wrong number in the other.
+
+FIRST's [user guide](https://www.first.org/cvss/v3.1/user-guide) explains how
+to answer each question in the vector, with examples.
+
+## 4. Write the entry
+
+Each open finding gets an ID of the form `SLOPOS-YYYY-NNNN`, taken from the
+counter near the top of `CVSS.md` (raise the counter as you use it). IDs are
+never reused. Then add an entry under *Open findings* with these fields:
+
+| Field | What to write |
+|-------|---------------|
+| Title | The defect, not the symptom: "three user mapping paths drop `NO_EXECUTE`", not "code runs from a data page" |
+| Status | `open`, or `needs-retest` |
+| Confidence | The total and the three parts, each with its reason |
+| CVSS vector/score | The vector and the script's score and severity. Leave it out below 80 |
+| Impact | What an attacker gets |
+| Evidence | One exact `path:line` for each claim |
+| Repro | The smallest sequence of system calls, crafted file or steps that triggers it. If none is safe, say why, and give the closest thing you can check deterministically |
+| Remediation | The shape of the fix, specific enough to act on ("derive the flags from the region, as the other paths do", not "add a check") |
+
+For the finding above, the repro was: map memory readable and writable but
+not executable, write a return instruction into it, `fork`, write to the page
+again in the child so the kernel copies it, then call it. The child returns
+normally where it should have been killed with `SIGSEGV`.
+
+## 5. Fix it
+
+Before you fix anything, check the entry against the code. Entries can be
+wrong, and a fix for a misread bug changes behaviour for nothing.
+
+A fix lands with a test that fails without it. Prove that by reverting the
+fix and watching the test fail, not by reasoning that it would. For the
+example above, the test is the repro: a program that expects `SIGSEGV`.
+[Write tests](/docs/development/adding-tests) covers where the test goes.
+
+When the fix lands, delete the entry from `CVSS.md`. SlopOS is pre-alpha
+and keeps no record of fixed findings in the ledger; git history has them.
+
+## Security sweeps
+
+Findings mostly come from sweeps: a deliberate review of what recent work
+changed. Sweep after each major piece of work and before a release or
+hand-off, and at minimum re-read the system calls, memory management,
+filesystems and drivers that recent commits touched. The areas that most
+often carry findings, and why:
 
 | Area | Why |
 |------|-----|
-| Syscalls | User-controlled arguments and kernel authority |
-| Memory management | UB, isolation, mapping lifetime |
-| Filesystems | Parser and path traversal risk |
-| Drivers | Device input and DMA |
-| Networking | Packet parsing and state machines |
-| SlopRing | Shared memory, pinned buffers, completion ownership |
+| System calls | Every argument comes from a possibly hostile program |
+| Memory management | It keeps programs apart, and decides how long memory stays mapped |
+| Filesystems and disks | They parse whatever is on the disk, including disks an attacker made |
+| Drivers | Devices supply data and can write to memory directly |
+| Networking and TLS | Packets come from anywhere |
+| SlopRing | Programs and the kernel share memory and pass buffers back and forth |
+| Host build tools | Scripts on your machine read disk images that SlopOS wrote |
 
-Do not present speculative issues as scored vulnerabilities.
+Each sweep adds a dated paragraph to the top of `CVSS.md`: what was reviewed,
+what the reviews found before the change landed, and anything left below the
+bar.
+
+## What usually goes wrong
+
+- **A scored entry with a confidence below 80.** Remove the vector and say
+  what would raise the confidence.
+- **Evidence without line numbers.** "In `mm/`" isn't evidence; each claim
+  needs the exact place.
+- **A fix whose test passes either way.** Revert the fix and run the test;
+  if it still passes, it doesn't test the bug.
+- **A memory-safety score for a panic in safe code.** Score it as
+  availability.
+
+Read next: [Permissions](/docs/architecture/authority) for what a program is
+and isn't allowed to do, which is what most findings break, and
+[Safety gates](/docs/verification/tcb-discipline) for the checks that keep
+`unsafe` code contained.

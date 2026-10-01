@@ -1,81 +1,194 @@
 ---
-title: "KTAP Test Output"
-description: "Serial test output ABI used by the SlopOS test runner"
+title: "Test output format"
+description: "What the kernel test harness prints on the serial console, and the JSON events and exit codes the host test runner produces from it."
 ---
 
-When SlopOS boots with `tests=on`, the kernel emits a KTAP-compatible stream on
-the serial console. The host test runner parses that stream and renders
-progress, failure details, and optional JSONL events.
+When SlopOS boots with `tests=on`, the kernel test harness prints its results
+on the serial console in KTAP, the Linux kernel's test output format. The host
+runner (`tools/run_tests/`, built to `builddir/run_tests` and run by
+`just test`) reads that stream, shows progress, and can write the results as
+JSON lines. This page lists both formats and the runner's exit codes. The
+emitter is the `ktesting` crate; the parser is `tools/run_tests/parser.go` and
+the JSON writer `tools/run_tests/jsonl.go`. The options that control the
+harness (`tests.run`, `tests.verbosity` and the rest) are listed in
+[Boot options](/docs/abi/boot-options#tests).
 
 ## Phases
 
-| Phase | Registration | Trigger |
-|-------|--------------|---------|
-| Kernel tests | `stest!` | Boot pipeline |
-| Userland tests | `utest!` | Init asks the kernel to run userland tests |
+| Phase | Tests registered with | Run by |
+|---|---|---|
+| 1, kernel | `stest!` | The kernel during boot |
+| 2, userland | `utest!`, one userland program per test | init, which asks the kernel to run them |
 
-Every harness line starts with `KTAP\t`. Ordinary kernel log lines may intermix
-and are ignored by the parser outside diagnostic blocks.
+Each phase prints its own header. The runner names phases by order: the first
+`TAP version 14` header is the kernel phase, the second the userland phase.
+
+## Line prefix
+
+Every harness line starts with `KTAP` and a tab. Ordinary kernel log lines are
+interleaved with them and the parser ignores those. Diagnostic and subtest
+lines add two spaces after the tab.
 
 ## Header
-
-Each phase begins with:
 
 ```text
 KTAP	TAP version 14
 KTAP	1..N
 ```
 
-`N` is the number of tests selected for that phase after filters.
+`N` is the number of tests in the phase after `tests.run` and `tests.skip`
+are applied. A filter that matches nothing gives `1..0`.
 
-## Result Lines
+## Result lines
 
 ```text
 KTAP	ok 17 - slopos_mm::tests::heap::test_heap_kzalloc_zeroed # time_ms=3
+KTAP	ok 18 - slopos_core::tests::sched::test_slow_path # time_ms=812 OVER_TIME
+KTAP	ok 19 - slopos_net::tests::tcp_live::test_loopback_handshake # SKIP test returned Skipped
 KTAP	not ok 42 - slopos_core::tests::sched::test_priority_inversion # time_ms=11
-KTAP	ok 18 - slopos_net::tests::tcp_live::test_loopback_handshake # SKIP test returned Skipped
 ```
 
-Slow tests add `OVER_TIME`. Expected panic tests add `EXPECTED_PANIC`.
+The name is `module::test`. The text after `#` holds:
 
-## Diagnostics
+| Token | Meaning |
+|---|---|
+| `time_ms=N` | How long the test took |
+| `NO_TIME_BASE` | In place of `time_ms` when no clock was available |
+| `OVER_TIME` | Passed, but slower than `tests.warn_ms` |
+| `EXPECTED_PANIC` | The test was registered as expecting a panic, and panicked |
+| `SKIP <reason>` | Skipped; KTAP writes a skip as `ok` |
 
-Failures include a YAML diagnostic block:
+With `tests.verbosity=quiet` the harness prints only failing results.
+
+## Diagnostic block
+
+A failing test is followed by a block in YAML style:
 
 ```text
 KTAP	  ---
 KTAP	  outcome: Fail
-KTAP	  file: <source-path>:1832
+KTAP	  file: core/src/sched/tests.rs:1832
 KTAP	  log: |
 KTAP	   captured klog line
+KTAP	   --- cpu2 ---
+KTAP	   klog line captured on another CPU
 KTAP	  ...
 ```
 
-Verbose passing tests may include a `log: |` block without `outcome` or `file`.
-Logs may contain trim markers when the captured klog exceeds the per-test cap or
-the per-CPU log ring overflows.
+| Key | Meaning |
+|---|---|
+| `outcome` | `Fail` or `Panic` |
+| `file` | Source location of the failure |
+| `log` | Kernel log captured while the test ran: the harness CPU first, then a `--- cpuN ---` section for each other CPU that logged |
 
-## Userland Subtests
+When the capture was cut short, the log contains `[head trimmed: N bytes]`
+(the test logged more than the per-test limit) or
+`[cpuN tail trimmed: N bytes lost to ring overflow]` (a CPU's log buffer
+wrapped). With `tests.verbosity=verbose` a passing test may print a block with
+only `log`.
 
-Userland test binaries report subtests through the test-report syscall. The
-kernel emits them indented before the parent result:
+## Subtests
+
+A `utest!` program reports its individual cases with the `test_report` system
+call. The kernel prints each case as an indented line, before the parent's
+result line:
 
 ```text
 KTAP	  ok 1 - alloc_basic
-KTAP	  not ok 2 - alloc_zero # zero-size returned null
-KTAP	ok 5 - utest_heap_allocator # time_ms=234
+KTAP	  ok 2 - alloc_large # 4 MiB in 3 ms
+KTAP	  not ok 3 - alloc_zero # zero-size returned null
+KTAP	  ok 4 - alloc_huge # SKIP
+KTAP	ok 5 - slopos_core::utests::utest_heap_allocator # time_ms=234
 ```
 
-The host parser buffers subtests and attaches them to the next top-level result.
+- The parser collects indented lines and attaches them to the next
+  top-level result.
+- On a passing case, text after `#` is a note; only `SKIP` changes the
+  outcome. On a failing case it is the failure message.
+- Notes and messages are cut to their first line.
+- Subtest lines go straight to the console rather than through the per-test
+  log capture, so a long test that overflows the capture cannot lose them.
 
-## Footer And Exit
-
-Each phase ends with:
+## Footer, bail-out and abort
 
 ```text
 KTAP	# elapsed_ms=14238 pass=2391 fail=1 skip=0 over_time=14
 ```
 
-When all test phases finish, the kernel writes to `isa-debug-exit`: status `0`
-for green and status `1` for failure. QEMU maps those to host exit statuses that
-the host runner normalizes.
+- Each phase ends with a footer holding its time and counters.
+- If a test whose name starts with `bootstrap_` fails, the harness prints
+  `KTAP	Bail out! <reason>` and runs no more tests in that phase.
+- A kernel panic prints a `=== KERNEL ABORT ===` banner, which the runner
+  records as a kernel abort.
+- With `tests.shutdown=on`, the kernel then writes `0` (all passed) or `1`
+  (something failed) to QEMU's `isa-debug-exit` device. QEMU exits with
+  `(value << 1) | 1`, so the runner does not rely on that status alone: it also
+  requires at least one phase header.
+
+## Host runner
+
+| Recipe | Runner flag | Effect |
+|---|---|---|
+| `just test FILTER` | `--filter GLOB` | Repeatable; joined with commas into `tests.run=` |
+| | `--skip GLOB` | Repeatable; joined into `tests.skip=` |
+| | `--warn-ms N` | `tests.warn_ms=N`; default `500` |
+| `just test-rerun-failed` | `--rerun-failed` | Runs the failures recorded in `builddir/last-fail.list` |
+| `just test-verbose` | `--verbose` | `tests.verbosity=verbose`; shows the captured log of every test |
+| `just test-quiet` | `--quiet` | `tests.verbosity=quiet`; shows only failures and the summary |
+| `just test-raw` | `--raw` | Prints QEMU's serial output unchanged |
+| `just test-json PATH` | `--json PATH` | Appends one JSON event per line to `PATH` |
+| | `--timeout-secs N` | Stops the whole run after `N` seconds; default `900`, `0` disables |
+| | `--silence-secs N` | Stops the run if QEMU prints nothing for `N` seconds; default `120`, `0` disables |
+| | `--dry-run` | Prints the command line it would use and exits |
+
+`--verbose`, `--quiet` and `--raw` exclude each other. `--raw` still parses the
+stream to decide the exit code. The runner starts from the command line
+`tests=on tests.shutdown=on tests.verbosity=summary boot.debug=on roulette=skip mount=LABEL=slopos-media:/media`
+and adds the options its flags select.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Tests ran and all passed |
+| `1` | A test failed, a phase bailed out, the run timed out, the output was cut short, or the kernel aborted |
+| `2` | No trustworthy answer: no phase header appeared, an unfiltered run planned zero tests, or QEMU's wrapper exited with an unexpected status |
+| `64` | Bad command-line arguments |
+| `130` | Interrupted with Ctrl-C |
+
+## JSON lines
+
+`--json PATH` writes one JSON object per line. Every object has a `t` field
+naming the event. Every field is always present; a missing value is `null`.
+
+| `t` | Fields |
+|---|---|
+| `phase_start` | `idx`, `name` |
+| `plan` | `phase_idx`, `n` |
+| `test` | `phase`, `phase_idx`, `idx`, `name`, `outcome`, `time_ms`, `over_time`, `expected_panic`, `skip_reason`, `fail_file`, `fail_outcome_kind`, `log`, `pre_fail_klog_tail`, `subtests` |
+| `phase_end` | `idx`, `name`, `elapsed_ms`, `pass`, `fail`, `skip`, `over_time` |
+| `bail` | `phase_idx`, `reason` |
+| `kernel_abort` | `reason` |
+| `run_end` | `wall_ms`, `exit`, `qemu_status`, `user_aborted`, `timed_out`, `silence_hit`, `truncated`, `kernel_abort`, `kernel_abort_reason`, `phases` |
+
+- `outcome` is one of `pass`, `fail`, `skip`, `bail`, `not_run`, `timeout`.
+- Each entry in `subtests` has `idx`, `name`, `outcome` and `msg`.
+- `fail_outcome_kind` is the diagnostic block's `outcome` (`Fail` or `Panic`).
+- `pre_fail_klog_tail` holds recent console lines that were not KTAP, for a
+  failure that carried no captured log.
+- `run_end` is always the last event. Each entry in its `phases` array has
+  `idx`, `name`, `plan_n`, `elapsed_ms`, `pass`, `fail`, `skip`, `over_time`
+  and `bail` (the bail-out reason, or `null`).
+
+```json
+{"expected_panic":false,"fail_file":null,"fail_outcome_kind":null,"idx":17,"log":null,"name":"slopos_mm::tests::heap::test_heap_kzalloc_zeroed","outcome":"pass","over_time":false,"phase":"kernel","phase_idx":1,"pre_fail_klog_tail":null,"skip_reason":null,"subtests":[],"t":"test","time_ms":3}
+```
+
+## See also
+
+- [KTAP specification](https://docs.kernel.org/dev-tools/ktap.html): the Linux
+  kernel's format, which the lines above follow.
+- [TAP version 14](https://testanything.org/tap-version-14-specification.html):
+  the Test Anything Protocol KTAP extends.
+- [Write tests](/docs/development/adding-tests): how to add `stest!` and
+  `utest!` tests.

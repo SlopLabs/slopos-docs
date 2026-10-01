@@ -1,0 +1,314 @@
+---
+title: "Permissions"
+description: "How SlopOS decides what a program is allowed to do when every program runs as the same user."
+---
+
+An ordinary program on SlopOS can read and write files, open sockets, start
+other programs and draw windows. It can't reboot the machine, mount a disk,
+set the clock, take over the screen or kill a system service. Those powers
+belong to a handful of system programs, such as `/bin/halt` and the
+compositor, which the kernel recognises by their path and gives specific
+permissions when they start. A program can never gain a permission it wasn't
+started with.
+
+SlopOS has one user: every program runs as user 0, and `getuid` always
+returns 0. On Linux, permissions mostly come from which user runs a program,
+but here every program is the same person. Whether the text editor may
+reboot the machine, or a game may read what you type into another window,
+depends on what the program is for, so SlopOS attaches permissions to
+programs.
+
+Each permission is called a *capability*, in the Linux sense: a named
+privilege attached to a process (like Linux's `CAP_SYS_BOOT`) that the
+kernel checks on a system call. In seL4 and Capsicum the word means an
+unforgeable handle to one object. SlopOS borrows that idea where it can, but
+it keeps the Linux system call interface, so most permissions still belong
+to the program rather than to an object.
+
+## What any program can do
+
+Most operations need no permission, because they act on something the
+program already has. A program may act on itself (exit, change its own
+memory, set up signal handlers). It may use any descriptor it holds, such as
+an open file, a socket or a pipe, because the checks happened when the
+descriptor was opened. And it may act on another process when the
+relationship allows it: waiting for its own children, changing a process
+group it may change, or signalling a process it may signal (see
+[Who may signal whom](#who-may-signal-whom)).
+
+## What needs a permission
+
+Everything else needs a capability. This is the complete list:
+
+| Capability | Allows | Held by |
+|---|---|---|
+| `Power` | Rebooting, halting and powering off; reading and writing the boot loader's EFI variables and SlopOS's own | `/bin/halt`, `/bin/bootctl`, init |
+| `Launch` | Starting a program with its permissions (see [Where permissions come from](#where-permissions-come-from)) | `/bin/compositor`, `/bin/shell`, `/bin/terminal`, init |
+| `Mount` | `mount` and `umount`; writing to a raw disk device | `/bin/bootctl`, init |
+| `BootEntry` | Registering a boot entry with the firmware (the `Boot####`, `BootOrder`, `BootNext` and `BootCurrent` EFI variables), on top of what `Power` reaches | Only the installer test program |
+| `DisplaySeat` | Taking the screen | `/bin/compositor`, `/bin/roulette` |
+| `InputSeat` | Taking the raw input stream | `/bin/compositor` |
+| `ConsoleConfig` | Loading the console font and keyboard layout | `/bin/keymap`, init |
+| `Clock` | Setting the wall clock | init |
+| `Seal` | Making a file immutable, or mutable again | init |
+| `TestHarness` | Test-only system calls | init and the test runner |
+| `ProcSignal` | Reserved; nothing uses it yet | init |
+| `SysInspect` | Listing processes (only those the caller may signal), CPU and system information, network queries | Every program |
+| `ConsoleIo` | Writing to the kernel console without a descriptor | Every program |
+| `ClipboardGlobal` | The global clipboard | Every program |
+| `Fate` | The Wheel of Fate | Every program |
+
+The last four protect nothing today, because there is no finer-grained way
+to hand them out yet. They are listed so that taking one away later shows up
+as a visible change. Two older permissions are still checked inside their
+system calls rather than as capabilities: `/bin/ip` may change network
+configuration, and `/bin/sysmon` sees every process in the process list.
+
+## Where permissions come from
+
+A program's permissions are decided once, when it starts. The kernel keeps a
+fixed table that maps a program's path to what it gets:
+
+| Program | Gets |
+|---|---|
+| `/bin/compositor` | `DisplaySeat`, `InputSeat`, `Launch`, and a higher scheduling priority |
+| `/bin/shell`, `/bin/terminal` | `Launch` |
+| `/bin/roulette` | `DisplaySeat` |
+| `/bin/keymap` | `ConsoleConfig` |
+| `/bin/halt` | `Power` |
+| `/bin/bootctl` | `Mount`, `Power` |
+| `/bin/ip` | Network configuration |
+| `/bin/sysmon` | The full process list |
+
+The table also lists a few test programs, and any other path gets nothing.
+Init (`/sbin/init`), which the kernel starts itself, gets everything except
+the two seat capabilities and `BootEntry`. A program that starts
+`/sbin/init` again gives it nothing.
+
+The program doing the starting must hold `Launch`. The shell, the terminal
+and the compositor do, so when you type `halt` at the shell, `/bin/halt`
+gets `Power`. An ordinary program that starts `/bin/halt` gets a running
+`halt` without its permissions, and the reboot it asks for fails with
+`EPERM`:
+
+```text
+init                       everything but the seats and BootEntry
+└─ /bin/terminal           Launch
+   └─ /bin/shell           Launch
+      ├─ /bin/halt         Power         (the shell holds Launch)
+      ├─ /bin/ls           nothing       (no entry for this path)
+      └─ some-program      nothing
+         └─ /bin/halt      nothing       (some-program lacks Launch)
+```
+
+A simpler rule, that a child never has more than its parent, would leave
+nothing able to start a privileged program: the shell can't draw on the
+screen, so `/bin/roulette` started from the shell could never draw either.
+`Launch` controls who may start privileged programs, and the table alone
+decides what they get. A spawn call that asks for permissions through its
+flags is refused with `EPERM`.
+
+### Why the path can be trusted
+
+Keying permissions on a path only works if nobody can put a different
+program at that path. System programs come from the read-only base image,
+and the directories that hold them (`/bin`, `/sbin`, `/lib` and others)
+can't be unmounted (see [Filesystem](/docs/architecture/filesystem)).
+`mount` refuses any target that is a path in the table or a directory above
+one, including `/lib`, where the dynamic loader lives, so nobody can mount a
+writable disk on `/bin` and put their own `halt` there. And only init can
+change the immutable flag (what `chattr +i` sets).
+
+The kernel matches the exact path it resolved, so `/bin/./halt` gets
+nothing. A script that starts with `#!` gets the interpreter's permissions.
+A program started with permissions also runs in *secure mode* (`AT_SECURE`,
+the flag Linux sets for setuid programs), in which the dynamic loader
+ignores `LD_LIBRARY_PATH` and `$ORIGIN`, so nobody can slip a library into a
+privileged program through its environment.
+
+## How permissions shrink
+
+After a program starts, its permissions can stay the same or get smaller.
+`fork` copies them. `exec` keeps only the permissions the program held *and*
+the new program would be granted, so a shell that `exec`s `/bin/halt`
+(rather than starting it as a child) gives it nothing, and a `halt` that
+`exec`s another program loses `Power`.
+
+Neither step can fail halfway, so there's no "drop privileges" call whose
+error a program could forget to check, a classic way for Unix programs to
+keep more rights than they meant to. Nor can one process take permissions
+away from another that is already running, which keeps every check down to
+a read of the caller's own permissions.
+
+## Seats for the screen and input
+
+Only one program at a time can own the screen, and only one can receive the
+raw stream of keyboard and mouse events. SlopOS calls these two resources
+*seats*. A program with `DisplaySeat` or `InputSeat` may ask for the
+matching seat and, if it gets it, receives a descriptor that it needs for
+drawing or reading raw input. The request succeeds if the seat is free, if
+the caller already holds it (so a restarted compositor gets it back), or if
+the caller outranks the holder. The kernel's own console (also used by
+`/bin/roulette`) outranks the compositor, so you can always get the screen
+back from a compositor that has hung.
+
+A seat descriptor can't be duplicated or passed to another process, so the
+kernel always knows who holds the seat. When the holder exits or `exec`s,
+the kernel takes the seat back, and any descriptor from an earlier holder
+stops working. [Desktop and windowing](/docs/architecture/userland-windowing)
+describes how the compositor uses its seats.
+
+## Who may signal whom
+
+Signals don't need a capability. The kernel compares the two processes
+instead: you may signal a process only if you have every privilege it has.
+An ordinary program can therefore signal other ordinary programs but not the
+compositor, `halt` or a privileged service. Nobody may signal init
+(`EPERM`). Naming a kernel thread gives `ESRCH`, as if it didn't exist,
+because kernel threads aren't processes. A `kill` aimed at a group skips the
+processes you may not signal.
+
+The kernel checks the rule in the same step that looks up the target, and
+keeps the process it found rather than its number, so the target's process
+id can't be reused by a stranger in between.
+
+The same comparison decides which processes you see in the process list,
+whose priority you may change, and which processes the out-of-memory killer
+may end on your behalf (see
+[Resource limits](/docs/architecture/resource-accounting)). A process keeps
+its standing in it after an `exec` that took its capabilities away.
+[Processes and signals](/docs/architecture/processes) explains signals
+themselves.
+
+## Why a forgotten check is a compile error
+
+In most kernels each system call has to remember its own permission check,
+and a forgotten one is a silent hole that only a reviewer can catch. In
+SlopOS every system call declares, where it is defined, which capability it
+needs, or which of three reasons it needs none: it acts only on the caller,
+only on a descriptor, or on a relationship it checks itself. A system call
+without a declaration doesn't compile, and the dispatcher checks the
+declared capability before the call runs. SlopRing, the asynchronous
+interface, declares every operation too, and none may need a capability, so
+a program can't use a ring to do something it couldn't do directly.
+
+Permissions still belong to the calling program and are compared against
+plain numbers in the arguments (capability systems call this *ambient
+authority*), so SlopOS isn't a pure capability system. What the
+declarations guarantee is that every use of that authority is checked.
+
+## What it means in practice
+
+- **To give a new program a permission**, add it to the kernel's table and
+  ship it in the base image. SlopOS has no `sudo`, no setuid bit and no
+  configuration file for this.
+- **If a privileged program gets `EPERM`**, check how it was started. Only a
+  program holding `Launch` (the shell, the terminal, the compositor, init)
+  passes permissions on, and only to the exact path in the table.
+- **To find out what a workload needs**, boot with `authority=warn`. Denied
+  calls are allowed and logged, one line per capability (see
+  [Boot options](/docs/abi/boot-options)):
+
+```text
+AUTHORITY: task 42 invoked syscall 169 without Power (authority=warn)
+```
+
+## Limits
+
+- Several capabilities stand in for objects that don't exist yet: `Power`
+  could be a descriptor handed to init, `Mount` an operation on a directory
+  descriptor, `Clock` a clock device descriptor.
+- `ProcSignal` has no users, and no shipped program holds `BootEntry` yet.
+  Even with `BootEntry`, a program reaches only those four firmware variables, never
+  others such as the Secure Boot keys.
+
+## How it is tested
+
+Kernel tests check, among other things, that `/bin/halt` gets `Power` and
+nothing else, that every system call is classified, that `exec` never
+widens permissions, that `mount` refuses protected targets, that a
+non-canonical path gets no grant, and that nobody can signal init. A
+machine-checked proof covers granting and narrowing, and a build-time check
+over the linked kernel makes sure no system call can reach the power-off
+code without holding `Power`.
+
+## For contributors
+
+**Every handler declares its class.** `define_syscall!` requires a `cap(...)`
+clause:
+
+```rust
+define_syscall!(syscall_clock_settime
+    (ctx, clock_id: u64, ts: UserPtr<Timespec>) cap(Clock)
+    -> Result<(), Errno>
+{
+    // ...
+});
+```
+
+The macro emits the handler and its class as one constant, so a dispatch
+slot can't pair one handler with another's class. Compile-time checks
+require every slot to be classified and the count per class to match a
+recorded number, so a new entry point fails the build until a reviewer
+re-records it. The ungated classes (`NoneSelf`, `NoneFd`, `NoneRelation`)
+stay separate because a single "none" class would drift toward everything
+being marked none.
+
+**Checks inside a handler use witnesses.** A handler that needs a capability
+for part of its work (`reboot` re-checking `Power`, the flags `ioctl` asking
+for `Seal`, `core/src/efivar.rs` asking for `BootEntry`) gets a `Cap<'_, R>`
+from the request context. Only the authority module can mint one, and it
+can't be copied, cloned or sent to another thread.
+
+**Flags and the mask.** Spawn flag bits are partitioned at compile time into
+user-settable, privileged (refused with `EPERM`), mode and reserved, and
+`TASK_FLAG_INSTALL` took the last free bit. The capability mask is derived
+from the flag word (`caps_from_task_flags`) and lives in its own atomic
+field, because `exec` narrows it while other CPUs read it. The signal
+comparison (`target.flags & SPAWN_PRIVILEGED & !sender.flags == 0`) reads
+the flag word, which `exec` doesn't narrow, and `resolve_signal_target`
+returns a `Signalable` holding a `TaskRef` so nothing can name the target by
+id after the check.
+
+**Gates.** `scripts/check_authority_reachability.sh` (run by
+`just check-framekernel-gates`) fails unless every handler that can reach a
+power primitive in the linked kernel is classified `Power` or allowlisted
+with a reason. Indirect calls are invisible to it, which is why
+kernel-initiated power callers (diagnostic console, the test harness, panic)
+are a tracked list. `verification/proofs/authority.rs` (`just verify
+authority`) proves the narrowing rules over an arbitrary grant, but not
+memory ordering on the mask or whether the dispatcher consults it; see
+[Proofs](/docs/verification/verus-status).
+
+## Further reading
+
+- [*Capsicum: practical capabilities for UNIX*](https://www.usenix.org/legacy/event/sec10/tech/full_papers/Watson.pdf)
+  by Watson, Anderson, Laurie and Kennaway, USENIX Security 2010. Start here.
+  How to add object capabilities to Unix without throwing out its interface,
+  including rights on individual descriptors, the direction SlopOS's seats
+  point in.
+- [*The Confused Deputy*](http://www.cap-lore.com/CapTheory/ConfusedDeputy.html)
+  by Norm Hardy (1988). A two-page story about why permissions attached to a
+  program rather than an object go wrong, and the reason SlopRing operations
+  may not need a capability.
+- [*The seL4 white paper*](https://sel4.systems/About/seL4-whitepaper.pdf).
+  A kernel where every right is a capability to an object, with a proof that
+  the kernel enforces it.
+- The man pages for [`capabilities(7)`](https://man7.org/linux/man-pages/man7/capabilities.7.html),
+  Linux's named privileges and how they pass across `exec`, and
+  [`getauxval(3)`](https://man7.org/linux/man-pages/man3/getauxval.3.html),
+  which describes `AT_SECURE`.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `slopos-ostd/src/authority/mod.rs` | The capabilities, the mask, witnesses, and deriving the mask from flags |
+| `core/src/exec/grants.rs` | The table of programs and their permissions |
+| `core/src/syscall/dispatch.rs` | The check before every system call |
+| `core/src/syscall/signalable.rs` | Who may signal whom |
+| `slopos-ostd/src/seat/mod.rs` | Seats |
+| `core/src/tests/authority_tests.rs` | Tests |
+
+Every system call and the capability it needs is listed on
+[System call ABI](/docs/abi/syscalls).

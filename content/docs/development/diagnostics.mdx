@@ -1,0 +1,289 @@
+---
+title: "Diagnosing the kernel"
+description: "What to do when SlopOS hangs, kills a program, panics, runs slowly or reports a lock problem."
+---
+
+When SlopOS hangs, kills a program with an oops, panics, runs slowly or
+reports a lock problem, the kernel's own log usually tells you why. For each
+of those symptoms, the sections below say what to do, what you'll see and how
+to read it. Most of the time you won't need a debugger; when you do,
+[Debugging with GDB](/docs/development/debugging-gdb-record-replay) picks up
+where this page stops.
+
+## Before you start: where the kernel's output goes
+
+Everything below appears in the kernel log. Under QEMU the log goes to the
+serial port, which `just boot` and the other boot recipes print in your
+terminal; `just boot-log` saves it to `test_output.log`. On a machine with no
+serial port, the kernel can draw the log on screen: press Esc while the boot
+splash is showing to toggle it. Once the desktop has drawn its first frame,
+Esc belongs to applications again. The on-screen log is drawn from the
+kernel's timer, so it keeps working when every program is stuck.
+
+Several steps below use boot options. To try one, put it on the command line
+of a live boot (the default options are `tests=off root=initramfs`, so keep
+them):
+
+```bash
+BOOT_CMDLINE='tests=off root=initramfs lockdep=warn' just boot-live
+```
+
+`just boot`, which boots the development machine, does not read
+`BOOT_CMDLINE`. [Boot options](/docs/abi/boot-options) describes every option
+mentioned here.
+
+## The diagnostic console
+
+The tool you'll reach for first is the kernel's diagnostic console. You press
+a key combination on the machine's own keyboard, and the kernel prints a
+report to its log. It works like Linux's
+[magic SysRq key](https://docs.kernel.org/admin-guide/sysrq.html), and for the
+same reason: it's handled inside the keyboard interrupt, so it answers when
+nothing else does.
+
+To use it, press **SysRq** (Alt+PrintScreen) and then, within three seconds,
+one command key. Under QEMU, if your desktop takes PrintScreen for itself,
+send the keys from the QEMU monitor instead (see
+[Debugging with GDB](/docs/development/debugging-gdb-record-replay) for how to
+open it): `sendkey sysrq`, then `sendkey t`. On a serial line, send a BREAK
+and then the command key.
+
+| Key | Prints |
+|-----|--------|
+| `h` | The list of commands this kernel has |
+| `t` | Every task: its state, which CPU it's on, why it's blocked, where it's parked |
+| `w` | Only the blocked tasks, each with a stack trace |
+| `x` | Tasks that have exited but haven't been collected, and who should collect each one |
+| `s` | Scheduler counters, per CPU and in total |
+| `i` | The kernel's I/O service threads: state and how many rounds each has done |
+| `k` | The longest stall each CPU has seen, and which tasks are waiting on which |
+| `p` | Asks every other CPU for its registers and prints a stack trace for this one |
+| `d` | How full the lock-order checker's tables are (needs `lockdep=warn`) |
+| `m` | Memory: the page allocator, per-CPU caches, the small-object allocator |
+| `c` | Each CPU's memory-type settings |
+| `q` | Resource accounts: used, peak, limit and refusals for each kind of resource |
+| `n` | Network interfaces, addresses, routes and connectivity |
+| `f` | Framebuffer drawing speed per CPU |
+| `o` | Write back the filesystems and power off |
+| `b` | Reboot |
+
+`o` and `b` are refused unless you boot with `kconsole=0x3`, because they
+change the state of the machine. Nothing a program does can trigger the
+console: the keys are taken before they reach any program, and a serial BREAK
+isn't a byte a program can write.
+
+## The machine is stuck
+
+**What to do.** First press SysRq and `w`. If the system is up but some
+programs are stuck, this shows every blocked task and the stack it's blocked
+on, which usually names the thing it's waiting for. `t` shows all tasks, and
+`k` shows any chain of tasks waiting on each other.
+
+If the console doesn't answer either, the CPU that handles the keyboard is
+stuck too. Wait for the watchdog (below), or attach a debugger: boot with
+`just boot-debug` and run `just debug-bt` in a second terminal for a stack
+trace from every CPU.
+
+**What you'll see.** A *watchdog* runs in the kernel and checks that every
+CPU keeps making progress: each CPU watches the next one and checks that its
+timer interrupt is still being handled. A CPU that misses about a second's
+worth of checks (100 samples by default) is reported:
+
+```
+WATCHDOG: cpu 0 made no progress for 3 samples (watcher cpu 1)
+WATCHDOG:   not spinning on a tracked lock
+NMI: cpu 0 stalled rip=0xffffffff802f6034 <core::ptr::read_volatile::<u64>+0x0x0000000000000024> rsp=0xffffffff81789280 rbp=0xffffffff817892a0 cs=0x0000000000000008
+NMI: oops 1 recorded, resuming
+```
+
+(This is from the watchdog's own test, which uses a much lower threshold.)
+
+**How to read it.** The first line names the stuck CPU and the CPU that
+noticed. The second says whether the stuck CPU is waiting for a lock the
+kernel tracks; if it is, the report names the lock and the CPU holding it,
+following the chain if that CPU is waiting too. Then the watcher interrupts
+the stuck CPU with a signal it can't mask (an *NMI*), and the stuck CPU
+prints where it is: `rip=` is the instruction it's running, and the symbol
+next to it is the function. Here, it was spinning on a read from device
+memory.
+
+A stall that lasts five times the threshold is turned into a panic, and so
+is a chain of CPUs waiting on each other in a circle (a deadlock), on the
+first report. Under a hypervisor, a CPU that the host didn't schedule
+looks exactly like a stuck one, so there the watchdog only reports unless you
+boot with `watchdog.panic=on`.
+
+## A program died with an oops
+
+**What to do.** Look in the kernel log for a line starting `panic
+recovery:`. To see what one looks like, boot with a test that triggers one
+deliberately:
+
+```bash
+BOOT_CMDLINE='tests=off root=initramfs panic.recover_smoke=on' just boot-log
+grep -E 'panic recovery|SMOKE' test_output.log
+```
+
+**What you'll see.**
+
+```
+panic recovery: syscall task=<id> core/src/syscall/test_handlers.rs:154:5: test_panic: deliberate syscall-context panic (panic.recover_smoke) (oops total=<n>)
+SYSCALL PANIC SMOKE: task died; kernel survived
+```
+
+**How to read it.** A *panic* is the kernel finding itself in a state it
+wasn't written to handle. If that happens while the kernel is working on a
+program's system call, SlopOS doesn't take the whole machine down: it stops
+the system call, kills the program that made it, releases the locks the
+failed call held, and carries on. Linux calls this an *oops*. The line gives
+the task, the source file, line and column where the panic happened, the
+panic message, and how many oopses this boot has had.
+
+An oops is still a kernel bug. Recovery cleans up what Rust's ownership
+cleans up, but some state (a counter, a reference count) may now be wrong.
+That's why the number is limited: the 100th oops in a boot (by default; set
+it with `panic.oops_limit`) is a full panic. To stop at the first one
+instead, which is what you want while debugging, boot with
+`panic.on_oops=on`. Test runs always do: with `tests=on`, every panic is
+fatal.
+
+## The kernel panicked
+
+**What you'll see.** A panic outside a system call stops the machine. It
+prints a block like this one, from a real boot that failed:
+
+```
+=== KERNEL PANIC ===
+boot/src/early_init.rs:329:9: Boot init step failed
+tainted: oops=3
+Register snapshot:
+RSP: 0xFFFFFFFF81788B60
+CR0: 0x0000000080010013
+CR2: 0x0000000000000000
+CR3: 0x000000001BFC1000
+CR4: 0x00000000003406A0
+Backtrace (most recent call first):
+  #0 rbp=0xffffffff81788c50 rip=0xffffffff80001747 __rustc::rust_begin_unwind+0x27
+  #1 rbp=0xffffffff81788c70 rip=0xffffffff8098ba44 core::panicking::panic_fmt+0x74
+  #2 rbp=0xffffffff81788ca0 rip=0xffffffff80031f61 slopos_boot::early_init::boot_run_step+0xe1
+```
+
+and then `System halted.`
+
+**How to read it.** Start with the second line: the file, line and message
+of the panic. `tainted: oops=3` means the boot had already recovered from
+three oopses, so the real cause may be one of those; scroll up for their
+`panic recovery:` lines. The registers matter mostly for memory faults: `CR2`
+is the address the CPU failed to access. The backtrace lists the calls that
+led here, newest first, already translated into function names (the kernel
+carries its own symbol table, so you don't need to run anything on the
+output). Skip the first frames, which are the panic machinery, and read from
+the first function you recognise.
+
+**What to do.** If the panic is reproducible, the backtrace is often enough.
+If it isn't, or you need to see variables,
+[Debugging with GDB](/docs/development/debugging-gdb-record-replay) shows how
+to stop at the panic and how to record a run and step backwards from it.
+
+By default a panicked machine halts so you can read the screen. With
+`panic=reboot` it resets instead. A boot entry that carries that option goes
+back to the previous entry when its kernel panics, which is how a bad
+install rolls itself back; see
+[Installing a system](/docs/self-hosting/installing-a-system).
+
+To see a panic on purpose, `panic.fatal_smoke=on` raises one right after
+boot.
+
+## Something is slow
+
+**What to do.** For a quick look at a running system, press SysRq and `s`
+for scheduler counters, `w` to see what blocked tasks are waiting on, and `i`
+to see whether the kernel's I/O threads are making progress.
+
+For numbers, use the sampling profiler. It is off by default and costs
+nearly nothing when off. Turn it on with `prof=on`. It prints its report at
+the end of a test run, so use it with a test recipe:
+
+```bash
+TEST_CMDLINE_EXTRA=prof=on just test-selfhost
+```
+
+`just bench-selfhost` does this for you on SlopOS building itself, and
+summarises the result with `scripts/prof_report.py`.
+
+**What you'll see.** Lines that start `PROF[post-userland-tests]:`, covering:
+
+- per CPU, time spent in programs, in the kernel and idle;
+- the kernel functions where the most samples landed, and the programs
+  using the most time;
+- time spent in each system call and in page faults;
+- where blocked programs were waiting, sampled each time a CPU goes idle;
+- calls per futex, how long each context switch keeps interrupts off, and
+  how long tasks waited for and held the filesystem's locks.
+
+**How to read it.** Start with the per-CPU split. Mostly idle while the work
+is slow means tasks are waiting, so read the "where blocked programs were
+waiting" lines. Mostly kernel time means look at the hottest kernel
+functions and the system call times.
+
+## A lock problem
+
+A *lock* lets one CPU at a time use a piece of shared data. Two CPUs that
+each hold one lock and wait for the other's will wait forever. The kernel
+prevents this with a *lock-order checker*, modelled on Linux's
+[lockdep](https://docs.kernel.org/locking/lockdep-design.html): every time
+code takes a lock while holding another, the checker records that order, and
+if anything ever takes the same two kinds of lock in the opposite order, it
+reports it, even if the two never collided at run time.
+
+**What you'll see.** By default the first violation panics, so it shows up as
+a kernel panic whose message starts `LOCK DEPENDENCY CYCLE`. Before that the
+log has the full report:
+
+```
+LOCKDEP: dependency cycle
+  acquiring  <lock> (<file:line>) level <n>  inst <address>
+  while held (outermost first):
+    …
+  existing path (<n> hops):
+    -> <lock> (<file:line>)
+    …
+```
+
+**How to read it.** "Acquiring" is the lock that would close the circle and
+where it was taken. "While held" is what this CPU already held. "Existing
+path" is the order the checker saw earlier, which this acquisition
+contradicts. One of the two orders is wrong; fix the code so both places
+take the locks in the same order.
+
+**What to do.** A single violation stops the boot, so if you suspect more
+than one, boot with `lockdep=warn`: the checker reports each problem once and
+carries on, so one boot lists them all. SysRq `d` shows how full the checker's
+tables are. The kernel also prints a summary line at boot and after each test
+phase:
+
+```
+LOCKDEP[boot]: ACTIVE classes=71/508 (13%) edges=40/1024 chains=107/2048 declared=0/1 held_max=3/16 held_drops=0 chain_hit=85897 chain_miss=107 violations=0 reports=0 collisions=0 leaked=0 mode=Panic
+```
+
+CI reads those lines and fails if there's a violation or the tables grow past
+their recorded limits; see [Write tests](/docs/development/adding-tests#what-ci-runs).
+
+A hang where a CPU is spinning on a lock shows up as a watchdog report
+instead, with the lock and its holder named; see
+[The machine is stuck](#the-machine-is-stuck).
+
+## Other switches
+
+- `boot.debug=on` raises the kernel log to debug level for the whole boot.
+  `just test` sets it.
+- `tp.debug` turns on touchpad diagnostics, and a check for tasks left
+  asleep by a missed wake-up.
+- `LD_DEBUG`, an environment variable rather than a boot option, makes the
+  dynamic loader trace what it loads; see [Userland](/docs/architecture/userland).
+
+Read next: [Debugging with GDB](/docs/development/debugging-gdb-record-replay)
+for stopping the kernel and inspecting it, and the Linux documentation on
+[lockup detectors](https://docs.kernel.org/admin-guide/lockup-watchdogs.html)
+and [bug hunting](https://docs.kernel.org/admin-guide/bug-hunting.html), which
+explain the same kinds of report on Linux.

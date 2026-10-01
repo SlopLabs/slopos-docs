@@ -4,9 +4,10 @@
     "index",
     "getting-started",
     "architecture",
-    "abi",
+    "self-hosting",
     "verification",
     "development",
+    "abi",
     "status"
   ]
 }

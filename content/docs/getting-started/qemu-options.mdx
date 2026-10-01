@@ -1,95 +1,193 @@
 ---
-title: "QEMU Options"
-description: "Runtime knobs for SlopOS under QEMU"
+title: "QEMU options"
+description: "Every environment variable the boot and test recipes read, and every disk and device they give QEMU."
 ---
 
-SlopOS boots through the QEMU wrapper invoked by the justfile. The wrapper sets
-sensible defaults, but most knobs are environment variables.
+Every boot and test recipe starts QEMU through `scripts/qemu_run.sh`; the
+`justfile` sets some of its variables first. Both files are authoritative.
+Set a variable in the environment, before `just`:
 
-## Machine Model
-
-The normal runtime is:
-
-```text
--machine q35,accel=<kvm:tcg|hvf:tcg>
--cpu host       # changes to max when TCG is required
--smp 4
--m 512M
+```bash
+QEMU_DISPLAY=sdl ROULETTE=0 just boot
 ```
 
-`QEMU_SMP` must be a power of two. On Linux, the script uses KVM when
-`/dev/kvm` is available and writable; otherwise it falls back to TCG with
-`-cpu max`. On macOS, it prefers HVF when QEMU advertises it.
+Options for the kernel itself (its command line) are listed in
+[Boot options](/docs/abi/boot-options).
 
-## Firmware And Boot Media
+## Modes
 
-The boot wrapper prepares OVMF firmware and uses runtime copies of OVMF vars:
+The wrapper runs in one of three modes, chosen by the recipe.
 
-| Device | Use |
-|--------|-----|
-| OVMF pflash | UEFI firmware |
-| AHCI CD-ROM | Limine ISO boot media |
-| VirtIO block | ext2 root filesystem image |
-| Optional scratch VirtIO block | Destructive block tests in harness mode |
+| Mode | Recipes | Window | Serial output |
+|------|---------|--------|---------------|
+| `interactive` | `boot`, `boot-fast`, `boot-debug`, `boot-live` | Yes, unless `VIDEO=0` | The terminal |
+| `logged` | `boot-log` | No | `LOG_FILE` |
+| `test` | `test` and its variants, `test-persist`, `test-install` and the other checks that boot | No | The test runner |
+
+## Recipe variables
+
+Read by the `justfile` and turned into kernel command-line options or recipe
+behaviour.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `ROULETTE` | `1` | `0`, `false`, `off`, `no` or `skip` adds `roulette=skip`: no Wheel of Fate |
+| `DEBUG` | `0` | `1`, `true`, `on` or `yes` adds `boot.debug=on` |
+| `VIDEO` | `1` for `boot` and `boot-live` | `0` opens no window; the console is the terminal |
+| `KERNEL_RELEASE` | `1` for `boot`, otherwise unset | `1` builds and boots the optimised kernel, `0` the dev kernel |
+| `BOOT_CMDLINE` | `tests=off root=initramfs` | The live ISO's whole kernel command line (`iso`, `boot-live`, `boot-log`). `boot` ignores it |
+| `BOOT_LOG_TIMEOUT` | `15` | Seconds `boot-log` runs before QEMU is stopped |
+| `LOG_FILE` | `test_output.log` | Where `boot-log` writes the serial log, with ANSI escapes removed |
+| `DEV_QEMU_MEM` | `4G` | Memory for `boot` when `QEMU_MEM` is unset |
+| `PERSIST_IMAGE_SIZE` | `512M` | Minimum size of the persistent root; a larger value grows the existing image in place |
+| `ROOT_FREE_FLOOR` | `6G` | Free space the persistent root keeps for builds; a root with less is grown |
+| `CAPACITY_IMAGE_SIZE` | `16G` | Size of the `test-capacity` volume |
+| `CAPACITY_INODE_RATIO` | `16384` | Bytes per inode for the `test-capacity` volume |
+| `CAPACITY_QEMU_MEM` | `2G` | Memory for `test-capacity` when `QEMU_MEM` is unset |
+| `BUILD_DIR` | `builddir` | Build output directory |
+
+`ports` is a justfile variable, not an environment variable, and goes between
+`just` and the recipe: `just ports=7777,8080 boot`. See
+[Networking](#networking).
+
+## Machine
+
+```text
+-machine q35,accel=<QEMU_ACCEL>
+-cpu <QEMU_CPU>
+-smp <QEMU_SMP>
+-m <QEMU_MEM>
+```
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `QEMU_BIN` | `qemu-system-x86_64` | QEMU binary |
+| `QEMU_ACCEL` | `kvm:tcg` on Linux, `hvf:tcg` on macOS | Accelerators, tried in order |
+| `QEMU_CPU` | `host` | CPU model |
+| `QEMU_SMP` | `4` | CPU count; must be a power of two |
+| `QEMU_MEM` | `4G` for `boot`, `1G` in test mode, `512M` otherwise | Guest memory |
+
+On Linux, KVM is used when `/dev/kvm` exists and is readable and writable. When
+no hypervisor is usable (also on macOS when QEMU lists no HVF), the wrapper
+prints `No hardware acceleration` and runs TCG with `-cpu max`, because
+`-cpu host` needs a hypervisor.
+
+## Firmware
+
+QEMU boots UEFI firmware (OVMF), fetched on first use and checked against
+pinned SHA-256 sums. Each run boots from a fresh copy of the firmware's
+variable store.
+
+| Boot medium | Recipes | Firmware |
+|-------------|---------|----------|
+| Live ISO on an AHCI CD-ROM | `boot-live`, `boot-log`, `test` | Pinned edk2 nightly in `third_party/ovmf` |
+| UEFI boot disk on NVMe | `boot`, `boot-fast`, `boot-debug`, the install checks | Pinned Arch `edk2-ovmf` build in `third_party/ovmf-nv` (`OVMF_NV_DIR` overrides the directory) |
+
+The boot disk needs the second build because it chooses its next boot through
+a UEFI variable (`LoaderEntryOneShot`), which the nightly does not keep across
+a reset. `BOOT_DISK_IMG` names the boot disk and selects this firmware; the
+boot recipes set it. In interactive mode a guest reboot resets the machine
+inside the same QEMU process, keeping the variable store; in test mode QEMU
+exits on a reboot unless `QEMU_ALLOW_REBOOT=1`, which the install checks set.
+
+Download overrides (`OVMF_BASE_URL`, `OVMF_NV_PKG_URL`, `LIMINE_URL` and
+others) are listed in
+[Troubleshooting](/docs/getting-started/troubleshooting#downloads-fail-or-you-are-offline).
+
+## Disks
+
+Every NVMe controller is probed before any virtio one, in command-line order,
+so a root disk, when one is attached, is `nvme0n1`.
+
+| Guest name | When | Contents |
+|------------|------|----------|
+| `nvme0n1` | `boot` | `fs/assets/ext2-persist.img`, the persistent root |
+| `nvme0n1` | test mode, except `test-install` | `fs/assets/ext2-tests.img`, rebuilt every run |
+| `nvme0n2` | test mode | Blank 8 MiB scratch for destructive block tests |
+| `nvme0n3` | `CAPACITY_IMG` names an existing file (`test-capacity`) | The capacity volume, kept between runs |
+| `nvme1n1` | test mode | ext4 volume labelled `slopos-media`, 4096-byte logical blocks, mounted at `/media` |
+| `nvme1n2` | test mode | Blank scratch with 4096-byte logical blocks |
+| `nvme2n1` | test mode | Scratch on a controller that a test shuts down |
+| `nvme1n1` | `boot` | `builddir/boot-disk.img`, the boot disk (see below) |
+| `nvme3n1` | install checks | The boot disk, after the test controllers |
+| `vda` | test mode | `fs/assets/ext2.img`, the shipped verified image, copy-on-write |
+| `vdb` | test mode | Blank virtio scratch |
+
+`QEMU_NO_ROOT_DISK=1` omits the root disk. `boot-live` and `boot-log` set it,
+so they attach no disk at all; `test-install` sets it because its root is a
+partition on the boot disk. Test-mode scratch files go in `SCRATCH_DIR`
+(default `builddir`). [Disks](/docs/architecture/storage) explains device
+naming.
+
+The boot disk (`scripts/build_bootdisk.sh`) is a GPT disk in the layout
+SlopOS uses on a real machine:
+
+| Partition | Contents |
+|-----------|----------|
+| EFI system partition | Limine and its `limine.conf` under `\EFI\SlopOS\`, plus a copy at the removable-media path `\EFI\BOOT\` |
+| SlopOS boot | FAT32; one directory per slot (`/boot/a`, `/boot/b`), each holding `kernel.elf` and `base.img` |
+| SlopOS root | Only when `BOOTDISK_ROOT_IMAGE` names an ext4 image (`test-install`); the slots boot with it as root |
+| SlopOS crash | Raw, zeroed |
+
+`BOOTDISK_PANIC_ENTRY=1` adds a slot `bad` whose kernel panics and resets.
+[Installing a system](/docs/self-hosting/installing-a-system) explains slots.
 
 ## Display
 
-| Variable | Default | Use |
-|----------|---------|-----|
-| `QEMU_DISPLAY` | `cocoa` on macOS, `auto` elsewhere | Force `cocoa`, `gtk`, or `sdl` |
-| `QEMU_FB_AUTO` | `1` | Detect host display size for the Limine framebuffer |
-| `QEMU_FB_WIDTH` | `1920` | Fallback framebuffer width |
-| `QEMU_FB_HEIGHT` | `1080` | Fallback framebuffer height |
-| `QEMU_FB_AUTO_POLICY` | `primary` | Pick `primary` or `max` display |
-| `QEMU_FB_AUTO_OUTPUT` | empty | Pin a display output name |
-| `QEMU_GTK_ZOOM_TO_FIT` | `off` | GTK scaling option |
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `QEMU_DISPLAY` | `cocoa` on macOS, `auto` elsewhere | `cocoa`, `gtk`, `sdl` or `auto`. `auto` picks Cocoa when QEMU has it, SDL on a Wayland session that has SDL, and GTK otherwise |
+| `GPU` | `virtio-vga` | `virtio-vga`, `virtio-gpu-pci` or `vga` |
+| `QEMU_FB_AUTO` | `1` | Detect the host screen size for the boot framebuffer |
+| `QEMU_FB_WIDTH` | `1920` | Width when detection is off or fails |
+| `QEMU_FB_HEIGHT` | `1080` | Height when detection is off or fails |
+| `QEMU_FB_AUTO_POLICY` | `primary` | Size from the `primary` screen or the `max` one |
+| `QEMU_FB_AUTO_OUTPUT` | empty | Detect from this output name only |
+| `QEMU_GTK_ZOOM_TO_FIT` | `off` | GTK `zoom-to-fit` |
 
-Examples:
+| `GPU` value | Behaviour |
+|-------------|-----------|
+| `virtio-vga` | Firmware framebuffer from power-on, then the kernel's virtio-gpu driver takes over |
+| `virtio-gpu-pci` | Nothing on screen until the driver probes |
+| `vga` | Plain framebuffer; pair with `video=framebuffer` in `BOOT_CMDLINE` |
 
-```bash
-QEMU_DISPLAY=sdl just boot
-QEMU_FB_AUTO=0 QEMU_FB_WIDTH=1280 QEMU_FB_HEIGHT=720 just boot-fast
-QEMU_FB_AUTO_POLICY=max just boot
-```
-
-## Serial And Logging
-
-`just boot-headless` and test mode use `-display none -serial stdio`.
-`just boot-log` writes raw serial data to a temporary `.raw` file, strips ANSI
-control sequences, and saves `test_output.log`.
-
-```bash
-BOOT_LOG_TIMEOUT=30 LOG_FILE=builddir/boot.log just boot-log
-```
+When QEMU cannot create the virtio device, the wrapper warns and uses `vga`.
+The framebuffer size is written into the bootloader configuration when the
+ISO or boot disk is built, which the boot recipes do on every run.
+`just show-qemu-resolution` prints the size detection would pick.
 
 ## Networking
 
-QEMU user networking is always present for the VirtIO net device. Host-to-guest
-TCP forwarding is enabled by passing `ports=` to the just recipe:
+QEMU user networking (SLIRP) backs a `virtio-net-pci` card in every mode.
 
-```bash
-just ports=7777 boot
-just ports=7777,8080 boot-fast
-```
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `ports` (justfile) | empty | Comma-separated ports to forward from host to guest; `host:guest` maps different numbers. Sets `NET=1` and `NET_PORTS` |
+| `NET` | `0` | `1` forwards `NET_PORTS` |
+| `NET_PORTS` | `7777,8080,8081` | Ports forwarded when `NET=1` |
 
-Use `host:guest` pairs when the host port differs:
+`ports` does not reach the inner `just boot` that `boot-fast` and `boot-debug`
+start; use `ROULETTE=0 just ports=7777 boot`.
 
-```bash
-just ports=18080:8080 boot
-```
+These services run inside the SLIRP network, started by QEMU per connection:
 
-## Debug Mode
+| Address | Service | Variables |
+|---------|---------|-----------|
+| `10.0.2.100:9999` | TCP echo service the network tests dial | `ECHO_PEER_ADDR`, `ECHO_PEER_PORT`, `ECHO_PEER_CMD` (default `/bin/cat`) |
+| `10.0.2.4:9418` | `git daemon` serving this checkout, read-only | |
+| `10.0.2.4:9419` | `git daemon` serving a bare repository that accepts pushes | `GIT_PUSH_REPO`, an absolute path, created if absent |
 
-`just boot-debug` sets `QEMU_DEBUG=1`, which adds:
+`boot` sets `GIT_PUSH_REPO` to `fs/assets/guest-push.git`.
+[Development machine](/docs/self-hosting/development-machine) shows how the
+guest uses both.
 
-| Endpoint | Path |
-|----------|------|
-| GDB stub | TCP `:1234` |
-| QEMU monitor | `/tmp/slopos-monitor.sock` |
+## Debugging
 
-Attach while QEMU is running:
+| Variable | Effect |
+|----------|--------|
+| `QEMU_DEBUG=1` | GDB stub on TCP port 1234 and the QEMU monitor on `/tmp/slopos-monitor.sock`. `boot-debug` sets it |
+| `QEMU_ENABLE_ISA_EXIT=1` | Add the `isa-debug-exit` device (port `0xf4`) outside test mode, so the guest can end QEMU with a status |
+| `QEMU_PCI_DEVICES` | Extra QEMU arguments, space-separated, appended to the command line |
 
-```bash
-gdb -q builddir/kernel.elf -ex 'target remote :1234'
-socat - UNIX-CONNECT:/tmp/slopos-monitor.sock
-```
+`just debug-gdb`, `just debug-bt` and `just debug-monitor` attach to a running
+`boot-debug`. See [Debugging with GDB](/docs/development/debugging-gdb-record-replay).

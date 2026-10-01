@@ -1,43 +1,96 @@
 ---
-title: "Known Limitations"
-description: "What SlopOS does not currently promise"
+title: "Known limitations"
+description: "What SlopOS does not do yet, and which of those gaps we plan to close."
 ---
 
-SlopOS is a QEMU-first research and development OS. These are important current
-limits.
+SlopOS is a research system. Everything is tested in QEMU, and one laptop runs
+the live ISO. This page lists what is missing, what each gap means for you,
+and whether we plan to close it. **Planned** links to the
+[Roadmap](/docs/status/roadmap); **Not planned** means no plan covers it today.
 
-## Runtime
+## Hardware
 
-- Real hardware boot is not the supported target.
-- QEMU `q35`, OVMF, HPET, LAPIC, IOAPIC, and MSI/MSI-X are expected.
-- Legacy PIC and legacy VirtIO interrupt modes are not the supported path.
-- Display behavior is framebuffer/compositor oriented, not GPU-accelerated
-  desktop hardware support.
+- **Only one real machine has been tried.** Other PCs may boot, but nothing
+  outside QEMU and the tested laptop has been run, and support for other
+  machines' hardware is outside the current plans. Not planned. See
+  [Hardware](/docs/status/hardware-requirements).
+- **No installer.** The disk layout SlopOS boots from can already sit beside
+  another OS on one disk (it shares the EFI system partition and keeps its own
+  partitions), but only the host can build such a disk. Inside SlopOS there is
+  no tool to create a filesystem, check one, resize one or write a partition
+  table, so you cannot install SlopOS onto a real disk yet. Planned (bare metal).
+- **A panic on real hardware leaves no record.** With the `panic=reboot` boot
+  option the machine resets at once, and on a laptop with no serial port the
+  screen was the only copy of the message. The disk layout already reserves a
+  small partition for a crash record, but nothing writes to it yet. Planned
+  (bare metal).
+- **No network on real hardware.** The only network driver is for QEMU's
+  virtio card; the laptop's Realtek wired card has no driver. Planned (bare
+  metal).
+- **No USB.** There is no USB controller driver, so USB keyboards, mice, sticks
+  and network adapters do nothing once the kernel runs. Input on the laptop
+  comes from the built-in keyboard and touchpad. Planned (USB).
+- **No power management.** The kernel does not tune CPU frequency and does not
+  tell the laptop's fast cores from its efficient ones, so builds may run below
+  the CPU's full speed. Planned as measurement first (bare metal).
+- **No Wi-Fi, Bluetooth, audio, GPU acceleration or suspend.** Not planned.
 
-## Kernel And ABI
+## Kernel
 
-- Syscall coverage is POSIX-inspired, not complete POSIX or Linux parity.
-- Syscall numbers are stable once assigned; SlopOS is pre-alpha.
-- SlopRing does not aim for full Linux io_uring feature parity.
-- Some SlopRing and TCP zero-copy runtime atomics are audited rather than
-  machine-checked.
-- Verification covers selected critical logic, not the whole kernel.
+- **Partial system call coverage.** System calls use Linux's numbers, but many
+  are missing; a program that calls one gets `ENOSYS`. Coverage grows when a
+  port needs it. Not planned as a goal in itself.
+- **One user.** Every process runs as user 0. What a program may do comes from
+  the permissions it was started with, not from who runs it
+  ([Permissions](/docs/architecture/authority)). Not planned.
+- **Devices are found once, at boot.** Drivers cannot be unloaded, and a device
+  plugged in later is not noticed. Not planned in the mid term
+  ([Drivers](/docs/architecture/drivers)).
+- **SlopRing covers less than io_uring.** It borrows the idea but does not aim
+  to match Linux's feature set ([SlopRing](/docs/abi/slopring)). Not planned.
+- **Proofs cover part of the trusted core.** Machine-checked proofs cover
+  selected logic; some lock-free code in SlopRing and the TCP zero-copy path is
+  reviewed by hand instead ([Proofs](/docs/verification/verus-status)).
+- **No kernel page-table isolation.** The kernel stays mapped (but
+  inaccessible) while programs run, and relies on the processor's protection
+  bits rather than unmapping itself, which is the defence Linux added against
+  Meltdown ([User mode and kernel mode](/docs/architecture/privilege-separation)).
+  Not planned.
+- **Some scheduler waits cost latency.** A CPU can briefly spin waiting for
+  another to finish switching a task out, ending a task checks every CPU's
+  queue, and the memory of finished tasks is freed only when a CPU goes idle.
+  None of these is a correctness problem, and none is scheduled work.
 
-## Filesystem And Storage
+## Storage
 
-- ext2 is the primary persistent filesystem.
-- Journaling filesystems, package management, and robust crash recovery are not
-  current public guarantees.
-- The test harness uses a scratch VirtIO disk for destructive block tests.
+- **ext4 as SlopOS makes it.** SlopOS formats every volume with one set of ext4
+  features. It also reads ext2 and ext3, but an ext4 volume made by another
+  system with other features is not supported. Mounting btrfs, XFS or other
+  filesystems is future work with no plan yet.
+- **Self-hosted test builds need 8 GB.** At the development machine's default
+  4 GB, linking the test kernel hits a per-process memory limit and the link
+  fails. Boot with `DEV_QEMU_MEM=8G` for those builds. Open defect.
 
-## Networking
+## Network
 
-- The stack supports real TCP/UDP workflows. It is a small OS network stack, not
-  a production hardened Internet stack.
-- QEMU user networking is the normal development path.
+- **IPv4 only.** There is no IPv6. Not planned.
+- **Not hardened for the open Internet.** The stack carries real TCP, UDP, DNS
+  and TLS 1.3 traffic, but it is a small stack and has not been through what an
+  Internet-facing one has ([Networking](/docs/architecture/networking)).
+- **No SSH client.** Git inside SlopOS reaches the host over the `git://`
+  protocol through QEMU's user networking, or GitHub over HTTPS. Planned
+  (bare metal).
 
-## Project Docs
+## Toolchain
 
-Source repo plans are working notes or historical records unless they are
-explicitly promoted into these docs. Treat this documentation site as the public
-documentation surface.
+- **The compilers are built on the host.** LLVM and rustc are cross-built with
+  `just toolchain`; SlopOS does not rebuild its own compiler. A plan exists but
+  is not committed to ([Toolchain](/docs/self-hosting/toolchain)).
+- **Not a tier 2 Rust target.** Rust ships no prebuilt standard library for
+  SlopOS, so every build compiles it from source with `-Zbuild-std`.
+
+## Project
+
+- **Plans are proposals.** The plans in the source tree describe work that has
+  not landed. Only what these docs describe as working is part of the system;
+  the [Roadmap](/docs/status/roadmap) summarises the rest.

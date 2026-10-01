@@ -1,4 +1,4 @@
 {
-  "title": "ABI",
-  "pages": ["syscalls", "slopring", "ktap-test-output", "window-protocol"]
+  "title": "Reference",
+  "pages": ["syscalls", "slopring", "window-protocol", "ktap-test-output", "boot-options"]
 }

@@ -1,50 +1,241 @@
 ---
 title: "Overview"
-description: "Current SlopOS subsystem map"
+description: "What the parts of SlopOS are, what each one is responsible for, and how they work together when a program reads a file."
 ---
 
-SlopOS is a Rust kernel and userland organized around a small trusted core, safe
-kernel subsystems, and a userland async/runtime layer. These docs describe stable
-architecture and behavior rather than mirroring every source path.
+import { SystemLayers } from '@/components/diagrams/system-layers';
 
-## High-level flow
+SlopOS gives you a working Unix-like system on a 64-bit x86 PC or in QEMU: a
+shell, the core utilities, an editor, network tools and a desktop, all running
+as ordinary programs that can't read each other's memory or take down the
+machine. If you have written programs for Linux, the interface will be
+familiar, because SlopOS uses Linux's system call numbers, signals and error
+codes. What is unusual is inside the kernel, which is written in Rust: all of
+its `unsafe` code sits in one small trusted core, and the compiler checks the
+rest. This page names each part of the system, says what it is responsible
+for, and then follows one ordinary action, a program reading a file, down
+through all of them and back.
 
-```text
-Limine + OVMF
-  -> early CPU, memory, interrupt, and service setup
-  -> platform discovery and device initialization
-  -> scheduler, memory manager, filesystem, network stack, syscall layer
-  -> init, shell, compositor, terminal, and apps
-```
+Almost nothing here was invented for SlopOS. The way the kernel is split, with
+one small trusted part underneath everything else, comes from the
+[Asterinas](https://asterinas.github.io/book/kernel/the-framekernel-architecture.html)
+project, which calls the design a *framekernel*. The interface programs use is
+Linux's, down to the numbering.
 
-## Subsystems
+## The parts of SlopOS
 
-| Subsystem | Responsibility |
-|-----------|----------------|
-| ABI | Shared structs, constants, syscall surface, SlopRing layout, window and network contracts |
-| Trusted core | Unsafe machine interfaces, memory primitives, synchronization, task handles, user-copy |
-| Boot | Limine handoff, descriptor tables, exceptions, SMP bring-up, boot ordering |
-| Kernel services | Stable bridge between low-level trusted primitives and higher kernel subsystems |
-| Memory | Process address spaces, demand paging, COW, memfd, ELF loading, pinned user buffers |
-| Scheduler | Task lifecycle, SMP scheduling, sleeps, futexes, trap and IRQ handoff |
-| Syscalls | Typed dispatch, process, memory, filesystem, networking, signal, ring, UI, and test handlers |
-| Drivers | ACPI, APIC/IOAPIC, HPET, PCI, MSI/MSI-X, VirtIO, PS/2, serial, TTY |
-| Filesystem | VFS, ext2, ramfs, devfs, pipes, fd tables, polling |
-| Networking | VirtIO net, IPv4, ARP, ICMP, UDP, TCP, DNS, AF_UNIX sockets |
-| SlopRing | Shared submission/completion ring, registered buffers, provided buffers, completion delivery |
-| Runtime | libc layer, SlopRing wrapper, `slopfut` executor, process and signal futures |
-| Windowing | Display protocol, memfd-backed surfaces, compositor, raw window API, appkit widgets |
-| Tests | Kernel and userland tests, KTAP serial output, host parser, JSONL reporting |
-| Verification | OSTD trusted core, Verus proofs, KernMiri, framekernel discipline gates |
+The shell, the terminal, the desktop, `ls` and `cat` are all ordinary user
+programs, under the same rules as the programs you write. The few that need
+more, such as the compositor taking over the screen or `bootctl` writing the
+boot slots, are granted a specific permission by the kernel when they start
+([Permissions](/docs/architecture/authority)). The kernel itself is split in
+two: a small trusted core at the bottom, and everything else on top of it.
 
-## Design lines
+<SystemLayers />
 
-- Kernel async is banned. The kernel blocks through synchronous wait queues;
-  async is a userland edge built on SlopRing and `slopfut`.
-- IRQ and device work use APIC, IOAPIC, MSI/MSI-X, HPET, and VirtIO. PIT exists
-  only as a legacy calibration fallback, not as the scheduler timer.
-- The ABI source is generated from the source repo, not from prose in these docs.
-  Reference pages describe shape and semantics; exact numeric assignments belong
-  in the ABI source.
-- Tests are ABI consumers: kernel tests, userland tests, KTAP output, and the
-  host parser all exercise public contracts.
+### The trusted core
+
+At the bottom of the kernel sits a small library that does the things the Rust
+compiler can't check: setting up the CPU, building the tables that decide what
+memory each program can see, switching between programs, copying bytes to and
+from a program's memory, and receiving interrupts from devices. All of these
+need `unsafe` Rust, which is Rust's way of saying "the compiler can't prove this
+is correct; a person has to". SlopOS puts every line of the kernel's own
+`unsafe` code in this one library, called OSTD (the trusted core), and the
+build refuses `unsafe` anywhere else in the kernel.
+
+That changes what a bug can do. A mistake in the rest of the kernel can still
+return a wrong answer, crash a program or even allow something it shouldn't,
+but the compiler rules out memory corruption there: reading freed memory,
+writing past the end of a buffer, the kind of bug that lets one program read
+another's data. That kind of bug can only start in the trusted core, so that
+is where the proofs, the reviews and the extra checking go.
+[The framekernel](/docs/verification/framekernel) explains the idea and where
+it comes from, and [The trusted core](/docs/verification/ostd-trusted-core)
+describes what OSTD offers the rest of the kernel.
+
+### The kernel
+
+On top of the trusted core, the rest of the kernel is written in safe Rust. It
+is split by responsibility:
+
+- **Processes and scheduling.** Processes, threads, signals and job control
+  behave as on Linux. The scheduler preempts on a timer and keeps one run
+  queue per CPU, and almost every wait in the kernel ends at once when the
+  task is killed. See [Processes and signals](/docs/architecture/processes),
+  [Scheduling and waiting](/docs/architecture/scheduler-wait-protocol) and
+  [Task lifetimes](/docs/architecture/task-ownership).
+- **Memory.** Each process gets its own address space, filled in on first
+  use, and `fork` shares pages copy-on-write. Unlike Linux, the kernel
+  refuses memory when a program asks for it rather than when it first
+  touches it, so running out is usually an error the program can handle
+  instead of a kill. See [Memory](/docs/architecture/memory) and
+  [Resource limits](/docs/architecture/resource-accounting).
+- **Permissions.** Some system calls, such as rebooting the machine or taking
+  over the screen, are only for programs that have been given the right to
+  make them. See [Permissions](/docs/architecture/authority).
+- **Filesystem.** Disks, the read-only base image and the special files under
+  `/dev` form one directory tree. Disks use ext4 with a journal, the same
+  format Linux uses. See [Filesystem](/docs/architecture/filesystem),
+  [Disks](/docs/architecture/storage) and
+  [Crash recovery](/docs/architecture/crash-recovery).
+- **Network stack.** TCP, UDP, IPv4, DHCP and DNS run inside the kernel, as
+  they do on Linux. See [Networking](/docs/architecture/networking).
+- **Drivers.** NVMe and virtio disks, virtio network and graphics, the Intel
+  Xe display, the PS/2 keyboard and an I²C touchpad, each matched to its
+  device in one declarative step. See [Drivers](/docs/architecture/drivers).
+
+[Boot](/docs/architecture/boot) describes how all of this is started, in
+order, when the machine powers on.
+
+### Userland
+
+Above the system call line is *userland*:
+
+- **The C library**, slibc, is written in Rust. Every program links against
+  it, Rust programs included through the standard library, and it doubles as
+  the dynamic loader.
+- **SlopRing** is a queue of requests a program shares with the kernel, so it
+  can have many operations in flight without one system call each. A small
+  async runtime for Rust programs is built on it. See
+  [SlopRing](/docs/abi/slopring).
+- **The programs**: `init`, which the kernel starts first and which starts the
+  desktop; the shell; the core utilities; an editor; and network tools such as
+  `curl`, `ping` and `nc`.
+- **The desktop**: a compositor, which owns the screen and combines the other
+  programs' windows into one picture, and the apps that draw into those
+  windows, the terminal among them.
+
+[Userland](/docs/architecture/userland) covers the C library and the programs,
+and [Desktop and windowing](/docs/architecture/userland-windowing) covers the
+compositor and how windows reach the screen.
+
+## Following a read through the system
+
+Here is what happens when you type `cat notes.txt` in the shell and `cat`
+reads the file from the disk. Every layer from the diagram takes part.
+
+1. **The program asks.** `cat` has already opened the file and holds a file
+   descriptor for it. It calls `read()` in the C library with a buffer in its
+   own memory.
+2. **The C library makes the system call.** It puts the number of the `read`
+   call (0, the same as on Linux), the file descriptor, the buffer's address
+   and its size into CPU registers, and executes the `syscall` instruction.
+   The CPU switches into kernel mode and jumps to the entry point the trusted
+   core registered at boot. The trusted core saves `cat`'s registers so it can
+   resume it later.
+3. **The kernel finds the handler.** It looks up call 0 in its table of system
+   calls and finds the `read` handler. Reading needs no special permission:
+   holding the file descriptor is the permission, because `cat` could only
+   have got one by opening the file itself or by being handed it by another
+   program.
+4. **The filesystem works out where the bytes are.** The handler looks up the
+   descriptor in the process's table of open files and asks the filesystem
+   for the bytes. The ext4 code works out which blocks of the disk hold that
+   part of the file. If those blocks are already in the kernel's block cache,
+   the bytes are in memory and the next two steps are skipped.
+5. **The driver asks the disk.** Otherwise the block layer hands a read
+   request to the disk's driver, which tells the disk (an NVMe drive under
+   QEMU and on most laptops) where in memory to put the data. Unless the
+   answer comes back almost at once, `cat` sleeps and the scheduler runs
+   something else on that CPU.
+6. **The disk interrupts.** When the data has arrived, the disk raises an
+   interrupt. The driver's handler marks the request done and wakes `cat`.
+7. **The kernel copies the bytes out.** Back in the `read` handler, the kernel
+   copies the bytes into `cat`'s buffer. It does this only through the trusted
+   core's copy routine, which first checks that the buffer is memory `cat`
+   owns and may write to.
+8. **The kernel returns.** The handler's result, the number of bytes read, goes
+   into a register. On the way out the kernel checks whether a signal is
+   waiting for `cat` (if you pressed Ctrl-C, for example) and then returns to
+   user mode, where `read()` hands `cat` the count.
+
+Then `cat` makes a `write` system call to send the same bytes to its standard
+output, and a similar trip happens through the terminal instead of the disk.
+
+## How the parts are checked
+
+The design only helps if its rules hold, so the build checks them rather than
+trusting people to remember:
+
+- A source check fails the build if `unsafe` appears in any kernel crate other
+  than the trusted core, and another expands every macro first, so `unsafe`
+  can't hide inside one.
+- Another check fails the build if any kernel code uses `async`. The kernel
+  blocks a task while it waits; asynchronous code is a userland feature, built
+  on SlopRing.
+- Every system call states, where it is defined, which permission it needs,
+  and the build fails if any entry in the table lacks one.
+- The trusted core's most dangerous invariants are proved with the Verus proof
+  checker, the core runs under Miri, and the kernel's test suite boots it under
+  QEMU on every change. See [Proofs](/docs/verification/verus-status),
+  [Miri](/docs/verification/kernmiri) and
+  [Safety gates](/docs/verification/tcb-discipline).
+
+## For contributors
+
+The source tree is a Cargo workspace with one crate per subsystem, and
+`Cargo.toml` lists every one. Crate names are directory names. These are the
+ones you will open most often:
+
+| Crate | Responsibility |
+|-------|----------------|
+| `slopos-ostd` | The trusted core, and the only kernel crate allowed `unsafe` |
+| `kernel`, `boot` | The kernel's entry point and the boot sequence |
+| `abi` | Everything shared with userland: syscall numbers, errno values, flags, structs |
+| `core` | System call dispatch and handlers, `exec`, the OOM killer |
+| `sched` | Task lifecycle, scheduling, sleeps, futexes |
+| `mm` | Physical and virtual memory, address spaces, ELF loading |
+| `fs`, `drivers`, `net` | The filesystem layer, device drivers, the network stack |
+| `*-core` (`ext4-core`, `shell-core`, ...) | Pure logic with no system calls, so its tests also run on the development host |
+| `slibc`, `userland` | The C library and the programs |
+| `verification` | Verus proofs for the trusted core, checked by `just verify` |
+
+Two pinned third-party crates, `vendor/unwinding` and `vendor/gimli`, are part
+of the trusted code base as named exceptions. They serve OSTD's panic
+unwinding and nothing else.
+
+Rules a change must keep:
+
+- **No `unsafe` outside `slopos-ostd`.** If a subsystem needs something only
+  `unsafe` can do, add a safe API to OSTD. See
+  [Unsafe code and FFI](/docs/development/unsafe-ffi-boundaries).
+- **No `async` in the kernel.** Block on a wait queue; see
+  [Scheduling and waiting](/docs/architecture/scheduler-wait-protocol).
+- **Linux numbering.** A Linux x86-64 system call number means the same call
+  in SlopOS or nothing at all. SlopOS-only calls live in a private range from
+  1024. See [System call ABI](/docs/abi/syscalls).
+- **The ABI lives in code.** Numbers, structs and flags are defined once, in
+  the `abi` crate; reference pages describe them but the source is the
+  authority.
+
+## Further reading
+
+- [*Introduction to Operating Systems*](https://pages.cs.wisc.edu/~remzi/OSTEP/intro.pdf),
+  chapter 2 of *Operating Systems: Three Easy Pieces* by Remzi and Andrea
+  Arpaci-Dusseau. Start here if this page was your first look inside an
+  operating system. It introduces the same parts (processes, memory, files)
+  and why each one exists, with small C programs you can run.
+- [*The Framekernel Architecture*](https://asterinas.github.io/book/kernel/the-framekernel-architecture.html),
+  from the Asterinas book. The short version of the idea behind the trusted
+  core, from the project that came up with it.
+- [*Asterinas: A Linux ABI-Compatible, Rust-Based Framekernel OS with a Small
+  and Sound TCB*](https://www.usenix.org/conference/atc25/presentation/peng-yuke),
+  USENIX ATC 2025. The full argument, with the rules SlopOS's build checks
+  enforce.
+- [*syscalls(2)*](https://man7.org/linux/man-pages/man2/syscalls.2.html), the
+  Linux manual page that lists every Linux system call. SlopOS uses the same
+  numbers, so it is a fair map of the interface programs see.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `Cargo.toml` | The workspace: every crate |
+| `slopos-ostd/` | The trusted core |
+| `kernel/src/main.rs` | The kernel's entry point |
+| `core/src/syscall/handlers.rs` | The system call tables |
+| `scripts/check_unsafe_outside_ostd.sh`, `scripts/check_no_kernel_async.sh` | Two of the build's rule checks |
+
+[Safety gates](/docs/verification/tcb-discipline) lists every check the build
+runs.

@@ -1,11 +1,12 @@
 {
-  "title": "Development",
+  "title": "Guides",
   "pages": [
     "adding-a-syscall",
     "adding-a-driver",
     "adding-tests",
-    "unsafe-ffi-boundaries",
+    "diagnostics",
     "debugging-gdb-record-replay",
+    "unsafe-ffi-boundaries",
     "security-cvss"
   ]
 }

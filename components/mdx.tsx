@@ -15,6 +15,7 @@ import {
 import type { Icon } from '@phosphor-icons/react/lib';
 import type { ComponentProps, HTMLAttributes, ReactNode } from 'react';
 import { cn } from '@/lib/cn';
+import { JournalDisk, JournalTimeline } from '@/components/diagrams/journal';
 
 const iconMap: Record<string, Icon> = {
   book: Books,
@@ -113,6 +114,8 @@ export function getMDXComponents(components?: MDXComponents) {
     Cards,
     CardGroup,
     Frame,
+    JournalDisk,
+    JournalTimeline,
     Note,
     Tab,
     Tabs,

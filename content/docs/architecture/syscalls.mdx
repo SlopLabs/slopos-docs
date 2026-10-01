@@ -1,44 +1,302 @@
 ---
-title: "Syscalls"
-description: "Syscall entry and dispatch architecture"
+title: "System calls"
+description: "How a request from a program travels into the kernel, gets checked and carried out, and comes back with a result or an error."
 ---
 
-The syscall layer is the privileged API between Ring 3 userland and the Ring 0
-kernel. The ABI source defines numeric assignments; these docs describe the
-entry path, handler model, and compatibility expectations.
+import { SyscallPath } from '@/components/diagrams/kernel-entry';
 
-## Entry
+Programs make system calls on SlopOS the way they do on Linux: the same calls
+as Linux on x86-64, with the same numbers, the same registers and the same
+error codes, so a C program that calls `read()` compiles and behaves the way
+you expect. Inside the kernel every call goes through the same steps: it looks
+the number up in one table, checks that the caller is allowed to make it,
+decodes and checks the arguments, runs the handler, and on the way out
+delivers any signal that arrived in the meantime. This page follows one call
+through those steps and back.
 
-Normal userland enters with `SYSCALL`. Early boot configures the x86-64 syscall
-MSRs so the CPU jumps to the kernel entry trampoline, masks the expected flags,
-and uses the configured kernel/user selector layout.
+The interface is Linux's, described in
+[syscall(2)](https://man7.org/linux/man-pages/man2/syscall.2.html) and
+[syscalls(2)](https://man7.org/linux/man-pages/man2/syscalls.2.html), and so
+are the details programs depend on, such as how an interrupted call is
+restarted. What SlopOS adds is inside the kernel: every call declares the
+permission it needs, the kernel checks it in one place, and the build fails
+if any call doesn't declare one.
 
-The trampoline snapshots the user register file into a user context. The
-dispatcher parses register arguments through typed argument wrappers and routes
-to the matching handler.
+## A system call, step by step
 
-## Handler groups
+<SyscallPath />
 
-| Group | Examples |
-|-------|----------|
-| Core | yield, exit, time, system info, reboot |
-| Process | spawn, wait, exec, fork, clone, identity |
-| Memory | heap break, mappings, protection, shared memory |
-| Filesystem | path operations, fd operations, poll/select, ioctl |
-| Networking | sockets, TCP/UDP, DNS, message send/receive |
-| Signals | signal actions, masks, delivery, return |
-| Pollable process and signal fds | pidfd and signalfd |
-| SlopRing | setup, enter, registration |
-| UI and TTY | framebuffer, input, clipboard, terminal operations |
-| Tests | kernel/userland test reporting and harness control |
+Here is a real call: a program reading up to 4096 bytes from file descriptor
+3 into a buffer, as `cat` does.
 
-## ABI discipline
+### 1. The C library loads the registers
 
-- Add or change numeric ABI assignments only in the ABI source.
-- Keep assigned slots stable; gaps are allowed.
-- Prefer typed user-pointer and user-slice wrappers over raw register handling.
-- Add userland wrappers where the syscall is meant to be public.
-- Add dispatch, success-path, and error-path tests.
-- Update public docs for stable behavior, not for every internal handler move.
+The program calls `read(3, buf, 4096)`, a normal function in the C library.
+The library puts the call number in the `rax` register and the arguments in
+the next registers in the Linux order (`rdi`, `rsi`, `rdx`, then `r10`, `r8`
+and `r9` for calls with more), and executes the `syscall` instruction:
 
-See [Adding a syscall](/docs/development/adding-a-syscall) for the contributor flow.
+| Register | Holds | For this call |
+|---|---|---|
+| `rax` | the call number | `0` (`read`) |
+| `rdi` | first argument | `3`, the file descriptor |
+| `rsi` | second argument | the address of `buf` |
+| `rdx` | third argument | `4096` |
+
+The program loses the contents of `rcx` and `r11`, which the CPU uses to
+remember where to return to, and gets its result back in `rax`.
+
+### 2. The CPU enters the kernel
+
+The `syscall` instruction switches the CPU to kernel mode and jumps to the
+entry point. That entry point is a short piece of assembly in the trusted
+core, the only part of the kernel allowed to use `unsafe` Rust. It switches
+to the task's kernel stack, saves every register the program had into the
+task's saved register record, and returns into the kernel's loop for that
+task, which hands the call to the dispatcher. Everything from here on is
+ordinary safe Rust.
+
+### 3. The kernel looks up the number
+
+The dispatcher looks the number up in one of two tables. Numbers below 1024
+are Linux's, and each one names the same call in SlopOS or nothing at all.
+Numbers from 1024 up are SlopOS's own calls, for things Linux has no call for,
+such as taking over the screen. An empty slot returns `ENOSYS` ("function not
+implemented"), the same answer Linux gives for a call it doesn't have, and the
+kernel log notes it:
+
+```text
+SYSCALL: Unknown syscall 1999 -> ENOSYS
+```
+
+[System call ABI](/docs/abi/syscalls) lists every number and how the private
+range is organised.
+
+### 4. The kernel checks permission
+
+Each entry in the table carries the permission (the *capability*) that a
+caller needs. Most calls need none beyond what they act on: `getpid` acts only
+on the caller itself, and `read` acts only on a file the caller already has a
+descriptor for, which it could only have got by opening the file or being
+given it. A few, such as rebooting the machine or taking over the screen,
+need a capability that only some programs are given. If the caller lacks it,
+the dispatcher returns `EPERM` ("operation not permitted") without running the
+handler at all.
+
+Because the check happens in the dispatcher, before the handler runs, a
+handler can't forget it. [Permissions](/docs/architecture/authority) explains
+what the capabilities are and how a program gets one.
+
+### 5. The handler runs
+
+The handler for `read` is short, and it is real code:
+
+```rust
+define_syscall!(syscall_read
+    (ctx, fd: Fd, buf: UserBytes)
+    cap(NoneFd)
+    requires(let pid: process_id)
+    -> Result<u64, Errno>
+{
+    let count = buf.len();
+    let mut io_buf = UserWriteBuf::new(buf.base_u64(), count).ok_or(Errno::EFAULT)?;
+    let bytes = file_read_fd(pid, fd.raw(), &mut io_buf);
+    if bytes == -512 {
+        return Err(Errno::ERESTARTSYS);
+    }
+    if bytes < 0 {
+        return Err(Errno::from_raw(bytes as i32).unwrap_or(Errno::EINVAL));
+    }
+    Ok(bytes as u64)
+});
+```
+
+Three things happen before the body runs, generated from the first lines:
+
+- **The arguments are decoded into types.** `fd: Fd` takes the first register
+  and rejects a negative number with `EBADF` ("bad file descriptor").
+  `buf: UserBytes` takes the next two registers as an address and a length in
+  the program's memory. The handler never sees raw register values.
+- **The permission is declared.** `cap(NoneFd)` is the entry the dispatcher
+  checked in step 4: this call needs nothing but the descriptor.
+- **Preconditions are checked.** `requires(let pid: process_id)` looks up the
+  calling process and fails the call if there isn't one.
+
+The handler then asks the filesystem for the bytes, which may mean waiting for
+the disk ([Overview](/docs/architecture/overview) follows that part). The
+bytes reach the program's buffer only through the trusted core's copy
+routine, which checks that every page of the buffer belongs to the program
+and is writable before it copies anything. A bad buffer turns into `EFAULT`
+("bad address"), not a kernel crash. The kernel never turns a program's
+pointer into a pointer it dereferences directly.
+
+### 6. The result goes back in `rax`
+
+The handler returns either a value or an error. The dispatcher writes it into
+the saved `rax`, following the Linux convention: a value is returned as is,
+and an error is returned as its error number negated, so `EBADF` (9) comes
+back as -9. Any value from -4095 to -1 is an error. The C library checks for
+that range, stores the error number in `errno` and returns -1, which is what
+the program sees.
+
+Before the handler runs, the dispatcher sets `rax` to `-EINVAL`, so a handler
+that somehow returns without writing a result can't leak whatever was in the
+register.
+
+### 7. On the way out: signals and kills
+
+Before returning to the program, the kernel checks whether a signal arrived
+for it while the call ran, for example `SIGINT` because you pressed Ctrl-C,
+and if the program has a handler for it, arranges for the handler to run
+first.
+
+That interacts with calls that were waiting. Suppose the `read` was on a
+terminal and blocked, waiting for you to type, when the signal came. The
+handler for `read` stops waiting and returns a special internal error,
+`ERESTARTSYS` (that is the -512 in the code above). On the way out, the
+kernel decides what the program sees, the same way Linux does:
+
+- if no signal handler ran, the kernel winds the program back to the
+  `syscall` instruction, so the `read` runs again;
+- if a handler ran and was installed with `SA_RESTART`, the call is also
+  restarted after the handler returns;
+- otherwise the call fails with `EINTR` ("interrupted system call") and the
+  program decides what to do.
+
+Calls that take a timeout and don't report how much of it is left
+(`nanosleep`, `poll`, `futex` and the SlopRing wait) always fail with `EINTR`
+instead of restarting, because restarting would begin the full timeout again.
+
+Last, the kernel checks whether the task has been killed. A kill sets a flag
+on the task; a task blocked in a call notices it and returns early, and this
+check catches it before it goes back to user mode, so the task exits instead
+of running another instruction. Then the kernel restores the program's
+registers and returns to user mode with the `IRETQ` instruction.
+
+## What programs can rely on
+
+- **Linux numbers mean Linux calls.** A Linux x86-64 call number either
+  behaves as on Linux or fails with `ENOSYS`. It never does something
+  different. [What works](/docs/status/current-capabilities) says which calls are
+  implemented.
+- **Errors are Linux error numbers**, returned the Linux way, so `errno`,
+  `strerror` and `perror` work unchanged.
+- **Interrupted calls behave as on Linux**, including `SA_RESTART` and
+  `EINTR`.
+- **`int 0x80` is not supported.** Old 32-bit Linux programs use that
+  instruction for system calls; on SlopOS it returns `ENOSYS`.
+- **A crash in a handler usually costs only the caller.** If a handler
+  panics, the kernel catches the panic at the dispatcher, logs it and ends
+  the calling task, and the rest of the system keeps running. There is a
+  limit on how many such panics one boot tolerates before the kernel stops.
+  Test images and `panic.on_oops=on` turn every handler panic into a kernel
+  panic instead, so a bug can't hide. See
+  [Diagnosing the kernel](/docs/development/diagnostics).
+
+A program that needs to make many requests can avoid one system call per
+request with [SlopRing](/docs/abi/slopring), a queue of requests it shares
+with the kernel, in the style of Linux's `io_uring`.
+
+## How it is tested
+
+The build itself checks the table. Every handler must name its capability or
+it doesn't compile, and compile-time assertions count the entries per
+capability and fail the build when a count changes without the recorded
+number changing with it, so widening who can make a privileged call is always
+a visible, reviewed edit. A separate check reads the call graph of the linked
+kernel and fails if any handler can reach the power-off or reboot code
+without being classified for it or listed with a stated reason. Kernel tests
+that check whether a call is reachable go through the table entry, the same
+way a program does, because calling a handler directly skips the permission
+check. And the kernel and userland test suites make real system calls on
+every run of `just test`.
+
+## For contributors
+
+[Add a syscall](/docs/development/adding-a-syscall) walks through the steps.
+The rules it relies on:
+
+**The macro.** `define_syscall!` takes the handler name, the context binding,
+typed parameters, a mandatory `cap(X)` clause, an optional `requires(...)`
+clause and a body. It expands to the handler function and a same-named module
+holding a `DEF` constant with the handler pointer and its capability. The
+dispatch tables are built from `DEF`, so a slot can't be filled by a handler
+without a classification, and a handler can't be paired with another's
+capability. Omitting `cap(...)` fails to match any macro arm, a compile error
+at the handler's definition. The `raw` form skips argument decoding for
+handlers that read registers themselves.
+
+**Argument types.** Each parameter type implements `SyscallArg`, which decodes
+one or more of the six argument registers; the macro checks at expansion time
+that a handler's parameters fit in six.
+
+| Type | Decodes to |
+|---|---|
+| Integers | The register value, cast |
+| `Fd`, `RawFd` | A descriptor; `Fd` rejects negatives with `EBADF`, `RawFd` allows `-1` |
+| `Pid`, `Tid`, `SigPid`, `WaitTarget`, `Signum` | Validated process, thread, wait-target and signal identifiers |
+| `UserPtr<T>` | A user address to copy a `T` from or to |
+| `UserSlice<T>`, `UserBytes` | A `(base, count)` pair occupying two registers |
+| `UserCStr<N>`, `UserPath` | A NUL-terminated string copied into the kernel with a length bound |
+
+`Option<...>` forms accept a null pointer.
+
+**The context.** `SyscallContext` is built once per call and borrows the
+calling task and its saved user frame for the handler's duration. Handlers
+that rewrite the whole frame (`execve`, `fork`, `clone`, `rt_sigreturn`)
+reach the `UserContext` through it.
+
+**The check.** Ungated classes (`NoneSelf`, `NoneFd`, `NoneRelation`) pass
+without reading task state. For a gated class the dispatcher asks the
+authority module whether the caller's mask names it; under `authority=warn` a
+denial is logged and allowed. Tests asserting reachability must use
+`dispatch_entry`, not `dispatch_handler`, which skips the check.
+
+**Restarts.** A handler may return `ERESTARTSYS` or `ERESTARTNOHAND`.
+`ERESTARTNOHAND` restarts only when no handler ran; `ERESTARTSYS` also
+restarts after an `SA_RESTART` handler. A call in `TIMEOUT_BEARING` that
+returns either trips a debug assertion; it must return `EINTR` itself.
+
+**The histogram.** `core/src/syscall/handlers.rs` holds both tables and a
+`const` histogram, `CAP_COUNTS`, with one row per capability. Compile-time
+assertions recompute the counts from the tables and fail when they differ, so
+a change to who can make a privileged call has to edit that row too. Counts
+cover registered entry points only, so adding an unrelated Linux call doesn't
+move every row. The histogram can't see an ungated handler that reaches a
+privileged primitive indirectly; `scripts/check_authority_reachability.sh`
+covers that by walking the linked kernel's call graph to the power
+primitives, with stated exceptions under `scripts/gates/authority/`.
+
+## Further reading
+
+- [*Mechanism: Limited Direct Execution*](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-mechanisms.pdf),
+  chapter 6 of *Operating Systems: Three Easy Pieces*. Start here. It explains
+  why system calls exist and why they go by number, and its tip on being
+  wary of user inputs is the reason for steps 4 and 5.
+- [*Anatomy of a system call, part 1*](https://lwn.net/Articles/604287/) and
+  [*part 2*](https://lwn.net/Articles/604515/), LWN (2014). How Linux does the
+  same journey on x86-64, from the C library through the entry code to the
+  handler, with the real code. Most of it maps directly onto this page.
+- [*syscall(2)*](https://man7.org/linux/man-pages/man2/syscall.2.html), the
+  Linux manual page. The register conventions for every architecture, and the
+  table of which registers a call clobbers.
+- [*errno(3)*](https://man7.org/linux/man-pages/man3/errno.3.html), the Linux
+  manual page. What the C library does with the negative return value.
+- [*signal(7)*](https://man7.org/linux/man-pages/man7/signal.7.html), the
+  Linux manual page, section *Interruption of system calls and library
+  functions by signal handlers*. The exact restart rules SlopOS follows.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `slopos-ostd/src/user/asm/user_return.s` | The `syscall` entry point |
+| `core/src/syscall/user_loop.rs` | The per-task loop, panic recovery and the kill check |
+| `core/src/syscall/dispatch.rs` | Lookup, permission check, restarts |
+| `core/src/syscall/handlers.rs` | The two tables and the capability histogram |
+| `core/src/syscall/macros.rs`, `core/src/syscall/args.rs` | `define_syscall!` and the argument types |
+| `abi/src/syscall/numbers.rs` | Every call number |
+| `slibc/src/pal/raw.rs`, `slibc/src/error.rs` | The C library's side: the `syscall` instruction and turning results into `errno` |
+
+[System call ABI](/docs/abi/syscalls) is the reference for numbers and
+families.

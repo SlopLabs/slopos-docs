@@ -1,76 +1,278 @@
 ---
-title: "Build And Test Recipes"
-description: "Current justfile recipes for SlopOS development"
+title: "Building and testing"
+description: "How the build is put together, how to run the tests, and every recipe in the justfile."
 ---
 
-The source repo's recipe list is the command source of truth. Run `just --list`
-after pulling changes.
+This page shows you how to build SlopOS, where the results go, and how to run
+the test suite and read what it tells you. It ends with every recipe the
+repository has. It assumes you have run `just setup` from the
+[Quickstart](/docs/getting-started/quickstart).
 
-## Setup And Build
+## How the build fits together
 
-| Recipe | What it does |
-|--------|--------------|
-| `just setup` | Verify Rust nightly, `x86_64-unknown-none`, Go `>= 1.22`, and workspace metadata |
-| `just build` | Build userland, root filesystem image, and `builddir/kernel.elf` |
-| `just iso` | Build `builddir/slop.iso` with the default command line |
-| `just clean` | Remove cargo build output and `builddir/kernel.elf` |
-| `just distclean` | Remove ISOs, disk images, logs, and build output |
+Every command goes through `just`, a command runner. The file `justfile` at the
+root of the repository defines named *recipes*, and `just <recipe>` runs one.
+`just --list` prints them all with a line on each.
 
-Limine is not a git submodule. The ISO build fetches the pinned Limine binary
-release if the local Limine cache is empty.
+A bootable SlopOS is made of three things, built in this order:
 
-## Boot
+1. **The programs.** The shell, the desktop, the coreutils and everything else
+   that runs on SlopOS, compiled for SlopOS with the `slopos` Rust toolchain.
+2. **A disk image** holding those programs: a file containing an ext4
+   filesystem, the same format Linux uses, which QEMU presents to the virtual
+   machine as a disk.
+3. **The kernel**, one ELF file.
 
-| Recipe | What it does |
-|--------|--------------|
-| `just boot` | Interactive boot with display window and default wheel behavior |
-| `just boot-fast` | Interactive boot with `roulette=skip` |
-| `just boot-prod` | Release-optimized kernel, wheel skipped |
-| `just boot-headless` | Interactive serial-only boot |
-| `just boot-log` | Headless timed boot, writes `test_output.log` |
-| `just boot-debug` | `boot-fast` plus GDB stub and QEMU monitor |
+The boot recipes then wrap the kernel and its programs into something
+firmware can start: a CD image (ISO) for the live system, or a boot disk for
+the development machine. You rarely run the steps by hand, because each boot
+and test recipe builds what it needs first.
 
-Useful boot environment variables:
+| Command | What it produces |
+|---------|------------------|
+| `just build` | The programs, the disk image `fs/assets/ext2.img` and the kernel `builddir/kernel-dev.elf` |
+| `just iso` | The live ISO `builddir/slop.iso`: kernel plus a RAM disk of programs (`builddir/initramfs.cpio`) |
+| `just boot-live` | Builds the ISO, then boots it |
+| `just boot` | The optimised kernel `builddir/kernel-release.elf`, the boot disk `builddir/boot-disk.img` and the persistent root `fs/assets/ext2-persist.img`, then boots them |
+| `just test` | The tests kernel `builddir/kernel-tests.elf`, `builddir/slop-tests.iso` and the test root `fs/assets/ext2-tests.img`, then runs them |
+
+Image files are still called `ext2` for historical reasons; every image the
+build makes is ext4. Compiler output goes under `builddir/target`, and
+downloaded inputs (the Limine bootloader, the OVMF firmware, LLVM sources) are
+cached under `third_party/`.
+
+Every kernel build ends by running checks on the finished ELF (for example,
+that no function's stack frame is too large), so a build can still fail after
+the compiler has succeeded. [Safety gates](/docs/verification/tcb-discipline)
+lists them.
+
+### Optimised and debug kernels
+
+The *dev* kernel is built quickly, with symbols, and is what `just build`,
+`just boot-live` and the debugger recipes use. The *release* kernel is
+optimised, and `just boot` uses it because the development machine runs a
+compiler. `KERNEL_RELEASE=1` selects the release kernel for any recipe, and
+`KERNEL_RELEASE=0 just boot` boots the dev kernel instead.
+
+### Passing options to a recipe
+
+Settings such as `ROULETTE=0` (skip the Wheel of Fate), `DEBUG=1` (more kernel
+logging) and `VIDEO=0` (no window) are environment variables, so they go
+before `just`:
 
 ```bash
-BOOT_CMDLINE='tests=off roulette=skip boot.debug=on' just boot
-DEBUG=1 just boot
-QEMU_SMP=2 QEMU_MEM=1G just boot-fast
+ROULETTE=0 DEBUG=1 just boot
+```
+
+A recipe's own arguments go after its name and are positional. Write
+`just test 'slopos_mm::*'`, not `just test FILTER='slopos_mm::*'`: the second
+form passes the text `FILTER=slopos_mm::*` as the filter, which matches
+nothing. One setting, `ports`, is a justfile variable and goes between `just`
+and the recipe:
+
+```bash
 just ports=7777,8080 boot
 ```
 
-## Tests
+[QEMU options](/docs/getting-started/qemu-options) lists every environment
+variable the boot recipes read.
+
+## Run the tests
+
+### 1. Run the whole suite
+
+```bash
+just test
+```
+
+This builds a kernel with the test harness compiled in, boots it in QEMU with
+no window, and runs every kernel test and then every userland test. A progress
+bar shows how far it is. When QEMU exits, the runner prints a summary and
+exits 0 if every test passed and 1 otherwise. Each run starts from a freshly
+built test disk, so no run depends on what the last one wrote.
+
+### 2. Read a failure
+
+For each failing test the runner prints its name (`<module>::<test>`) and the
+kernel log lines the test produced while it ran, which is usually where the
+reason is. Passing tests' logs are hidden; `just test-verbose` shows them too.
+
+After every run that finished, the names of the failed tests are in
+`builddir/last-fail.list`, and this reruns only those:
+
+```bash
+just test-rerun-failed
+```
+
+If the summary looks wrong, `just test-raw` prints exactly what came out of
+the virtual machine's serial port: the test results in KTAP, the plain-text
+format Linux's kernel tests use, mixed with the kernel log. [Test output
+format](/docs/abi/ktap-test-output) describes it.
+
+### 3. Run some of the tests
+
+Pass a glob, a pattern where `*` matches anything, as the first argument. It
+is matched against each test's `<module>::<test>` name. Separate several
+globs with commas:
+
+```bash
+just test 'slopos_mm::*'
+just test '*ext2_aaa*,slopos_fs::*'
+```
+
+A filtered run whose tests create files must include `'*ext2_aaa*'`. That test
+mounts the test disk, and tests run in alphabetical order, so it is what makes
+the disk available to the tests after it.
+
+`just test-verbose` and `just test-quiet` take the same glob.
+
+### Tests that run on your machine
+
+```bash
+just test-host
+```
+
+This runs the unit tests of the parts of SlopOS that are plain logic (the
+filesystem, network and TLS cores, the terminal, the shell and others) as
+ordinary programs on your machine, with no QEMU. It is the fastest way to
+check a change to one of those parts. [Write tests](/docs/development/adding-tests)
+explains where a new test belongs.
+
+## What usually goes wrong
+
+- `just test` stops before booting with a message about LLVM: the test image
+  includes a C++ runtime built with LLVM 18 or later, and your machine has
+  none it can use. See
+  [Troubleshooting](/docs/getting-started/troubleshooting#just-test-cannot-find-llvm).
+- A filtered run fails on file operations: add `'*ext2_aaa*'` to the filter.
+- `just check` or a framekernel gate complains that the kernel ELF is missing:
+  run `just build` first.
+
+## All recipes
+
+The `justfile` is the authoritative list; `just --list` prints it with each
+recipe's own description.
+
+### Setup and build
 
 | Recipe | What it does |
 |--------|--------------|
-| `just test` | Full QEMU harness with live progress and per-failure diagnostics |
-| `just test FILTER='glob'` | Run matching kernel/userland tests |
-| `just test-rerun-failed` | Run the last failed test names |
-| `just test-verbose FILTER='glob'` | Dump captured klog for every test |
-| `just test-quiet FILTER='glob'` | Show only failures and summary |
-| `just test-raw` | Pass QEMU stdout through directly |
-| `just test-json builddir/events.jsonl` | Write machine-readable JSONL events |
-| `just test-userland-only` | Run only the userland phase |
-| `just test-host` | Host-side Rust tests for selected crates and OSTD |
-| `just check-tests-host` | Go unit tests for the host test wrapper |
-| `just check-test-count` | Guard against accidental test-count drops |
+| `just setup` | Install the pinned Rust nightly, build the `slopos` toolchain, check Go 1.22 or later, fetch the Go modules, validate the workspace |
+| `just build` | Build the programs, `fs/assets/ext2.img` and `builddir/kernel-dev.elf` |
+| `just build-kernel-only` | Build the kernel ELF without the programs or the image |
+| `just iso` | Build `builddir/slop.iso` with `BOOT_CMDLINE` as its kernel command line |
+| `just clean` | Remove compiler output under `builddir/target` and the `builddir/kernel-*.elf` files |
+| `just distclean` | `clean`, then remove `builddir/`, the ISOs, `fs/assets/ext2.img`, `fs/assets/ext2-tests.img`, `test_output.log` and the extracted rustc, llvm-project and vendored-crate trees under `third_party/`. Leaves the persistent root alone |
 
-The QEMU harness builds the host test runner, boots with
-`tests=on tests.shutdown=on tests.verbosity=summary boot.debug=on roulette=skip`,
-parses KTAP from the serial stream, and interprets `isa-debug-exit`.
-
-## Verification And Discipline
+### Boot
 
 | Recipe | What it does |
 |--------|--------------|
-| `just ensure-verus` | Fetch the pinned Verus toolchain |
-| `just verify` | Verify all proof files, or one proof stem via `FILTER` |
-| `just check-miri` | Run `slopos-ostd` tests under Miri |
-| `just tcb-ratio` | Print unsafe lines in OSTD over kernel Rust LoC |
-| `just check-no-kernel-async` | Fail on `async fn` in kernel crates |
-| `just check-framekernel` | Composite framekernel gate |
-| `just fmt` | `cargo fmt --all -- --check` |
-| `just check` | Allocation and stack-size gates against `kernel.elf` |
+| `just boot` | The development machine: release kernel on an A/B boot disk, persistent root, 4 GB of memory, Wheel of Fate first |
+| `just boot-fast` | `just boot` with `ROULETTE=0` |
+| `just boot-debug` | `just boot-fast` on the dev kernel with QEMU's GDB stub on port 1234 and a monitor socket |
+| `just boot-live` | The live ISO from memory, no disk; Wheel of Fate unless `ROULETTE=0` |
+| `just boot-log` | The live ISO with no window for `BOOT_LOG_TIMEOUT` seconds (default 15), log in `test_output.log`; fails unless `/sbin/init` started |
+| `just show-qemu-resolution` | Print the screen size the QEMU wrapper would detect |
 
-`just check-framekernel` requires a prior `just build` because the stack-size
-gate inspects `builddir/kernel.elf`.
+`boot-fast` and `boot-debug` start `just boot` again inside themselves, and a
+`ports=` setting does not reach that inner run. To forward ports without the
+wheel, use `ROULETTE=0 just ports=7777 boot`.
+
+### Persistent root
+
+| Recipe | What it does |
+|--------|--------------|
+| `just reset root` | Delete `fs/assets/ext2-persist.img` and its side files, so the next `just boot` builds a fresh root with a new clone of `HEAD`. What the guest wrote and did not push is lost; `fs/assets/guest-push.git` is kept |
+| `just export-file PATH=<guest path> OUT=<host path> [IMAGE=<image>]` | Copy one file off the persistent root (or another image) after the guest has shut down |
+
+`just boot` rebuilds `builddir/boot-disk.img` on every run, so a kernel the
+guest installed survives guest reboots but not the next `just boot`.
+[Installing a system](/docs/self-hosting/installing-a-system) covers boot
+slots.
+
+### Tests
+
+| Recipe | What it does |
+|--------|--------------|
+| `just test ['glob']` | Build and run the QEMU test suite, or the tests matching the glob |
+| `just test-rerun-failed` | Rerun the tests listed in `builddir/last-fail.list` |
+| `just test-verbose ['glob']` | Also print the kernel log of every passing test |
+| `just test-quiet ['glob']` | Print only failures and the summary |
+| `just test-raw` | Pass QEMU's output through unchanged, KTAP and kernel log mixed |
+| `just test-json <path>` | Also append one JSON event per line to `<path>` |
+| `just test-userland-only` | Skip the kernel tests; run only the userland tests |
+| `just test-elf [ELF=]<kernel> [BASE=<base.cpio>] ['glob']` | Run the suite on a tests kernel built elsewhere, such as inside the guest |
+| `just test-host` | Unit tests of the pure-logic crates and of `slopos-ostd`, on the host, no QEMU |
+| `just check-tests-host` | Unit tests of the Go test runner |
+| `just check-test-count` | Fail if `just test` plans fewer tests than `TEST_COUNT_BASELINE` |
+| `just test-persist` | Two boots of one image: write and `fsync`, power off, boot again and read it back |
+| `just test-rude-exit` | A boot commits a file to the root's journal and dies holding it; the host's `e2fsck` must replay it |
+| `just test-capacity` | Mount and write a 16 GiB volume (built once, then kept), and grade the cost |
+| `just test-install` | On one disk laid out as on a real machine: register SlopOS's firmware boot entry, install a kernel into a boot slot, try it, commit it, roll back a slot that panics, and check the EFI system partition was left unchanged |
+| `just test-install-guest` | The guest builds a kernel from `HEAD`, installs it into slot b and boots it, then commits the slot and rolls back a slot that panics |
+| `just test-toolchain` | Run the toolchain checks on the self-hosting root |
+| `just test-selfhost` | The guest builds the dev and tests systems; the host checks the result and runs the suite on the guest's kernel |
+| `just bench-selfhost` | Time the guest's kernel build and summarise it in `builddir/bench-selfhost.log` |
+
+### Filesystem and boot-log checks
+
+| Recipe | What it does |
+|--------|--------------|
+| `just check-fs-image [image]` | Hold an image to `e2fsck -fn` and to being at rest: clean, nothing to replay |
+| `just check-fs-throughput` | Fail if a write costs more transactions or device requests per MiB than recorded |
+| `just check-quota-headroom` | Fail if a resource account nears its cap or anything was denied |
+| `just check-lockdep-headroom` | Fail unless the lock-order checker booted active with room in its pools |
+| `just check-sched-spread` | Fail unless every online CPU can be given tasks |
+
+### Verification and code rules
+
+| Recipe | What it does |
+|--------|--------------|
+| `just fmt` | Check formatting (`cargo fmt --all -- --check`) |
+| `just check` | Allocation and stack-frame checks on `builddir/kernel-dev.elf` |
+| `just check-return-types` | Slow audit of kernel functions that return large values; not part of `check` |
+| `just stack-audit` | List kernel functions whose stack frame exceeds the 32 KiB task-stack budget |
+| `just check-framekernel-gates` | The framekernel gate scripts alone (needs `just build`) |
+| `just check-framekernel` | Every gate plus `fmt`, Miri and Verus (needs `just build`) |
+| `just check-no-kernel-async` | Fail on any `async fn` in a kernel crate |
+| `just check-miri` | Run the `slopos-ostd` tests under Miri, with Stacked and Tree Borrows |
+| `just ensure-verus` | Download the pinned Verus toolchain into `third_party/verus` |
+| `just verify ['stem']` | Check every proof under `verification/proofs/`, or the one named |
+| `just tcb-ratio` | Print unsafe lines in `slopos-ostd` over all kernel Rust lines |
+| `just check-toolchain-coverage` | Check every codegen backend and linker against what the target needs |
+
+[The framekernel](/docs/verification/framekernel) explains what the gates
+protect.
+
+### Debugging
+
+| Recipe | What it does |
+|--------|--------------|
+| `just debug-gdb` | Interactive GDB attached to a kernel started by `just boot-debug` |
+| `just debug-bt` | Backtraces of every CPU into `builddir/freeze-gdb.log` |
+| `just debug-monitor` | Connect to the QEMU monitor socket |
+| `just rr-record` | Record a deterministic test run to `builddir/replay.bin` (one CPU, no KVM) |
+| `just rr-replay` | Replay the recording under interactive GDB |
+| `just rr-gdb [<address>]` | Run the replay to the fault; with an address, find the instruction that last wrote it |
+
+[Debugging with GDB](/docs/development/debugging-gdb-record-replay) shows
+how to use them.
+
+### Toolchain for SlopOS
+
+| Recipe | What it does |
+|--------|--------------|
+| `just vendor` | Download every crates.io package the build needs into `third_party/vendor` |
+| `just check-offline-build` | Check that the tree builds with no registry access |
+| `just rustc-src` | Unpack the pinned rustc sources with the SlopOS target patch |
+| `just llvm-src` | Unpack the pinned llvm-project sources with the SlopOS port |
+| `just toolchain [--pgo]` | Cross-build the Rust toolchain that runs on SlopOS (hours of CPU) |
+| `just toolchain-profile` | Gather the profiles `just toolchain --pgo` uses |
+| `just recipes [names]` | Build zlib, curl, git and the other C libraries and tools for SlopOS |
+| `just check-bootstrap-config` | Check the cross-build plan against the toolchain it claims to produce |
+| `just check-rustc-target` | Check rustc's built-in SlopOS target against `targets/x86_64-unknown-slopos.json` |
+| `just check-llvm-port` | Compile LLVM's Support library for SlopOS |
+| `just check-clang-driver` | Check the port's clang link line against the userland build's |
+
+[Toolchain](/docs/self-hosting/toolchain) explains how these fit together.

@@ -1,68 +1,54 @@
 ---
 title: "SlopOS"
-description: "Architecture, ABI, verification, and developer documentation for SlopOS"
+description: "An x86-64 operating system in Rust, written by AI agents and checked by tools that don't take their word for it."
 ---
 
-## What is SlopOS?
+SlopOS is an operating system for x86-64 PCs, written from scratch in Rust.
+It has its own kernel, drivers, filesystem, network stack, C library, shell
+and desktop. It boots on a real laptop, and inside QEMU it can compile a new
+version of itself, install it next to the running one, and boot into it.
 
-**AI agents wrote SlopOS, an x86_64 operating system built from scratch in
-Rust.** The name owns what that usually produces. An agent will tell you its
-code is correct, which is worth nothing, so the build proves it instead: one
-crate, `slopos-ostd`, holds every line of `unsafe`, and Verus checks the
-invariants underneath it. It boots under QEMU and on a real laptop.
+Most of the code was written by AI agents. We named the project after what
+that usually produces, and then arranged things so that it wouldn't matter.
+An agent's claim that its code is correct is worth nothing, so the build
+checks instead. One crate (`slopos-ostd`) holds every line of `unsafe` Rust in
+the kernel, and the compiler refuses `unsafe` everywhere else. Verus, a proof
+checker for Rust, verifies the invariants where a bug in that crate would mean
+undefined behaviour rather than an error. Thousands of tests boot the kernel
+under QEMU on every change.
 
 <Frame>
   <img src="/images/slopos-on-hardware.jpg" alt="The SlopOS desktop running on a Lenovo laptop, showing the terminal, file manager, system monitor and image viewer" />
 </Frame>
 
-<Cards>
-  <Card title="Quickstart" icon="rocket" href="/docs/getting-started/quickstart">
-    Install the host tools, build an ISO, and boot it under QEMU
-  </Card>
-  <Card title="Architecture" icon="microchip" href="/docs/architecture/overview">
-    How boot, memory, scheduling, drivers and the network fit together
-  </Card>
-  <Card title="ABI Reference" icon="book" href="/docs/abi/syscalls">
-    Syscall families, SlopRing, KTAP and the window protocol
-  </Card>
-  <Card title="Source" icon="github" href="https://github.com/SlopLabs/slopos">
-    Browse the source tree on GitHub
-  </Card>
-</Cards>
+The photo is of a Lenovo laptop running SlopOS directly on its hardware. Our
+own graphics driver for Intel Xe draws the desktop, and the touchpad was found
+by reading the hardware description the firmware provides (its ACPI tables).
 
----
+None of the hard ideas in SlopOS are new. The split between one trusted crate
+and everything else comes from Asterinas. The system call interface, the
+signals, the terminal handling and the journal format come from Linux. The
+source README [credits every project we learned from](https://github.com/SlopLabs/slopos#the-wizards-invented-none-of-this)
+and says what we took from each.
 
-## Current Shape
+## Where to start
 
-| Area | Current implementation |
-|------|------------------------|
-| **Boot** | Limine + OVMF, Rust boot pipeline, per-CPU GDT/TSS, SYSCALL MSRs |
-| **Privilege** | Ring 0 kernel, Ring 3 user tasks, TSS/RSP0 and per-task syscall stacks |
-| **Scheduling** | Preemptive SMP scheduler, fused task state, WaitQueue/EventBus blocking |
-| **Memory** | OSTD frames, slab and heap, process VM, demand paging, COW, memfd |
-| **Interrupts** | LAPIC, IOAPIC, MSI/MSI-X, HPET clock, LAPIC scheduler timer |
-| **Storage** | VirtIO block, ext2, ramfs, devfs, VFS file operations |
-| **Networking** | VirtIO net, IPv4, ARP, ICMP, UDP, TCP, DNS, AF_UNIX sockets |
-| **Async edge** | SlopRing plus `slopos-rt` and `slopfut` in userland |
-| **Userland** | libc layer, shell, compositor, terminal, windowing, appkit |
-| **Verification** | `slopos-ostd` trusted core, Verus proofs, KernMiri, framekernel gates |
+**To see it run,** follow the [Quickstart](/docs/getting-started/quickstart).
+Two commands boot a live system in a QEMU window.
 
-SlopOS has sharp edges. These pages say what works today, which parts we made
-strange on purpose, and which details belong to development notes.
+**To understand how it works,** start with the
+[Overview](/docs/architecture/overview), which maps the whole system, and
+follow whatever catches your interest. If you have never worked on an
+operating system, [Crash recovery](/docs/architecture/crash-recovery) is a
+good first read: it explains what happens to your files when the power goes.
 
-## Documentation Map
+**To change it,** set up the [Development machine](/docs/self-hosting/development-machine),
+where SlopOS builds and installs itself, then read the guide for what you are
+touching: [Add a syscall](/docs/development/adding-a-syscall),
+[Add a driver](/docs/development/adding-a-driver) or
+[Write tests](/docs/development/adding-tests). When the kernel hangs,
+[Diagnosing the kernel](/docs/development/diagnostics) shows how to ask it why.
 
-<Cards>
-  <Card title="Getting Started" icon="rocket" href="/docs/getting-started/quickstart">
-    Set up the host, build an ISO, boot it, and fix what breaks
-  </Card>
-  <Card title="Verification" icon="book" href="/docs/verification/framekernel">
-    The gates CI runs, what Verus proves, and where Miri looks
-  </Card>
-  <Card title="Development" icon="gear" href="/docs/development/adding-a-syscall">
-    Add a syscall or driver, write tests, debug a wedged kernel
-  </Card>
-  <Card title="Status" icon="terminal" href="/docs/status/current-capabilities">
-    What runs today, what does not, and which hardware we tested
-  </Card>
-</Cards>
+**To know what doesn't work,** read [Known limitations](/docs/status/known-limitations)
+before you file a bug. It lists what we know is missing, including the gaps we
+do not plan to close.

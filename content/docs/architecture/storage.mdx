@@ -1,0 +1,295 @@
+---
+title: "Disks"
+description: "How SlopOS finds disks, names them, splits them into partitions, and keeps two writers off the same one."
+---
+
+import { DiskPath } from '@/components/diagrams/disk-path';
+
+SlopOS reads and writes two kinds of disk: NVMe drives, which is what almost
+every modern laptop has, and virtio-blk disks, which is what a virtual machine
+can offer. Whichever you have, it shows up under `/dev` with the name Linux
+would give it (`nvme0n1`, `vda`), each partition gets its own name
+(`nvme0n1p2`), and you can also refer to a partition by its label or ID
+through `/dev/disk/by-label` and friends. SlopOS makes sure only one thing at
+a time writes to any part of a disk, and when a disk stops answering, the
+request fails instead of hanging the machine. What SlopOS can't do yet is
+format, check or partition a disk itself: the host does that.
+
+The design is Linux's, reduced to what SlopOS needs. The names, the
+`/dev/disk/by-*` links and the partition handling all follow Linux and udev,
+and the two drivers follow the public NVMe and virtio specifications.
+
+## What a disk looks like to the kernel
+
+To the kernel, a disk is a long row of numbered, fixed-size blocks. The
+smallest unit the disk reads or writes is its *logical block*, usually 512
+bytes or 4 KiB. The kernel can only ask for whole blocks: "read 8 blocks
+starting at block 2048 into this memory", "write these blocks", or "make
+sure everything you've acknowledged is stored" (a *flush*). Files,
+directories and names are the filesystem's business, built on top of that.
+
+Talking to a disk is slow compared with everything else the kernel does, so
+it doesn't happen as a function call that returns the data. The kernel
+writes a request into a queue in memory that the disk can see, tells the disk
+to look, and goes on with other work. The disk copies the data itself, writes
+a *completion* into a second queue, and raises an interrupt. The kernel then
+wakes the program that was waiting. OSTEP's chapter on I/O devices, listed
+under further reading, walks through this pattern from scratch.
+
+### NVMe and virtio-blk
+
+**NVMe** is the standard way an SSD plugged into the PCI Express bus talks to
+the computer. It defines those queues and the format of each request. The
+NVMe driver sets up one queue for management commands (asking the drive what
+it is, shutting it down) and one pair for reads and writes. A single drive
+can present several independent disks, called *namespaces*; most have one.
+Some cheaper drives have no memory of their own and ask to borrow some of the
+computer's, which the driver grants.
+
+**virtio-blk** is a disk that exists only inside a virtual machine. The
+virtual machine (QEMU, in our case) offers a simple queue-based device
+defined by the virtio specification, so the guest doesn't have to pretend to
+drive real hardware. SlopOS supports it because it is the most common disk in
+virtual machines, and the test suite keeps one attached so the driver stays
+tested.
+
+Under QEMU, SlopOS's own development and test disks are NVMe: the root
+filesystem is the first NVMe namespace, and the boot disk sits on the last
+controller. On the laptop, the drive is NVMe too.
+
+## How a request reaches the disk
+
+<DiskPath />
+
+Every disk goes through the same layers, whichever driver serves it:
+
+1. A program reads a file, or the filesystem writes back changes. Either way
+   the filesystem asks the **block layer** for some blocks of a named disk or
+   partition. A program with the right permission can also read or write a
+   disk directly through its `/dev` node.
+2. The block layer checks that the caller may write there (see
+   [claims](#why-two-things-cant-write-one-disk)), turns a partition-relative
+   block number into one on the whole disk, and passes the request down.
+3. The **request engine** picks a free *request slot*. Each slot owns memory
+   that the disk can copy to and from, set aside when the disk was found, so
+   a request never has to allocate memory on the way. If the request doesn't
+   start or end on a block boundary, the engine reads the edge block, patches
+   it and writes it back.
+4. The **driver** turns the request into the device's own format and hands
+   it to the device.
+5. When the completion arrives, the engine wakes exactly the caller waiting
+   for that request, and the data goes back up.
+
+There is one request engine for both drivers. A driver only has to say how
+to submit a request, how to collect completions and what the device's status
+codes mean. Everything about slots, retries, timeouts and ordering is shared,
+so a fix there fixes both drivers, and so will a future driver for SATA or
+USB disks.
+
+The engine is also fair: one caller can only have half of a queue's slots in
+use at once, so a program writing a large file can't starve everyone else
+who shares the disk.
+
+## Disk and partition names
+
+Disks are named the way Linux names them:
+
+| Name | What it is |
+|------|------------|
+| `vda`, `vdb`, ... | virtio disks, in the order they were found |
+| `nvme0n1` | Namespace 1 of the first NVMe drive found |
+| `nvme1n2` | Namespace 2 of the second NVMe drive found |
+| `vda1`, `nvme0n1p2` | Partitions. When the disk name ends in a digit, a `p` separates the partition number |
+
+"The order they were found" depends on the machine and on which drives are
+plugged in, so `nvme0n1` on one machine can be a different disk from
+`nvme0n1` on another. For anything that has to keep working, name the
+partition by something stored on the disk itself:
+
+| Path | Finds the partition by |
+|------|------------------------|
+| `/dev/disk/by-partuuid/<id>` | The ID in the partition table entry |
+| `/dev/disk/by-uuid/<uuid>` | The ID the filesystem was formatted with (ext2/3/4, btrfs, or a FAT volume serial) |
+| `/dev/disk/by-label/<label>` | The name the filesystem was given when formatted |
+
+Each of these is a symbolic link to the real node, as on Linux. If two disks
+carry the same label or ID (a cloned disk, say), the link points at the one
+found first.
+
+Everywhere SlopOS takes a disk as an argument, the `mount` system call and the
+`root=` and `mount=` [boot options](/docs/abi/boot-options) included, it
+accepts any of these spellings: `/dev/nvme0n1p3`, plain `nvme0n1p3`,
+`PARTUUID=...`, `UUID=...`, `LABEL=...`, or a `/dev/disk/by-*` path.
+
+## Partitions
+
+A *partition table* at the start of a disk divides it into independent
+regions, each of which can hold its own filesystem. When a disk is found,
+SlopOS reads its table and gives each partition a node. It understands both
+formats in common use:
+
+- **GPT**, the modern format UEFI firmware uses. It keeps a second copy at
+  the end of the disk and checksums both. SlopOS checks the checksums and
+  falls back to the backup copy if the first is damaged. It also refuses a
+  table whose usable space would overlap the table itself, because mounting
+  a partition there read-write would overwrite the table.
+- **MBR**, the older PC format, for its four primary partitions.
+
+A disk with neither has no partitions, and a filesystem on it covers the
+whole disk. A disk that has the placeholder MBR that GPT disks carry, but no
+readable GPT behind it, is treated as unreadable. Guessing that the whole
+disk is one big volume could mean writing over real partitions.
+
+The kernel and the boot manager (`bootctl`) read GPT with the same code, so
+they always agree about which partition is which.
+
+A disk SlopOS is installed on can share its EFI system partition (the small
+FAT partition the firmware starts boot loaders from) with another operating
+system, and adds partitions of its own: a boot partition holding the
+[boot slots](/docs/self-hosting/installing-a-system), the ext4 root unless
+the root is a disk of its own, and a small crash partition reserved for a
+record of the last panic, which nothing writes yet. These carry partition
+types that belong to SlopOS rather than the standard Linux ones, so a Linux
+on the same disk doesn't mistake them for its own and mount them. The kernel
+itself ignores partition types: the root is whatever the `root=` boot
+option names, and a slot's boot entry names its root partition by
+`PARTUUID`.
+
+SlopOS never writes a partition table. The host partitions disks when it
+builds them.
+
+## Why two things can't write one disk
+
+A filesystem keeps a lot of the disk's state in memory: which blocks are
+free, which files are open, which changes are still on their way. If a second
+program wrote to the same disk behind its back, the filesystem's picture would
+be wrong and its next write could overwrite the other program's data, or the
+other way round. Neither would notice until files went missing.
+
+So before anything writes, it takes a *claim* on the region it writes to:
+
+- **Mounting read-write** takes a write claim. Nothing else can claim the
+  same region while it is held.
+- **Mounting read-only** takes a read claim. Other read-only mounts can share
+  it; writers can't.
+- **Writing directly to a `/dev` node** takes a write claim for the length of
+  that one call, so writing to a mounted disk fails with `EBUSY` instead of
+  corrupting it.
+
+Partitions are separate regions, so two partitions of one disk can be mounted
+side by side. A claim on the whole disk covers every partition on it, so you
+can't write raw blocks across a disk while one of its partitions is mounted.
+Unmounting releases the claim, and the disk can then be mounted again.
+
+Reading or writing a disk directly bypasses every file permission on it, so
+it is restricted to programs that hold the `Mount`
+[permission](/docs/architecture/authority) or run as part of the system. The
+boot manager uses this to update the boot slots on its boot partition (see
+[Installing a system](/docs/self-hosting/installing-a-system)).
+
+## When a disk stops answering
+
+Disks fail, and NVMe drives in particular can stop answering a request
+without reporting an error. If the kernel waited without a limit, the
+program would hang forever, and so would everything queued behind it.
+
+So every request has a deadline. A request the disk rejects with an error it
+marks as worth retrying is retried a few times. A request the disk hasn't
+answered by the deadline fails with an I/O error, and its slot gets fresh
+memory and goes back into service.
+
+The awkward part is that the disk may still be working on that request, and
+may still copy data into the memory the kernel gave it. So that memory isn't
+reused: it is put aside (*quarantined*) until the disk finally hands the
+request back. If the abandoned request was a write, every later request that
+could land in the wrong order behind it waits until it comes back. Otherwise
+a late write could overwrite newer data with older data.
+
+A program killed while waiting on a read is released at once, since a read
+changes nothing wherever it lands. A killed write is waited out for a while
+first and then abandoned to the quarantine.
+
+What SlopOS doesn't do yet is cancel a stuck request or reset the drive. A
+disk that keeps ignoring requests ends up with every slot quarantined, logs
+that it is not completing requests, and stops serving until the next boot.
+The filesystem on it turns read-only when it sees the errors; see
+[Filesystem](/docs/architecture/filesystem).
+
+## What this means for you
+
+- Use `UUID=`, `LABEL=` or `/dev/disk/by-*` paths in boot options and mount
+  commands that have to work on more than one machine.
+- Expect `EBUSY` if you write to a disk that is mounted. Unmount it first.
+- Format, check and resize disk images on the host with e2fsprogs. SlopOS has
+  no `mkfs`, `fsck` or partitioning tool.
+- An I/O error from a disk is final for that request. A disk that times out
+  repeatedly needs a reboot.
+
+## How it is tested
+
+The test boot attaches extra disks for the cases that matter: scratch NVMe
+namespaces, a drive with 4 KiB blocks (carrying a labelled filesystem, to
+test `LABEL=`), a drive the test shuts down, and two virtio-blk disks. The
+request engine's rules for slots, timeouts, quarantine and ordering are
+tested once against a simulated device, which covers both drivers. The
+disks QEMU attaches are listed in
+[QEMU options](/docs/getting-started/qemu-options).
+
+## For contributors
+
+- **The engine owns ordering.** A driver implements only `QueueOps`: build a
+  submission from a staged request, harvest completions, interpret status.
+  Slot lifetime, retry, timeout, quarantine and the write fence stay in
+  `block/engine.rs`, so their tests cover every driver.
+- **No allocation on the request path.** Each slot's DMA pages are allocated
+  at probe, including one page for the driver's own use. A timed-out slot's
+  replacement pages are allocated before the engine lock is taken.
+- **Quarantined pages and tags belong to the device** until it completes
+  them. Freeing them early lets the device write into reused memory.
+- **The write fence** blocks every later request that could reorder the
+  medium behind an abandoned write, including the read half of a
+  read-modify-write.
+- **Block size.** The ext4 driver refuses a volume whose block is smaller
+  than the device's logical block, because a read-modify-write torn by a
+  crash would damage bytes outside the transaction.
+- **One GPT parser.** GPT parsing lives in `boot-core` (`no_std`, no I/O,
+  host-tested) and is shared by the kernel, `bootctl` and the host disk
+  builder, so they can't disagree about a disk.
+- **Device nodes.** A block node's inode is never reused, so a descriptor
+  left open across a `BLKRRPART` fails instead of reaching whatever
+  partition now has its name. `BLKRRPART` runs only while nothing on the
+  disk is claimed.
+- **Identity reads.** A volume's UUID and label are read once and again only
+  after a write claim that wrote is released, so an unprivileged task can't
+  make the kernel probe a disk repeatedly.
+
+## Further reading
+
+- [*I/O Devices*](https://pages.cs.wisc.edu/~remzi/OSTEP/file-devices.pdf),
+  chapter 36 of *Operating Systems: Three Easy Pieces*. Start here. Polling,
+  interrupts, DMA and device drivers, explained from nothing.
+- [*Hard Disk Drives*](https://pages.cs.wisc.edu/~remzi/OSTEP/file-disks.pdf),
+  chapter 37 of the same book. What "a row of blocks" means physically, and
+  why the order of requests matters.
+- [The virtio specification](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html)
+  (OASIS, v1.2). Section 5.2 defines the virtio-blk device and its request
+  format.
+- [The NVMe specifications](https://nvmexpress.org/specifications/). The
+  base specification defines queues, commands and namespaces. Long, but the
+  overview chapter is readable.
+- [Linux's device number list](https://docs.kernel.org/admin-guide/devices.html).
+  Block nodes use major 259, Linux's number for extended block devices.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `drivers/src/block/` | The block layer: registry, names, claims |
+| `drivers/src/block/engine.rs` | The shared request engine |
+| `drivers/src/nvme/`, `nvme-core/` | The NVMe driver and its host-tested data structures |
+| `drivers/src/virtio_blk.rs` | The virtio-blk driver |
+| `fs/src/partition.rs` | MBR parsing, and the devices that stand for partitions |
+| `boot-core/src/gpt.rs` | GPT parsing, shared with `bootctl` and tested on the host |
+| `boot-core/src/layout.rs` | The partitions of an installed disk and their type IDs |
+| `fs/src/devfs/block.rs` | `/dev` block nodes, ioctls and `/dev/disk/by-*` |
+| `scripts/qemu_run.sh` | Which disks QEMU attaches |

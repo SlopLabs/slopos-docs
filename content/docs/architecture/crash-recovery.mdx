@@ -1,0 +1,282 @@
+---
+title: "Crash recovery"
+description: "How the filesystem stays intact when the machine loses power, and what your programs can rely on afterwards."
+---
+
+If SlopOS crashes or loses power while it is writing to disk, you don't have
+to repair anything. On the next boot the kernel puts the disk back into a
+consistent state by itself, usually in a fraction of a second, and mounts it as
+usual. After a crash you can count on three things:
+
+- Every change to the structure of the filesystem either happened completely
+  or not at all. A file is created or it isn't; a rename is done or it isn't.
+- Anything a program saved with `fsync` is on the disk.
+- Writes that nobody synced may be lost, but only the most recent ones. The
+  kernel commits pending changes to disk every second.
+
+SlopOS gets this from a *journal*, the same mechanism, and the same on-disk
+format, that Linux's ext4 filesystem uses. Nothing on this page was invented
+for SlopOS. If you know how ext4 behaves, you already know most of this, and
+the [differences](#differences-from-linux) are listed further down.
+
+The rest of the page explains why a crash can damage a filesystem at all, how
+the journal prevents that, and what it means for programs that write files.
+You don't need to know how filesystems work to follow it.
+
+## Why a crash can damage a filesystem
+
+A file on disk is more than its contents. The filesystem keeps bookkeeping
+about every file, which we'll call *metadata*:
+
+- a *record* for the file (Unix calls it an *inode*) that holds its size and
+  says which disk blocks contain its contents;
+- an *entry* in its directory that gives the file its name and points at the
+  record;
+- a *free-space map* with one bit per block, which says which blocks are in
+  use.
+
+Creating even a tiny file changes all of these, plus the block that holds the
+contents. They live in different places on the disk, so creating the file
+takes four separate writes. On top of that, a disk doesn't promise to carry
+out writes in the order it receives them, and many disks keep recent writes in
+their own memory for a while before storing them for good.
+
+So if the power goes partway through, the disk can hold any mix of old and new
+blocks. Some mixes are harmless. Most are not:
+
+- **Only the contents were written.** No record points at them, so as far as
+  the filesystem is concerned the file doesn't exist yet. Nothing is wrong.
+- **Only the record was written.** The file points at a block that the
+  free-space map still calls free. The file's contents are whatever happened
+  to be in that block before, perhaps part of a deleted file, and the next
+  file to be created may be handed the same block.
+- **Only the free-space map was written.** A block is marked as used, but no
+  file owns it. That space is gone until someone repairs the disk.
+- **Only the directory entry was written.** The name points at a record that
+  was never filled in.
+
+Older filesystems accepted this and ran a checker, `fsck`, after every
+unclean shutdown. The checker reads every record and every directory on the
+disk, works out what is inconsistent, and repairs it as best it can. That
+works, but it takes longer the bigger the disk is, and in cases like the
+second one above it can only make the metadata agree with itself. It can't
+tell you what the file was supposed to contain.
+
+## How the journal prevents it
+
+The journal is a reserved area of the disk where the filesystem writes down
+what it is about to change before it changes it. The idea comes from
+databases, where it is called *write-ahead logging*. Here is what happens when
+a program creates or changes a file:
+
+<JournalTimeline />
+
+1. **Write the contents.** The file's new contents go straight to their final
+   location on the disk. Nothing points at them yet, so if the machine stops
+   here they are simply unused.
+2. **Write the journal entry.** Copies of every metadata block the change
+   touches (the record, the directory, the free-space map) go into the
+   journal, together with a list of where on the disk each copy belongs.
+3. **Write the commit record.** The kernel first waits until the disk confirms
+   that everything from steps 1 and 2 is stored for good. Then it writes a
+   small *commit record* that marks the journal entry as complete, and waits
+   for the disk to confirm that too.
+4. **Update in place.** Some time later, in the background, the kernel writes
+   the metadata blocks to their final locations.
+5. **Free the entry.** Once everything is in its final location, the journal
+   entry is no longer needed and its space is reused.
+
+The commit record is the point at which the change counts. If the machine
+crashes before the commit record is safely on disk, the next boot finds an
+incomplete journal entry and ignores it, so the change never happened. If the
+machine crashes after, the next boot finds a complete entry and finishes the
+job by doing steps 4 and 5 itself. Either way the disk ends up in one of the
+two states you'd accept: before the change or after it.
+
+Two details make this cheaper than it sounds.
+
+**File contents never go into the journal.** Only metadata does. Copying
+every byte you write into the journal first would double the cost of every
+large write. Writing the contents to their final location before the commit
+(step 1) is what makes skipping the journal safe: by the time any record
+points at a block, the block already holds the right data. Linux calls this
+mode `data=ordered`. It is the default on Linux and the only mode SlopOS
+uses.
+
+**Changes are committed in batches.** The kernel doesn't write a journal entry
+for every operation. It collects the changes made over the last second and
+commits them together, so a burst of small operations, such as unpacking an
+archive of a thousand files, costs a handful of journal writes. A program
+that calls `fsync` doesn't wait for the batch; its changes are committed
+right away.
+
+## What happens at the next boot
+
+The filesystem's header has a flag that says whether the disk is in use.
+SlopOS sets it before the first change and clears it again once everything is
+in its final location and the journal is empty, which happens a few seconds
+after the disk last had anything to write. If the flag is clear when the
+disk is mounted, there is nothing to recover.
+
+If the flag is set, the machine stopped while the disk was in use, and the kernel *replays* the
+journal before anything else reads the filesystem. It looks for journal
+entries that have a commit record, checks every copied block against the
+checksum stored with it, and then writes each copy to its final location,
+oldest entry first. Entries without a commit record are ignored.
+
+<JournalDisk
+  state="crash"
+  legend
+  caption="On disk after a crash between steps 3 and 4. The journal holds a complete entry, but the record, directory and map in place are still the old versions."
+/>
+
+<JournalDisk
+  state="replay"
+  caption="After replay, the disk looks exactly as it would have if step 4 had run before the crash."
+/>
+
+Replay only has to read the journal, not the whole disk, so it takes a
+fraction of a second however big the disk is. Then the disk mounts read-write
+as usual, and the boot log records what was done:
+
+```text
+ext2: journal attached — 8192 blocks at inode 8, replayed 1 transactions (5 blocks)
+```
+
+The log calls each journal entry a *transaction*, and the filesystem driver
+still introduces itself as `ext2` because that is where it started. The disk
+is ext4.
+
+At the same point the kernel finishes deleting files that were deleted while
+a program still had them open. On Unix, deleting an open file only removes
+its name; the file itself stays until the last program closes it. If the
+machine stops before that happens, nothing else would ever free its space.
+
+### If the journal is damaged
+
+Replay writes nothing until every copied block has passed its checksum. If
+one fails, SlopOS doesn't apply the entries that look fine and skip the rest.
+It mounts the disk read-only and leaves the repair to `e2fsck`, the standard
+checker from e2fsprogs. If that disk is your root filesystem, SlopOS by default
+boots from its built-in RAM filesystem instead, mounts the disk read-only at
+`/mnt`, and logs what to do:
+
+```text
+ext2: MOUNTING READ-ONLY — the volume went down in use and its journal could not be replayed. Replay it on the host with `e2fsck -fy <image>`.
+```
+
+On the [development machine](/docs/self-hosting/development-machine) the disk
+is the image `fs/assets/ext2-persist.img` on the host. Shut the guest down,
+run `e2fsck -fy fs/assets/ext2-persist.img`, and boot again.
+
+A damaged journal means the disk lost or garbled data after confirming that
+it had stored it. The journal can't protect you from that, but the checksums
+make sure SlopOS notices instead of copying the damage into place.
+
+## What programs can rely on
+
+Here is what you get when you write files on SlopOS:
+
+- **Structural changes are atomic.** Creating, deleting, renaming and linking
+  files, making and removing directories, and changing a file's size each
+  happen completely or not at all. Renaming a file over an existing one never
+  leaves you with neither.
+- **`fsync` means stored.** When `fsync` returns, the file's contents and
+  metadata are on the disk. On SlopOS it also commits every change made
+  before it, including the directory entry of a file you just created.
+- **Unsynced writes are only briefly at risk.** Every commit writes out all
+  pending file contents first, and commits happen every second. A crash
+  typically costs the last second or so of writes that nobody synced.
+- **Overwriting in place is not atomic.** If you overwrite part of an
+  existing file and the machine crashes, some blocks may hold the new bytes
+  and others the old ones. The journal protects the filesystem's bookkeeping,
+  not the meaning of your data.
+
+So to replace a file's contents safely, write the new version to a temporary
+file in the same directory, `fsync` it, `rename` it over the original, and
+`fsync` the directory. On SlopOS the rename alone would usually be enough,
+but keep the `fsync` calls. POSIX doesn't promise that any of this survives a
+crash, filesystems differ in what they actually do, and programs that relied
+on one filesystem's behaviour have lost data on
+another. The LWN and OSDI articles under [further reading](#further-reading)
+have the details.
+
+## Differences from Linux
+
+The on-disk format is the same, so a disk can move between SlopOS and Linux.
+SlopOS replays a journal that Linux wrote, and `e2fsck` replays a journal
+that SlopOS wrote. Behaviour differs in a few places:
+
+| | Linux ext4 (defaults) | SlopOS |
+|---|---|---|
+| Commit interval | 5 seconds | 1 second |
+| Data modes | `ordered`, with `journal` and `writeback` available | `ordered` only |
+| When file blocks are allocated | Delayed until the data is written back, which can take much longer than a commit | When the program writes, so the data goes out with the next commit |
+| Idle disk | Marked in use until it is unmounted | Marked clean a few seconds after the last write |
+
+The shorter commit interval is deliberate. The machine SlopOS most often
+loses power on is a QEMU window that a developer closes without shutting down
+first, usually right after a long build has finished. Marking an idle disk
+clean helps with the same thing: a window closed on an idle machine leaves a
+disk that needs no recovery at all.
+
+## How it is tested
+
+Crash bugs don't show up in normal testing, because normal testing doesn't
+crash. So one test crashes on purpose. `just test-rude-exit` boots SlopOS,
+creates a file, calls `fsync`, and then kills the virtual machine. The host
+then checks the disk image:
+
+1. The disk must still be marked in use, with an entry in its journal, so the
+   test really did stop in the middle.
+2. The new file must not be reachable through the final locations yet. It
+   exists only in the journal.
+3. `e2fsck` must replay the journal, and a full check afterwards must find
+   nothing wrong.
+4. The file must then hold exactly what the test wrote.
+
+The judge in that test is e2fsprogs, written by other people against the
+format they defined, so a mistake in how SlopOS writes its journal shows up
+there. The format code itself (`ext4-core`) is tested on the host against
+disk images made and checked by `mke2fs` and `e2fsck`, and kernel tests cover
+the cases where SlopOS must refuse or undo: a journal entry torn halfway
+through, a journal under a clear flag, an operation that fails after changing
+half of its blocks.
+
+## Further reading
+
+- [*Crash Consistency: FSCK and Journaling*](https://pages.cs.wisc.edu/~remzi/OSTEP/file-journaling.pdf),
+  chapter 42 of *Operating Systems: Three Easy Pieces* by Remzi and Andrea
+  Arpaci-Dusseau. Start here. It works through the same problem with a small
+  example, then covers `fsck`, journaling and the variants Linux uses, in much
+  more depth than this page.
+- [*Journaling the Linux ext2fs Filesystem*](https://pdos.csail.mit.edu/6.828/2011/readings/journal-design.pdf)
+  by Stephen Tweedie (1998). The design of the journal that became ext3 and,
+  later, the one SlopOS implements.
+- [*ext4 and data loss*](https://lwn.net/Articles/322823/) by Jonathan Corbet,
+  LWN (2009). What happened when ext4 stopped behaving the way programs had
+  come to expect, and why `fsync` exists.
+- [*All File Systems Are Not Created Equal*](https://www.usenix.org/system/files/conference/osdi14/osdi14-paper-pillai.pdf)
+  by Pillai et al., OSDI 2014. How real programs, git and SQLite among them,
+  depend on filesystem behaviour that isn't guaranteed. Dan Luu's
+  [*Files are hard*](https://danluu.com/file-consistency/) is a readable
+  summary.
+- [*Atomic Commit In SQLite*](https://www.sqlite.org/atomiccommit.html). The
+  same problem solved inside a single database file, step by step.
+- Reference: the Linux kernel's [journal format](https://docs.kernel.org/filesystems/ext4/journal.html)
+  documentation and its [ext4 overview](https://docs.kernel.org/admin-guide/ext4.html),
+  which describes the data modes and mount options.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `fs/src/ext2/journal.rs` | Writing journal entries and commit records |
+| `fs/src/ext2/cache.rs` | The block cache, and the order in which contents, journal and metadata reach the disk |
+| `ext4-core/src/jbd2.rs`, `ext4-core/src/recovery.rs` | The journal's on-disk format and replay, host-tested |
+| `fs/src/tests/journal.rs` | Kernel tests for commits, rollbacks and refused replays |
+| `fs/src/tests/rude_exit.rs`, `scripts/check_fs_replay.sh` | The two halves of the crash test |
+
+[Filesystem](/docs/architecture/filesystem) covers the rest of the
+filesystem: mounts, choosing the root, the read-only base image and the
+caches.

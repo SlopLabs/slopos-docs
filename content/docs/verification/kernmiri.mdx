@@ -1,42 +1,170 @@
 ---
-title: "KernMiri"
-description: "Miri coverage for trusted-core tests"
+title: "Miri"
+description: "How the trusted core's tests run under Rust's undefined-behaviour checker, and what that does and doesn't catch."
 ---
 
-KernMiri is SlopOS's local convention for running `slopos-ostd` tests under
-Miri. It complements Verus: Verus proves selected logic models, while Miri
-interprets real Rust test executions and catches undefined behavior in supported
-code paths.
+Every test of SlopOS's trusted core also runs under
+[Miri](https://github.com/rust-lang/miri), a tool from the Rust project that
+runs a Rust program one operation at a time and stops the moment the program
+does something the language forbids: reads freed memory, writes past the end
+of a buffer, creates two mutable references to the same value, or lets two
+threads race on ordinary memory. So when the trusted core's tests pass under
+Miri, you know the `unsafe` code they exercise kept Rust's rules on those
+runs, which an ordinary passing test can't tell you. The limit is in "those
+runs": Miri only sees the code the tests execute, on a normal computer, and
+never the kernel booting on real hardware.
 
-## Command
+We call the setup *KernMiri*, after the approach the Asterinas authors
+describe in their [ATC '25 paper](https://arxiv.org/abs/2506.03876): run the
+trusted core's own tests under stock Miri, with small stand-ins for the
+hardware. There is no modified Miri and no separate test harness.
+
+## Why tests alone aren't enough
+
+The bugs `unsafe` code tends to have are *undefined behaviour*: breaking a rule
+the compiler relies on (see [the framekernel](/docs/verification/framekernel#why-a-kernel-needs-unsafe)).
+Undefined behaviour often doesn't fail a test. A read of freed memory usually
+returns whatever was there before, which is often the right value. Two
+mutable references to the same value work fine until a compiler update
+optimises on the assumption that they can't exist, so the test keeps passing
+until, one day, the kernel misbehaves somewhere else.
+
+Miri doesn't run the compiled program. It interprets the program's
+intermediate form and keeps track of things the hardware forgets: which
+allocation every pointer came from, whether each byte has been initialised,
+and which references are currently allowed to read or write each location.
+When the program breaks a rule, Miri stops at that operation and says which
+rule, instead of letting the program carry on with corrupted state.
+
+## What it catches
+
+In the trusted core's tests, Miri reports:
+
+- **Aliasing violations**: using a reference in a way Rust's borrowing rules
+  forbid, such as writing through one reference while another still expects
+  the value not to change. This is the bug most likely to hide in `unsafe`
+  code, and neither review nor ordinary tests reliably see it.
+- **Pointers used outside the allocation they came from.**
+- **Use after free, double free and out-of-bounds access** in the page, slab
+  and heap allocators.
+- **Data races**: two threads touching the same ordinary (non-atomic) memory
+  without synchronisation.
+- **Reads of uninitialised memory and misaligned references.**
+
+When the harness was first set up, Miri found a helper in the trusted core
+that could build a misaligned reference if a caller passed it a misaligned
+byte offset. It also found a test that had four threads borrow the same
+`RefCell` at once, which is a data race on its borrow counter. Neither had
+ever failed a normal test run. UB that Miri finds is fixed in place, so there
+is no list of open findings.
+
+### Two models of the borrowing rules
+
+Rust hasn't finalised exactly which uses of references are allowed, so Miri
+offers two candidate rule sets. *Stacked Borrows* is the older and stricter;
+*Tree Borrows* is newer and accepts some patterns real `unsafe` code relies
+on. SlopOS runs every test under both, so code has to be correct under either
+reading of the rules.
+
+## How the trusted core runs on a normal computer
+
+The trusted core is written to run on bare hardware, with no operating system
+underneath. Miri runs programs built for your computer. So each function that
+touches the hardware has a second body that is used when the code isn't
+built for SlopOS: reading a CPU register returns a stored value, turning
+interrupts off flips a flag, and so on. Miri builds for the host, so it picks
+those bodies automatically. A few test-support functions that are pure
+assembly have a body used only under Miri.
+
+Physical memory is simulated with a block of ordinary memory that the tests
+set up, and the trusted core's translation from physical addresses to
+pointers hands out pointers into that block. Because those pointers come from
+a real allocation, Miri can check every access against it exactly.
+
+A handful of tests can't run under Miri and are skipped there: tests of the
+real assembly that handles faults while copying user memory, tests that
+depend on symbols the linker provides, and the deliberate data-race test
+above.
+
+## What it doesn't catch
+
+- **Anything the tests don't run.** Miri checks the operations a test
+  executes, so an `unsafe` path with no test is unchecked.
+- **The real machine.** Booting, real device memory, interrupts arriving at
+  awkward moments and devices misbehaving all happen only under QEMU or on
+  hardware, where the [kernel test suite](/docs/development/adding-tests)
+  covers them.
+- **Most weak-memory bugs.** Real CPUs can make one CPU's writes visible to
+  another late or out of order. Miri explores only some of the orderings a
+  test could see, so a test passing under Miri doesn't prove the atomic
+  operations are right.
+- **Logic bugs.** Code can be free of undefined behaviour and still wrong.
+  The [proofs](/docs/verification/verus-status) cover the logic of the most
+  important parts.
+
+## Running it
 
 ```bash
 just check-miri
 ```
 
-The recipe installs the Miri component for the pinned Rust channel if needed,
-runs `cargo miri setup`, and executes:
+The recipe installs Miri for the pinned nightly toolchain if needed, then runs
+four processes in parallel: the trusted core's unit tests and its integration
+tests, each under Stacked Borrows and under Tree Borrows. Miri runs all of a
+process's threads on one CPU core, so running four processes is what uses the
+machine. Each prints a line when it finishes:
 
-```bash
-MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks" \
-  cargo +<rust_channel> miri test -p slopos-ostd --no-fail-fast
+```text
+── KernMiri tree-tests: ok ──
 ```
 
-## What It Is Good For
+A failing process prints its `failures:` block, and each one's full output is
+in `builddir/kernmiri-<model>-<shard>.log`. Miri is much slower than running
+the tests natively, so this is not a check to run on every edit.
 
-- Pointer aliasing and invalid dereference bugs in tested OSTD code.
-- UB in small architecture-neutral helpers.
-- Regression coverage for APIs that absorb raw unsafe details.
-- Sanity checks around SlopRing `UFrame` round trips and similar byte accessors.
+CI runs the same recipe in its own job, alongside the proofs, so a Miri failure
+blocks a merge like any failing test. `just check-framekernel` runs it locally
+together with the other safety checks.
 
-## What It Does Not Prove
+## For contributors
 
-- Full kernel boot behavior.
-- Real hardware MMIO behavior.
-- Weak-memory protocols.
-- Interrupt delivery.
-- QEMU device interactions.
-- Whole-kernel absence of logic bugs.
+- **Isolation stays on.** The tests see a virtual clock and none of your
+  environment, so every run is reproducible. The only extra flag is
+  `-Zmiri-ignore-leaks`, because the simulated memory the tests set up is
+  deliberately never freed.
+- **Default provenance mode, not strict.** The trusted core treats some
+  hardware addresses (where all of physical memory appears in the kernel's
+  view, device memory, firmware tables) as plain integers, and a few
+  primitives turn such an integer back into a pointer through
+  `with_exposed_provenance`, with a matching `expose_provenance()` on the
+  memory. `-Zmiri-strict-provenance` forbids that round trip.
+- **Doctests aren't run under Miri.** OSTD's doctests are syntax examples
+  marked `ignore` or `compile_fail` checks; `just test-host` runs them
+  natively.
+- **Skipping a test.** Use `#[cfg_attr(miri, ignore)]` only for code Miri
+  can't model (real assembly, linker symbols), with a comment saying why.
+- **Adding a hardware primitive.** Give it a body for
+  `cfg(not(target_os = "none"))` so its callers stay testable under Miri.
 
-Miri is part of `just check-framekernel` because it catches a different class
-of bugs than tests, code review, or Verus proofs.
+## Further reading
+
+- [The Miri README](https://github.com/rust-lang/miri). What Miri detects,
+  what it doesn't, and its flags. Start here.
+- [*Stacked Borrows: An Aliasing Model for Rust*](https://plv.mpi-sws.org/rustbelt/stacked-borrows/)
+  by Jung et al., POPL 2020. The first of the two rule sets, with the
+  reasoning behind it.
+- [*Tree Borrows*](https://plf.inf.ethz.ch/research/pldi25-tree-borrows.html)
+  by Villani et al., PLDI 2025. The newer rule set, and which real-world code
+  it accepts that Stacked Borrows rejects.
+- [*Asterinas*](https://arxiv.org/abs/2506.03876) by Peng et al., USENIX ATC
+  '25. Describes running a kernel's trusted core under Miri, the approach
+  followed here.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `justfile` (`check-miri`) | The four Miri runs |
+| `slopos-ostd/src/mm/phys.rs` | The simulated physical memory used by host tests |
+| `slopos-ostd/tests/` | The integration tests Miri runs |
+| `tools/kernmiri/README.md` | Notes on keeping the run fast and on provenance |

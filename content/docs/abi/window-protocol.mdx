@@ -1,62 +1,185 @@
 ---
-title: "Window And Protocol Surfaces"
-description: "Windowing, surface, and display protocol ABI"
+title: "Window protocol"
+description: "The messages a graphical program and the SlopOS compositor exchange over a Unix socket."
 ---
 
-SlopOS windowing has three layers:
+A graphical program on SlopOS never draws to the screen itself. It draws into a
+block of memory it shares with the program that assembles the screen (the
+*compositor*, `/bin/compositor`), which is also the only program allowed to read
+the keyboard and mouse. The program tells the compositor "this buffer is the
+new contents of my window"; the compositor combines every window into the
+picture on the screen and sends input to whichever window should get it.
 
-| Layer | Role |
-|-------|------|
-| Kernel ABI structs | Shared state and constants |
-| Wire protocol | Display protocol v2 request/event encoding |
-| Client runtime | Raw windows, surfaces, event loop, widgets |
+The program and the compositor talk over a Unix socket in a small binary
+protocol modelled on Wayland. The program asks for a rectangle of pixels (a
+*surface*), marks it as an ordinary window (the *toplevel* role), hands over a
+buffer and says when it is ready (a *commit*). The compositor answers with the
+window's size and state, a signal when to draw the next frame, and input.
 
-## Kernel Window ABI
+This page lists the messages. The protocol is defined in the `slop-protocol`
+crate (version 3, `PROTOCOL_VERSION` in `types.rs`, wire tags in `codec.rs`);
+the shared window types are in `slopos_abi`.
+[Desktop and windowing](/docs/architecture/userland-windowing) explains the
+compositor and the client toolkits.
 
-`WindowInfo` is the shared window metadata structure. It includes task id,
-position, content size, window state, cursor shape, shared-memory token, damage
-regions, title, app id, and compositor-provided frame dimensions.
+## Connection
 
-Important constants:
+- The compositor listens on the Unix socket `/run/compositor`.
+- On accept it sends `Hello { version, capabilities }`. The client replies
+  `Hello { version }`. The client library refuses to connect (a version
+  mismatch error) if the server's version differs from its own.
+- Capability bits: `TOPLEVEL` (bit 0), `CLIPBOARD` (bit 1),
+  `INTERACTIVE_MOVE_RESIZE` (bit 2). The compositor advertises all three, but
+  ignores `InteractiveMove` and `InteractiveResize`: it moves windows by its own
+  title-bar drag and does not honour resize requests from clients.
+- Both sides set the socket non-blocking and wait with `poll`.
+- Surface and toplevel ids are `u32`s chosen by the client. `0` means none. An
+  `ObjectDestroyed` event tells the client when an id may be reused.
 
-| Constant | Meaning |
-|----------|---------|
-| `MAX_WINDOW_DAMAGE_REGIONS` | Per-window damage-region cap |
-| `MAX_BUFFER_AGE` | Buffer-age bound |
-| `WINDOW_STATE_NORMAL` | Normal toplevel |
-| `WINDOW_STATE_MINIMIZED` | Minimized toplevel |
-| `WINDOW_STATE_MAXIMIZED` | Maximized toplevel |
-| `CURSOR_SHAPE_*` | Cursor shape ids from default through resize shapes |
+## Framing
 
-`SurfaceRole` follows Wayland-style role assignment: `None`, `Toplevel`,
-`Popup`, and `Subsurface`. Roles are not intended to change once assigned.
+- Each message is a little-endian `u32` payload length followed by the payload.
+  A frame is at most 8192 bytes.
+- The payload is a one-byte tag, then the fields in the order listed below,
+  little-endian, with no padding.
+- `bool` is one byte. A string is a `u8` length followed by up to 128 bytes of
+  UTF-8.
+- Every read is a `recvmsg`. Descriptors passed with `SCM_RIGHTS` go into a
+  queue of up to 8, and the decoder takes them in order as it decodes the
+  messages that carry one. A single read holding several messages therefore
+  cannot attach a descriptor to the wrong message.
+- A received descriptor is closed automatically unless the receiver takes
+  ownership of it.
 
-## Display Protocol V2
+## Requests (client to compositor)
 
-`slop-protocol` is a length-prefixed little-endian binary protocol. It includes:
+| Tag | Request | Fields | Descriptor |
+|---|---|---|---|
+| 0 | `Hello` | `version: u32` | |
+| 1 | `CreateSurface` | `new_id: u32` | |
+| 2 | `SurfaceAttach` | `surface: u32`, `buffer_id: u32`, `width: u32`, `height: u32`, `has_fd: bool` | The buffer, when `has_fd` |
+| 3 | `SurfaceDamage` | `surface: u32`, `x: i32`, `y: i32`, `w: i32`, `h: i32` | |
+| 4 | `SurfaceCommit` | `surface: u32` | |
+| 5 | `SurfaceFrame` | `surface: u32` | |
+| 6 | `SurfaceDestroy` | `surface: u32` | |
+| 7 | `GetToplevel` | `surface: u32`, `new_id: u32` | |
+| 8 | `ToplevelSetTitle` | `toplevel: u32`, `title: string` | |
+| 9 | `ToplevelSetAppId` | `toplevel: u32`, `app_id: string` | |
+| 10 | `ToplevelDestroy` | `toplevel: u32` | |
+| 11 | `AckConfigure` | `serial: u32` | |
+| 12 | `SetCursorShape` | `surface: u32`, `serial: u32`, `shape: u8` | |
+| 13 | `ClipboardCopy` | `len: u32`, `serial: u32` | The selection |
+| 14 | `ClipboardPaste` | `serial: u32` | |
+| 15 | `InteractiveMove` | `toplevel: u32`, `serial: u32` | (ignored) |
+| 16 | `InteractiveResize` | `toplevel: u32`, `serial: u32`, `edges: u32` | (ignored) |
+| 17 | `ClipboardRead` | `len: u32`, `serial: u32` | The destination |
 
-| Request group | Examples |
-|---------------|----------|
-| Handshake | `Hello { version }` |
-| Surface lifecycle | create, attach, damage, commit, frame, destroy |
-| Toplevel lifecycle | get toplevel, set title, set app id, ack configure, destroy |
-| Cursor | set cursor shape |
-| Clipboard | copy, paste, read via memfd-backed buffers |
-| Interactive actions | move and resize authorized by input serials |
+`edges` is a combination of `TOP` (1), `BOTTOM` (2), `LEFT` (4) and `RIGHT` (8).
+`shape` is one of the cursor shapes in [Shared types](#shared-types).
 
-Server events include hello/capabilities, output info, configure, input events,
-frame callbacks, clipboard readiness/results, and protocol errors.
+## Events (compositor to client)
 
-## Buffer Passing
+| Tag | Event | Fields |
+|---|---|---|
+| 0 | `Hello` | `version: u32`, `capabilities: u64` |
+| 1 | `ObjectDestroyed` | `id: u32` |
+| 2 | `OutputInfo` | `width: u32`, `height: u32`, `format: u32`, `pitch: u32`, `scale: u32` |
+| 3 | `FrameDone` | `surface: u32`, `timestamp_ms: u32` |
+| 4 | `Configure` | `toplevel: u32`, `serial: u32`, `width: u32`, `height: u32`, `states: u32` |
+| 5 | `Close` | `toplevel: u32` |
+| 6 | `PointerEnter` | `surface: u32`, `serial: u32`, `x: i32`, `y: i32` |
+| 7 | `PointerLeave` | `surface: u32` |
+| 8 | `PointerMotion` | `time: u32`, `x: i32`, `y: i32` |
+| 9 | `PointerButton` | `serial: u32`, `time: u32`, `button: u32`, `pressed: bool` |
+| 10 | `PointerAxis` | `time: u32`, `axis: u32`, `value: i32` |
+| 11 | `KeyboardEnter` | `surface: u32` |
+| 12 | `KeyboardLeave` | `surface: u32` |
+| 13 | `Key` | `serial: u32`, `time: u32`, `scancode: u32`, `ascii: u32`, `keycode: u32`, `codepoint: u32`, `modifiers: u32`, `pressed: bool` |
+| 14 | `Modifiers` | `mods: u32` |
+| 15 | `PasteResult` | `len: u32` |
+| 16 | `Error` | `object_id: u32`, `code: u32` |
+| 17 | `PasteReady` | `len: u32` |
+| 18 | `BufferRelease` | `surface: u32`, `buffer_id: u32` |
 
-Window buffers use `memfd_create`, `ftruncate`, and `mmap(MAP_SHARED)`.
-Protocol messages that transfer a buffer fd use AF_UNIX ancillary data. The
-receiver wraps fds in `OwnedFd` so file descriptors are closed on drop unless
-explicitly consumed.
+Events never carry a descriptor.
 
-## Runtime Crates
+- `Key`: `keycode` is the layout-independent key (a USB HID usage);
+  `codepoint` is the character after layout and modifiers, `0` for none;
+  `modifiers` is a snapshot of the modifier state. `scancode` (PS/2 set 1) and
+  `ascii` are kept for older clients.
+- `Configure`: `states` is a combination of `ACTIVATED` (1), `MAXIMIZED` (2),
+  `FULLSCREEN` (4), `RESIZING` (8) and `MINIMIZED` (16). The client must send
+  `AckConfigure` with the serial before it commits a buffer at the new size.
+- `FrameDone` is sent only for surfaces that asked with `SurfaceFrame`, after
+  the next present.
 
-- The windowing runtime exposes raw windows, surfaces, protocol handles, and
-  event-loop helpers.
-- AppKit exposes retained UI nodes, layout constraints, input/focus handling,
-  widget traits, and app launch helpers.
+## Buffers
+
+1. The client creates a buffer with `memfd_create`, sizes it with `ftruncate`
+   and maps it with `mmap(MAP_SHARED)`.
+2. `SurfaceAttach` names a slot (`buffer_id`) chosen by the client. The first
+   attach of a slot sends the memfd with `SCM_RIGHTS` and `has_fd = true`.
+   Later attaches of the same slot send no descriptor and `has_fd = false`.
+3. `SurfaceDamage` marks the changed rectangle, and `SurfaceCommit` makes the
+   attached buffer current.
+4. When a newer buffer for the surface is committed, the compositor sends
+   `BufferRelease` for the previous slot. The client may draw into it again.
+
+## Serials
+
+Requests that act on what the user did must quote the serial of a recent
+input event, so a program in the background cannot act on its own. A request
+with a wrong serial is ignored, except `ClipboardPaste`, which gets
+`PasteReady { len: 0 }` so the client is not left waiting.
+
+| Request | Serial must match |
+|---|---|
+| `SetCursorShape` | The surface's most recent `PointerEnter` |
+| `ClipboardCopy`, `ClipboardPaste`, `ClipboardRead` | The last key event delivered to a surface of this client that has keyboard focus |
+
+## Clipboard
+
+Clipboard contents never travel inside a message.
+
+1. To copy, the client sends `ClipboardCopy` with a memfd holding the
+   selection and its length in bytes.
+2. To paste, the client sends `ClipboardPaste`. The compositor replies
+   `PasteReady { len }`; `0` means the clipboard is empty or the serial was
+   refused.
+3. The client sends `ClipboardRead` with a memfd of at least `len` bytes.
+4. The compositor copies the contents into it and replies `PasteResult { len }`.
+
+The reader supplies the destination buffer because events cannot carry
+descriptors.
+
+## Shared types
+
+`slopos_abi` defines the vocabulary the compositor and its clients share.
+
+| Item | Where | Values |
+|---|---|---|
+| Cursor shapes (`CURSOR_SHAPE_*`) | `abi/src/window.rs` | `DEFAULT` 0, `TEXT` 1, `POINTER` 2, `N_RESIZE` 3, `S_RESIZE` 4, `W_RESIZE` 5, `E_RESIZE` 6, `NW_RESIZE` 7, `NE_RESIZE` 8, `SW_RESIZE` 9, `SE_RESIZE` 10, `GRAB` 11, `GRABBING` 12 |
+| Window states (`WINDOW_STATE_*`) | `abi/src/surface.rs` | `NORMAL` 0, `MINIMIZED` 1, `MAXIMIZED` 2 |
+| Surface roles (`SurfaceRole`) | `abi/src/surface.rs` | `None` 0, `Toplevel` 1, `Popup` 2, `Subsurface` 3; a role cannot change once set |
+| Damage rectangles | `abi/src/damage.rs` | Up to 8 per window (`MAX_DAMAGE_REGIONS`) |
+| `WindowInfo` | `abi/src/window.rs` | The compositor's record of a window: position, size, state, cursor shape, committed buffer slot and generation, damage, title and app id |
+
+## Display and input ownership
+
+Only one program at a time may own the screen, and only one the raw input
+stream. The kernel enforces this with two *seats*. A program takes one with
+`screen_acquire(seat_id)` or `input_sink_acquire(seat_id)`: seat `0` is the
+compositor, seat `1` the virtual console. The virtual console outranks the
+compositor, so the kernel log and the Wheel of Fate can always take the screen
+back. Taking a seat while one of equal or higher rank is held fails with
+`EBUSY`, and the kernel releases a seat when its holder exits. Both calls
+require a capability the kernel gives only to `/bin/compositor`; see
+[Permissions](/docs/architecture/authority).
+
+## See also
+
+- [*The Wayland Protocol*](https://wayland-book.com/) by Drew DeVault: the
+  protocol this one is modelled on. Its chapters on surfaces, buffers and
+  `xdg_toplevel` describe the same ideas in more depth.
+- [`unix(7)`](https://man7.org/linux/man-pages/man7/unix.7.html): Unix sockets
+  and passing descriptors with `SCM_RIGHTS`.

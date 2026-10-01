@@ -1,29 +1,44 @@
 ---
 title: "Quickstart"
-description: "Build and boot SlopOS in QEMU"
+description: "Install the host tools, build SlopOS and boot it in QEMU."
 ---
 
-## Prerequisites
+By the end of this page you will have SlopOS built from source and running in
+a QEMU window on your machine.
 
-You need QEMU, xorriso, mkfs.ext2, `just`, Rust via `rustup`, and Go `>= 1.22`
-for the host-side test wrapper.
+SlopOS can boot in two ways. The *live ISO* is a CD image that runs the whole
+system from memory and keeps nothing when you close it. The *development
+machine* is a virtual machine with a disk that keeps what you write, and
+carries a compiler and a copy of the source so you can build SlopOS inside
+SlopOS. Start with the live ISO: it builds faster and needs nothing from you.
+
+## What you need
+
+A Linux or macOS machine with QEMU (the emulator SlopOS runs in), `rustup`,
+`just` (a command runner: `just boot` runs the recipe named `boot` in the
+repository's `justfile`), Go 1.22 or later, an LLVM toolchain of version 18 or
+later, and a handful of disk-image tools. One command per platform installs
+them:
 
 <Tabs items={['macOS', 'Debian/Ubuntu', 'Arch']}>
 <Tab value="macOS">
 
 ```bash
-brew install qemu xorriso e2fsprogs just go
+brew install rustup qemu xorriso e2fsprogs just go python git curl zstd \
+  dosfstools mtools util-linux llvm lld cmake ninja openssl
 ```
 
-QEMU defaults to the Cocoa display backend on macOS. If display startup fails,
-run `qemu-system-x86_64 -display help` and set `QEMU_DISPLAY=sdl` if SDL is the
-backend you have installed.
+The build looks every tool up on `PATH`, so add Homebrew's `e2fsprogs`,
+`util-linux` and `llvm` directories to it if `brew` tells you they are not
+linked.
 
 </Tab>
 <Tab value="Debian/Ubuntu">
 
 ```bash
-sudo apt install qemu-system-x86 xorriso e2fsprogs golang-go
+sudo apt install qemu-system-x86 xorriso e2fsprogs python3 git curl zstd \
+  dosfstools mtools fdisk golang-go clang lld llvm cmake ninja-build openssl
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install just
 ```
 
@@ -31,79 +46,107 @@ cargo install just
 <Tab value="Arch">
 
 ```bash
-sudo pacman -S qemu-full xorriso e2fsprogs just go
+sudo pacman -S rustup qemu-full xorriso e2fsprogs python git curl zstd \
+  dosfstools mtools util-linux just go clang lld llvm cmake ninja openssl
 ```
 
 </Tab>
 </Tabs>
 
-## Clone
+Not every recipe needs every tool. Booting needs QEMU, xorriso, e2fsprogs and
+Python; the development machine adds dosfstools, mtools, `sfdisk` and zstd;
+the test suite adds Go and LLVM. [Building and
+testing](/docs/getting-started/build-test-recipes) says which recipe needs
+what.
+
+## 1. Get the source
 
 ```bash
 git clone https://github.com/SlopLabs/slopos.git
 cd slopos
 ```
 
-There is no required submodule checkout. The ISO build downloads the pinned
-Limine binary release on demand and caches it under `third_party/limine`.
+The repository has no submodules. The bootloader (Limine), the virtual
+machine's firmware (OVMF) and a few other pinned inputs download on first use
+into `third_party/`.
 
-## Setup
+## 2. Install the toolchain
 
 ```bash
 just setup
 ```
 
-`just setup` installs or verifies the pinned Rust nightly from
-`rust-toolchain.toml`, checks the `x86_64-unknown-none` target, verifies a Go
-toolchain `>= 1.22`, downloads Go module dependencies for the host test runner,
-and creates `builddir/`.
+This installs the exact Rust nightly the repository pins, then builds a copy of
+it named `slopos` whose standard library carries SlopOS's own changes. Both the
+kernel and the programs that run on it build with that copy. The command also
+checks your Go version and fetches the Go modules of the test runner. When
+everything is already in place it does nothing, so it is safe to rerun after
+every pull.
 
-## Boot
+`just setup` does not install Go for you. If Go is missing or too old it stops
+and says how to install it. [Toolchain](/docs/self-hosting/toolchain) explains
+the `slopos` toolchain.
+
+## 3. Boot the live ISO
 
 ```bash
-just boot
+just boot-live
 ```
 
-This builds `builddir/slop-notests.iso`, creates the ext2 root image, and starts
-QEMU with video enabled.
+The first run compiles the kernel and every program, packs them into
+`builddir/slop.iso`, and opens a QEMU window.
 
-<Callout type="warning">
-  The default boot includes the Wheel of Fate. For a deterministic developer
-  boot, use `just boot-fast`.
-</Callout>
+The first thing you see is the Wheel of Fate: a roulette wheel that decides
+whether this boot may continue. An odd number lets the system boot. An even
+number reboots the machine and the wheel spins again. It is a joke that the
+project keeps, and it is harmless, but you will usually want to skip it:
 
-## Useful First Commands
+```bash
+ROULETTE=0 just boot-live
+```
 
-| Command | Use |
-|---------|-----|
-| `just --list` | Show every available recipe and doc string |
-| `just boot-fast` | Boot with `roulette=skip` for quick iteration |
-| `just boot-prod` | Boot a release-optimized kernel with the wheel skipped |
-| `just boot-headless` | Boot with serial only |
-| `just boot-log` | Boot with timeout and save serial output to `test_output.log` |
-| `just boot-debug` | Boot with QEMU GDB stub on `:1234` and monitor socket |
-| `just test` | Build and run the full QEMU test harness |
-| `just test-rerun-failed` | Re-run names captured from the last failing run |
-| `just test-userland-only` | Skip kernel tests and run only userland tests |
-| `just verify` | Run pinned Verus proofs |
-| `just check-framekernel` | Run unsafe, async, allocation, stack, fmt, Miri, and Verus gates |
+After the wheel (or without it) the kernel starts the first program,
+`/sbin/init`, which brings up the desktop. Everything runs from memory, so
+nothing you change survives closing the window.
 
-## What Gets Built
+If you have no display, or you are on SSH, add `VIDEO=0`: QEMU then opens no
+window and the system's console appears in your terminal.
 
-The default boot path produces:
+## 4. Boot the development machine
 
-| Artifact | Meaning |
-|----------|---------|
-| `builddir/kernel.elf` | Kernel ELF with symbols |
-| `builddir/slop-notests.iso` | Non-test boot ISO |
-| `fs/assets/ext2.img` | Root filesystem image with userland binaries |
-| `third_party/limine/` | Cached Limine binary release |
-| `third_party/ovmf/` | Cached OVMF firmware blobs |
+```bash
+just boot-fast
+```
 
-The test path uses `builddir/slop-tests.iso` and `fs/assets/ext2-tests.img`.
+This is `just boot` with the wheel skipped. It boots an optimised kernel from
+its own boot disk, with 4 GB of memory and a persistent root filesystem at
+`fs/assets/ext2-persist.img`. That disk holds the compiler at `/usr/local` and a
+clone of your checkout at `/src/slopos`, and what you write to it is still
+there next time. The first run takes longer, because it builds that disk.
+[Development machine](/docs/self-hosting/development-machine) covers working
+inside it.
 
-## Minimum Runtime Shape
+## Check that it worked
 
-SlopOS expects QEMU's `q35` machine, LAPIC, IOAPIC, HPET, MSI/MSI-X capable
-VirtIO devices, PS/2 input, OVMF firmware, and Limine boot media. The legacy
-8259 PIC path and legacy VirtIO interrupt mode are not the supported runtime.
+For a check that needs no window, boot the live ISO headless:
+
+```bash
+just boot-log
+```
+
+It boots for 15 seconds, saves everything the kernel printed to
+`test_output.log`, and exits non-zero unless the log shows that `/sbin/init`
+started.
+
+## If something goes wrong
+
+Missing tools, firmware downloads and a disk the build refuses to touch are
+covered in [Troubleshooting](/docs/getting-started/troubleshooting). SlopOS
+also needs a particular kind of virtual (or real) machine;
+[Hardware](/docs/status/hardware-requirements) lists it, and [QEMU
+options](/docs/getting-started/qemu-options) lists what the wrapper gives
+QEMU.
+
+Next, read [Building and testing](/docs/getting-started/build-test-recipes) to
+run the test suite, or the [Overview](/docs/architecture/overview) to see how
+the system fits together.

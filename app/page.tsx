@@ -37,7 +37,7 @@ export default function HomePage() {
             Architecture
           </a>
           <a className="site-nav__link" href={`${docsRoute}/abi/syscalls`}>
-            ABI
+            Reference
           </a>
           <a className="site-nav__link" href={`${docsRoute}/verification/framekernel`}>
             Verification
@@ -259,7 +259,7 @@ export default function HomePage() {
                   {'\n'}
                   <span className="g">just test</span>
                   {'       '}
-                  <span className="c"># 3,000+ tests under QEMU</span>
+                  <span className="c"># 3,500+ tests under QEMU</span>
                   {'\n\n'}
                   <span className="p">root@sloptopia</span>:/#
                 </pre>
@@ -299,7 +299,7 @@ export default function HomePage() {
                 <p>
                   Clients hand the compositor their buffers over memfd and
                   SCM_RIGHTS, the way Wayland does it. It tracks damage, culls
-                  what you cannot see, and runs four applications.
+                  what you cannot see, and runs five applications.
                 </p>
               </Reveal>
             </div>
@@ -407,7 +407,7 @@ export default function HomePage() {
               <h4>Docs</h4>
               <a href={`${docsRoute}/getting-started/quickstart`}>Quickstart</a>
               <a href={`${docsRoute}/architecture/overview`}>Architecture</a>
-              <a href={`${docsRoute}/abi/syscalls`}>ABI reference</a>
+              <a href={`${docsRoute}/abi/syscalls`}>Reference</a>
               <a href={`${docsRoute}/verification/framekernel`}>Verification</a>
             </div>
 
@@ -416,7 +416,7 @@ export default function HomePage() {
               <a href={sloposGitHubUrl} target="_blank" rel="noreferrer">
                 Source
               </a>
-              <a href={`${docsRoute}/status/current-capabilities`}>Capabilities</a>
+              <a href={`${docsRoute}/status/current-capabilities`}>What works</a>
               <a href={`${docsRoute}/status/hardware-requirements`}>Hardware</a>
               <a href={`${docsRoute}/status/roadmap`}>Roadmap</a>
             </div>
@@ -425,7 +425,7 @@ export default function HomePage() {
               <h4>Develop</h4>
               <a href={`${docsRoute}/development/adding-a-syscall`}>Add a syscall</a>
               <a href={`${docsRoute}/development/adding-a-driver`}>Add a driver</a>
-              <a href={`${docsRoute}/development/adding-tests`}>Add tests</a>
+              <a href={`${docsRoute}/development/adding-tests`}>Write tests</a>
               <a href={`${docsRoute}/development/debugging-gdb-record-replay`}>
                 Debugging
               </a>
@@ -452,24 +452,24 @@ const DOCS = [
   {
     icon: Cpu,
     title: 'Architecture',
-    body: 'How boot, memory, scheduling, drivers and the network fit together',
+    body: 'How boot, memory, processes, files and the network work',
     href: `${docsRoute}/architecture/overview`,
   },
   {
     icon: Books,
-    title: 'ABI reference',
-    body: 'Syscall families, SlopRing, KTAP and the window protocol',
+    title: 'Reference',
+    body: 'System calls, boot options, SlopRing and the window protocol',
     href: `${docsRoute}/abi/syscalls`,
   },
   {
     icon: ShieldCheck,
-    title: 'Verification',
-    body: 'The gates CI runs, what Verus proves, where Miri looks',
+    title: 'Safety and verification',
+    body: 'Why unsafe lives in one crate, what Verus proves, where Miri looks',
     href: `${docsRoute}/verification/framekernel`,
   },
   {
     icon: Wrench,
-    title: 'Development',
+    title: 'Guides',
     body: 'Add a syscall or driver, write tests, debug a wedged kernel',
     href: `${docsRoute}/development/adding-a-syscall`,
   },

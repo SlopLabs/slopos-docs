@@ -1,46 +1,246 @@
 ---
-title: "Userland And Windowing"
-description: "Runtime, apps, compositor, and GUI protocol crates"
+title: "Desktop and windowing"
+description: "How apps get a window on the SlopOS desktop, how their pixels reach the screen, and how keyboard and touchpad input finds them."
 ---
 
-Userland is a mix of low-level syscall wrappers, a libc layer, async runtime,
-protocol crates, and apps.
+import { WindowBuffers } from '@/components/diagrams/window-buffers';
 
-## Runtime Layers
+As an app author on SlopOS you get a window on the desktop, a stream of the
+keyboard and pointer events meant for that window, and a widget toolkit
+(appkit) if you don't want to draw everything yourself. You don't get direct
+access to the screen, and you never see input meant for other windows. That
+is because the desktop is a set of ordinary programs, and one of them, the
+*compositor*, owns the screen, the keyboard and the touchpad. Every other app
+draws its window into memory it shares with the compositor, tells the
+compositor which parts changed, and receives the events the compositor
+sends it.
 
-| Layer | Source | Role |
-|-------|--------|------|
-| Raw syscalls | Userland syscall layer | Thin register-level wrappers |
-| libc | libc layer | std PAL shims, malloc, stdio, process, thread, signal, net |
-| SlopRing runtime | Runtime crate | Safe userland ring wrapper |
-| `slopfut` | Runtime crate | Futures executor, reactor, I/O, time, signals, process waits |
-| Protocol | Protocol crate | Display protocol v2 typed wire format |
-| Windowing | Windowing runtime | Surfaces, buffers, event loop, raw drawing apps |
-| AppKit | App toolkit | Retained widget toolkit and controls |
+The design is Wayland's, the display system most Linux desktops now use.
+SlopOS doesn't speak the Wayland protocol, but it uses the same split
+between compositor and apps, and the same way of handing over pixels: shared
+memory passed over a Unix socket. That trick comes from libwayland.
 
-## Apps
+## How an app gets a window
 
-The root image currently builds apps and tools such as:
+An app connects to the compositor over a Unix socket at `/run/compositor`
+and asks for a *surface*, a rectangle it can draw into, then marks it as a
+normal window with a title. Then it needs somewhere to put pixels.
 
-```text
-init shell terminal compositor roulette file_manager image_viewer
-sysmon nmap ifconfig nc curl ping
+Sending every frame's pixels down the socket would mean copying a whole
+window's worth of memory on every frame. Instead the app creates a block of
+shared memory (a `memfd`, an anonymous file that lives only in memory) and
+draws into it. The first time the app uses that buffer, it sends the buffer
+itself to the compositor: a Unix socket can carry an open file from one
+program to another (`SCM_RIGHTS`), and the compositor maps the same memory
+into its own address space. From then on both programs see the same pixels,
+and nothing is copied between them.
+
+<WindowBuffers />
+
+1. **The app creates two buffers**, each big enough for the window.
+2. **It draws a frame into one** and *commits* it, which means "show this
+   now". The first commit of each buffer sends the buffer itself; later
+   commits only send its number.
+3. **The compositor maps the buffer** the first time and remembers it.
+4. **It paints the parts that changed** onto the screen at its next frame.
+5. **It releases the buffer** when it has finished reading it, with a
+   message to the app.
+6. **Meanwhile the app draws the next frame into the other buffer**, so it
+   never writes into memory the compositor is still reading.
+
+An app that ignores the release messages still works: it falls back to one
+buffer and updates it in place, at the risk of the compositor occasionally
+seeing a half-drawn frame.
+
+### Redrawing only what changed
+
+Repainting the whole screen for every blinking cursor would waste most of
+the work, so every commit carries *damage*: the rectangles the app changed.
+The compositor collects the damage from all windows, works out what
+is visible (a window hidden behind another one doesn't need painting), and
+redraws only those areas. Moving a window or changing which one is on top
+counts as damage too, because it uncovers whatever was underneath.
+
+The compositor draws at a steady pace rather than whenever something
+changes. An app that animates can ask to be told when its last frame was
+shown (a *frame callback*) and draw the next one then, instead of drawing
+frames nobody sees. On the Intel graphics driver, the kernel switches the
+display to the new frame only between screen refreshes, so you never see
+half of one frame and half of another.
+
+## How input reaches an app
+
+<Callout type="info">
+The keyboard layout is applied in the kernel rather than in each app, so a
+Swiss German keyboard types the same characters in a console, in the
+terminal and in the editor, and dead keys work everywhere.
+</Callout>
+
+When you press a key, the keyboard driver turns the hardware's code for it
+into a standard key number, then looks it up in the active layout to get
+the character and the state of Shift, Ctrl, AltGr and the rest. The touchpad
+driver turns finger contacts into pointer motion, taps into clicks and
+two-finger movement into scrolling. Both go into one queue that only the
+compositor can read.
+
+The compositor decides who gets each event. Pointer events go to the window
+under the pointer. Key events go to the window that has *focus*, the one you
+last clicked or switched to. An app receives the key number, the character
+and the modifier state, so a text field uses the character and a game can
+use the key.
+
+The compositor also checks requests that only make sense in response to
+input. A program that has only connected can't read the clipboard: a paste
+request has to carry a token from a key event the compositor sent to that
+app's focused window. Changing the pointer shape works the same way, tied to
+the pointer being over the app's window.
+
+One combination never reaches an app. SysRq followed by a key runs a kernel
+console command, for when the desktop is stuck; see
+[Diagnosing the kernel](/docs/development/diagnostics).
+
+### Changing the keyboard layout
+
+```bash
+keymap            # show the active layout
+keymap list       # list layouts
+keymap de_CH      # switch now, and remember it for the next boot
 ```
 
-The test image adds userland test binaries for fork, heap, image, ring, pidfd,
-signalfd, `slopfut`, terminal grid, clipboard, signal behavior, and more.
+Layouts are text files in `/usr/share/keymaps`. The change takes effect at
+once for every console and every window, and `keymap` saves the choice in
+`/etc/keymap` for the next boot.
 
-## Display Protocol
+## Who may own the screen
 
-The compositor protocol is versioned in `slop-protocol`. It includes:
+The kernel hands out the screen and the raw input queue as *seats*: an app
+must hold the display seat to put a frame on the screen and the input seat
+to read input. Holding a seat takes a permission the kernel grants to
+specific programs, the compositor among them;
+[Permissions](/docs/architecture/authority) explains how. A seat can't be
+copied or passed to another process, and it is taken back when its holder
+exits, so a crashed compositor doesn't leave the screen locked.
 
-- Version handshake and capability discovery.
-- Surface create, attach, damage, commit, frame callbacks, and destroy.
-- Toplevel creation, title, app-id, configure/ack, and destroy.
-- Cursor shape requests.
-- Clipboard copy/paste using memfd buffers and SCM_RIGHTS where needed.
-- Interactive move/resize authorization through input serials.
+There are two seat levels. The compositor holds the lower one. The higher
+one belongs to the kernel's own log and to `roulette` (a full-screen program
+that runs at boot), so they can always take the screen back, even from a
+stuck compositor. A program that asks for a seat already held at the same
+or a higher level is
+refused with `EBUSY`. Below the seats, the kernel picks which display driver
+shows the frame: Intel graphics, virtio-gpu in QEMU, or the plain
+framebuffer the firmware left behind ([Drivers](/docs/architecture/drivers)).
 
-Pixel buffers are memfd-backed and shared with the compositor. The windowing
-runtime provides raw window and surface APIs; AppKit builds widget trees and
-retained UI behavior on top.
+## Writing an app
+
+Most apps should use **appkit**, SlopOS's widget toolkit. You describe the
+interface as a function of your app's state (`view`), and handle messages
+from widgets by updating that state (`update`). After each message appkit
+rebuilds the tree and redraws what changed. If you have used Elm, this is
+the same model. Widgets cover the usual needs: labels, buttons, text
+inputs, checkboxes, lists, tables, trees, tabs, menus, dialogs, scroll views,
+images, a canvas and a code view, arranged with stacks, padding and
+splitters. Interface text is set in Inter; code uses the same fixed-width
+font as the terminal.
+
+An app that wants to draw every pixel itself, such as an image viewer or a
+game, can skip appkit and use the windowing library (`slopos-windowing`)
+directly: it connects to the compositor, manages the two buffers, and runs
+the event loop. It also tells you how old a recycled buffer's contents are,
+so you can redraw only what that buffer missed.
+
+Either way, follow the rules the compositor enforces. A malformed message
+ends the connection, as in Wayland: the compositor sends an error event and
+disconnects the app. Window moves are done by the compositor when you drag
+the title bar; the protocol has requests for an app to start a move or
+resize itself, but the compositor currently ignores them.
+
+The message format is in [Window protocol](/docs/abi/window-protocol).
+
+## The apps that ship
+
+- **Terminal** (`terminal`). Runs the shell on a *pseudo-terminal*, a pair of
+  connected endpoints that look like a serial terminal to the shell. It
+  emulates an xterm closely enough for full-screen programs, including mouse
+  reporting. Resizing the window re-wraps long lines in the scrollback
+  instead of cutting them, and only the cells that changed are redrawn.
+  Ctrl+Shift+PgUp and PgDn scroll the terminal's own history; plain PgUp and
+  PgDn go to the program.
+- **Sloped** (`editor`), the text editor. Tabs, a file tree, search, undo,
+  and syntax highlighting. It saves by writing a new file, syncing it and
+  renaming it over the old one, so a failed save never destroys the
+  original, and it asks before overwriting a file that changed on disk since
+  you opened it.
+- **File manager** (`file_manager`), **image viewer** (`image_viewer`, PNG),
+  and **system monitor** (`sysmon`), which can end a process from its menu.
+
+The compositor itself draws the bar at the top of the screen, with the
+network indicator described in [Networking](/docs/architecture/networking),
+and the launcher dock.
+
+## How it is tested
+
+The parts that don't need a screen are libraries with no system calls in
+them: keyboard handling (`keymap-core`), the terminal's grid and escape-code
+parser (`terminal-core`, `vt`), the editor (`editor-core`) and the top bar's
+state (`chrome-core`). They are tested on the host with `just test-host`.
+The kernel test suite covers seat ownership and keyboard and touchpad input,
+and a test program (`seat_test`) checks seat rules from user space.
+
+## For contributors
+
+- **Buffer mappings are keyed by task, surface generation and buffer id.**
+  A recycled surface slot or a reused file descriptor can't alias an old
+  mapping. Pending damage is cleared only for surfaces that were presented; a
+  commit that lands after the frame snapshot carries into the next frame.
+- **Occlusion is computed front to back,** subtracting each opaque window,
+  so every pixel is painted once and a lower window's shadow can't paint
+  over a window above it.
+- **Input-driven requests are checked against serials.** Clipboard access
+  needs the serial of the focused surface's last key event; cursor shape
+  changes need a matching pointer-enter serial. Drag grabs are keyed to the
+  surface generation, because task ids are reused.
+- **Clipboard contents travel as memfds**, so there is no size cap in the
+  protocol.
+- **The kernel never parses layout text.** `keymap` parses a layout and
+  uploads a binary table; the kernel only validates it. Loading a layout
+  changes the console for everyone, so it needs a permission the kernel
+  grants to `/bin/keymap`.
+- **Layout owns geometry in appkit.** A parent measures and places each
+  child; widgets don't invent rectangles. The unbounded constraint is a
+  finite maximum, so size arithmetic can't overflow. Focus is a position in
+  the tab order, which survives the rebuild after each message.
+- **Logic stays out of the drawing code.** New behaviour in the terminal,
+  editor, keyboard or top bar goes in the matching `*-core` crate where the
+  host tests can reach it.
+
+## Further reading
+
+- [*The Wayland Protocol*](https://wayland-book.com/) by Drew DeVault. The
+  best introduction to the compositor model and shared-memory buffers. The
+  chapters on surfaces and buffers explain the design this page follows.
+- [*Wayland architecture*](https://wayland.freedesktop.org/architecture.html)
+  on wayland.freedesktop.org. A short comparison with X11 showing why the
+  compositor owns both the screen and input.
+- [`memfd_create(2)`](https://man7.org/linux/man-pages/man2/memfd_create.2.html)
+  and [`unix(7)`](https://man7.org/linux/man-pages/man7/unix.7.html). The
+  Linux manual pages for anonymous shared memory and for passing files over
+  a socket.
+- [*The Elm Architecture*](https://guide.elm-lang.org/architecture/). The
+  view and update model appkit uses.
+- [XTerm control sequences](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html)
+  by Thomas Dickey. The reference the terminal emulates.
+
+## In the source
+
+| Path | What is there |
+|---|---|
+| `userland/src/apps/compositor/` | The compositor |
+| `slop-protocol/` | The message format, client and server halves |
+| `windowing/` | Connection, surfaces and buffers for apps |
+| `appkit/` | The widget toolkit |
+| `keymap-core/` | Key decoding and layouts, host-tested |
+| `terminal-core/`, `vt/`, `editor-core/` | Terminal and editor logic, host-tested |
+| `chrome-core/` | State of the top bar and its indicators |
+
+The [Window protocol](/docs/abi/window-protocol) reference lists every
+message.

@@ -1,32 +1,87 @@
 ---
 title: "Roadmap"
-description: "How to read plans and future work"
+description: "The plans we are working on, what each is for, and how far along it is."
 ---
 
-The source repo keeps working notes in `plans/`. Those files are not public specs
-unless a current docs page names them as source material.
+This page lists the work we are doing next: running SlopOS on a real laptop
+the way it already runs in QEMU, developing SlopOS inside SlopOS, faster
+test results, and USB. For each plan it says what the work is for and how far
+along it is.
 
-## Durable Versus Temporary
+## How plans relate to these docs
 
-| Location | Meaning |
-|----------|---------|
-| Public docs | Stable architecture, ABI shape, verification, and developer workflows |
-| Source README and policy files | Contributor, agent, and security policy |
-| Plans directory | Historical or temporary working plans |
-| Verification directory | Machine-checked proof source and verifier metadata |
+The source repository keeps its plans in `plans/`, and a plan only ever
+describes what is still to do. When part of it lands, that part is removed
+from the plan, and the docs page for the subsystem is updated to describe how
+it works. When nothing is left, the plan is deleted; git history keeps the
+record. So if a feature appears in these docs it exists, and if it appears
+only in a plan it does not.
 
-## Current Themes
+## Running SlopOS on a real machine
 
-- Keep ABI documentation cross-checked against source-generated ABI.
-- Generate or mechanically check syscall and SlopRing tables where practical.
-- Expand debugging playbooks for page-table inspection, reverse debugging, and
-  KTAP failure triage.
-- Add diagrams for boot flow, syscall flow, task scheduling, SlopRing, memory
-  mapping, and userland/windowing.
-- Keep roadmap material separate from durable architecture claims until source
-  and tests match it.
+**What it is for:** doing on the tested laptop what SlopOS already does in
+QEMU: install it from a USB stick onto a disk shared with another OS, boot it
+from that disk, build and install new versions there, and exchange commits
+over the wired network. (`plans/bare-metal.md`)
 
-## Source Plans
+**Where it stands:** three of seven steps are done: the NVMe driver, the ext4
+filesystem, and a disk layout that shares a disk with another operating
+system. SlopOS's boot loader sits in its own folder on the shared EFI system
+partition, and its two boot slots live on a partition of their own. The QEMU
+boot-slot tests already run on that layout
+([Installing a system](/docs/self-hosting/installing-a-system)). Still to do
+(the network work can happen alongside the rest):
 
-If a plan has stale paths, old test counts, or phase language, treat it as
-history. Refresh it before using it for implementation decisions.
+1. A crash record: the panic message written to a small partition set aside
+   for it, so the next boot can show what went wrong.
+2. An installer, and a live ISO that can run it.
+3. A driver for the laptop's Realtek wired network card, DHCP on every network
+   card, and an SSH client so git can reach another machine on the network.
+4. Measuring the CPU's real speed during a build, and turning on frequency
+   scaling if it runs slow.
+
+## SlopOS as a development machine
+
+**What it is for:** making SlopOS a place where SlopOS is developed.
+(`plans/self-hosting.md`)
+
+**Where it stands:** the loop works in QEMU. The guest pulls commits over git,
+builds the whole system, installs it into a boot slot, and pushes commits back
+([Development machine](/docs/self-hosting/development-machine)). Next is the
+same loop on real hardware, which is the plan above. After that, possibly, a
+compiler that rebuilds itself inside SlopOS; that phase is not committed to,
+because it needs tens of gigabytes and hours of CPU per build.
+
+## Faster continuous integration
+
+**What it is for:** keeping the time from a push to a test result short.
+(`plans/ci-latency.md`)
+
+**Where it stands:** the CI jobs are split so that each finishes in about the
+time the boot tests take. The remaining work is making the longest job's
+builds cacheable and cutting the setup every job repeats.
+
+## USB
+
+**What it is for:** USB keyboards and mice, and later USB storage and network
+adapters, through a driver for the USB host controller (xHCI).
+(`plans/usb-xhci.md`)
+
+**Where it stands:** not started. It is a large piece of work, and it would
+plug into the existing driver framework as one more kind of bus
+([Drivers](/docs/architecture/drivers)).
+
+## Plans that have landed
+
+These plans are finished and deleted. What they built is described here:
+
+| Former plan | Where to read about it |
+|-------------|------------------------|
+| Driver framework | [Drivers](/docs/architecture/drivers) |
+| Persistent storage | [Disks](/docs/architecture/storage), [Filesystem](/docs/architecture/filesystem), [Crash recovery](/docs/architecture/crash-recovery) |
+| Permissions | [Permissions](/docs/architecture/authority) |
+
+The source tree also keeps working notes on open bugs (`plans/KNOWN_ISSUES.md`).
+The ones that affect you are on [Known limitations](/docs/status/known-limitations).
+Plans can mention file paths that have since moved, so check a path against
+the tree before relying on it.

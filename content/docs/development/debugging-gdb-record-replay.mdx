@@ -1,68 +1,235 @@
 ---
-title: "Debugging With GDB And Replay"
-description: "Live and deterministic kernel debugging workflows"
+title: "Debugging with GDB"
+description: "Attach GDB to a running SlopOS kernel, stop it at boot, and record a run so you can step backwards to the cause of a crash."
 ---
 
-SlopOS has two GDB workflows: live forward debugging for KVM/HVF timing and
-record/replay for deterministic single-CPU failures.
+By the end of this guide you will be able to point GDB at the SlopOS kernel
+running in QEMU: attach to a machine that is already running, stop the kernel
+before it starts, use the helper commands SlopOS adds to GDB, and record a run
+so that you can play it back and go backwards from a crash to the instruction
+that caused it.
 
-## Live Forward
+QEMU provides the debugger connection, so it works whatever state the kernel
+is in: QEMU pauses the virtual CPUs and lets GDB read their registers and
+memory. QEMU's [GDB documentation](https://www.qemu.org/docs/master/system/gdb.html)
+covers the mechanism. Before reaching for a debugger, check
+[Diagnosing the kernel](/docs/development/diagnostics): the kernel's own
+reports often show what it is doing without one.
 
-Use this when the bug needs SMP or production timing.
+## What you need first
+
+- `gdb` on your machine (any recent version with Python support), and
+  `socat` for the QEMU monitor.
+- A build that boots: `just boot` should work. See
+  [Quickstart](/docs/getting-started/quickstart).
+
+## Attach to a running kernel
+
+Use this when a machine is hung or misbehaving and you want to look at it
+without disturbing its timing. In one terminal, boot the development machine
+with the debug connection turned on:
 
 ```bash
 just boot-debug
+```
+
+This is `just boot` with a few changes: it uses the debug build of the
+kernel, skips the Wheel of Fate, and has QEMU listen for GDB on TCP port 1234
+and for monitor commands on the socket `/tmp/slopos-monitor.sock`. (Setting
+`QEMU_DEBUG=1` on any other boot recipe turns on the same two.)
+
+When something goes wrong, use a second terminal. To get a stack trace from
+every CPU and let the machine carry on:
+
+```bash
 just debug-bt
+```
+
+This attaches, runs `info threads` and `thread apply all bt 30` (in QEMU,
+each virtual CPU is a GDB thread), detaches, and saves the output to
+`builddir/freeze-gdb.log`. It is the first thing to try on a hang.
+
+To explore interactively:
+
+```bash
 just debug-gdb
+```
+
+GDB loads the kernel's symbols from `builddir/kernel-dev.elf`, connects,
+prints `Remote debugging using :1234`, and stops all CPUs where they were.
+From there `bt`, `info threads`, `thread N`, `frame N` and `print` work as
+they do on any program. `continue` lets the machine run again; Ctrl-C stops
+it. Ctrl-D quits GDB.
+
+The QEMU monitor shows the machine from QEMU's side, which helps when the
+kernel is too broken for GDB's view to make sense:
+
+```bash
 just debug-monitor
 ```
 
-`boot-debug` enables:
+Useful commands there are `info cpus`, `cpu N` to pick a CPU, and
+`info registers`. `sendkey` presses keys on the virtual keyboard, which is a
+way to use the kernel's diagnostic console. QEMU's
+[monitor documentation](https://www.qemu.org/docs/master/system/monitor.html)
+lists the rest.
 
-| Endpoint | Location |
-|----------|----------|
-| GDB stub | TCP `:1234` |
-| QEMU monitor | `/tmp/slopos-monitor.sock` |
+## Stop the kernel before it starts
 
-`debug-bt` attaches to the running kernel and writes all-CPU backtraces to
-`builddir/freeze-gdb.log`.
+To break on something early in boot, QEMU has to start with the CPUs paused,
+so that GDB can set breakpoints before any kernel code runs.
+`scripts/qemu_dbg.sh` does that, using the same CPUs and accelerator as a
+normal run (four CPUs, KVM where available). Build the disk image and a live
+image first, then start it:
 
-## Record/Replay
+```bash
+just build && just iso
+scripts/qemu_dbg.sh builddir/slop.iso fs/assets/ext2.img
+```
 
-Use this when the failure reproduces under TCG, single CPU, and instruction-count
-time.
+QEMU waits for GDB on port 1234 (set `GDB_PORT` to change it), and the
+kernel's serial output goes to `builddir/dbg-serial.log`. Then attach and set
+a breakpoint:
+
+```bash
+gdb -q builddir/kernel-dev.elf -ex 'target remote :1234'
+```
+
+```
+(gdb) hbreak slopos_boot::early_init::boot_run_step
+(gdb) continue
+```
+
+Use `hbreak` (a hardware breakpoint) rather than `break` this early. A
+normal breakpoint works by writing an instruction into the kernel's code,
+which isn't possible before the kernel's memory is set up and may be
+write-protected afterwards; a hardware breakpoint is a CPU register and has
+no such problem. If GDB can't tell which of several Rust functions with the
+same name you mean, break on a file and line instead
+(`hbreak exception.rs:43`).
+
+`scripts/gdb/inspect_fault.gdb` is a ready-made session for one common case,
+a program killed by a fault you don't understand. It runs to the first
+program fault and prints the fault, the bytes actually in memory at the
+faulting instruction next to the bytes the program file says should be
+there, and how the faulting address is mapped:
+
+```bash
+gdb -q -batch -x scripts/gdb/inspect_fault.gdb
+```
+
+## The helper commands
+
+SlopOS adds three commands to GDB. The record-and-replay session below loads
+all of them for you. `v2p` and `wpva` live in `scripts/gdb/slopos_mmu.py`,
+which you can load into any session with `source scripts/gdb/slopos_mmu.py`;
+`udinfo` is defined in `scripts/gdb/slopos.gdb`.
+
+| Command | What it does |
+|---------|--------------|
+| `udinfo` | Prints the faulting context: the instruction address, the stack pointer, which address space was active, whether the CPU was running a program or the kernel, and a backtrace |
+| `v2p <cr3> <va>` | Translates an address in a program into the physical memory address behind it, printing each step of the lookup |
+| `wpva <cr3> <va>` | Sets a watchpoint on the physical memory behind an address, so any write to it stops the machine, whichever program or kernel path does it |
+
+The `<cr3>` argument names the address space, because the same address
+means different memory in different programs. In a fault you are usually
+asking about the current one, so pass `$cr3`.
+
+`wpva` exists because an ordinary watchpoint watches an address, and in a
+kernel the same memory can be reached through several addresses. Watching
+the physical memory catches a stray write from anywhere. It leaves GDB in
+physical-memory mode, and it tells you so; run
+`maintenance packet Qqemu.PhyMemMode:0` before going back to symbols and
+stack traces.
+
+## Go backwards from a crash
+
+Some bugs only make sense backwards: memory is found corrupted, and the
+question is who wrote it. QEMU can record everything that happens in a run
+and replay it identically, and GDB can then run the replay in reverse.
+QEMU's [record/replay documentation](https://www.qemu.org/docs/master/devel/replay.html)
+and GDB's on [reverse execution](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Reverse-Execution.html)
+describe the machinery.
+
+**1. Record a test run.**
 
 ```bash
 just rr-record
-just rr-replay
-just rr-gdb WATCH=0x4090fe
 ```
 
-The recording lands at `builddir/replay.bin`. `rr-gdb` runs to the fault, sets a
-physical write watchpoint for the watched virtual address, and reverse-continues
-to the writer.
+This builds the test image and records a full test run to
+`builddir/replay.bin`. Recording only works with one CPU and QEMU's software
+CPU emulation, so it is slow, and it can't capture a bug that needs two CPUs
+running at once.
 
-## GDB Helpers
+**2. Replay it under GDB.**
 
-The debugging recipes load SlopOS-specific GDB helpers for common kernel work:
+```bash
+just rr-replay
+```
 
-| Helper | Use |
-|--------|-----|
-| `v2p <cr3> <va>` | Translate a guest virtual address through page tables |
-| `wpva <cr3> <va>` | Set a physical write watchpoint for a guest virtual address |
-| fault inspection | Stop at the fatal user fault and dump relevant state |
-| reverse watchpoint | Replay to the writer that corrupted a watched address |
+GDB loads the test kernel's symbols and one test program's symbols, the
+helper commands, and breakpoints where a program is killed by a fault and
+where the kernel panics. It prints:
 
-## Rust GDB Notes
+```
+[slopos] connected. 'continue' to run to the fault, then 'udinfo'.
+[slopos] then: v2p $cr3 <corrupted-VA> ; wpva $cr3 <corrupted-VA> ; reverse-continue
+```
 
-- GDB defaults to Rust expression syntax: use `(*frame).rip`.
-- Use hardware breakpoints for kernel symbols early in boot.
-- For ambiguous `pub(crate)` Rust symbols, break by file and line.
-- Always compare guest memory bytes at fault RIP with the ELF expectation when
-  diagnosing invalid-instruction faults.
+A typical session: `continue` to the fault, `udinfo` to see where it
+happened, `wpva $cr3 <address>` on the memory that holds the wrong value, and
+`reverse-continue` to run backwards until something writes it. GDB stops on
+the writing instruction, and `bt` shows who did it.
 
-## Limits
+All test programs are built to load at the same address, so GDB can only
+hold one program's symbols at a time. Choose it with `SLOPOS_USER_ELF`, for
+example `SLOPOS_USER_ELF=builddir/keymap_test.elf just rr-replay`; the
+default is `builddir/io_capture_test.elf`.
 
-Record/replay uses TCG and `smp=1`, so it cannot prove SMP race behavior. If the
-workload deadlocks or the failure disappears under instruction-counted time, use
-live forward debugging instead.
+**3. Or let a script do it.**
+
+```bash
+just rr-gdb 0x4090fe
+```
+
+This replays to the fault without you, prints the fault, then (given an
+address) watches it and runs backwards to its writer. The address goes after
+the recipe name, not as `WATCH=`. The output has two sections:
+
+```
+========= FAULT REACHED =========
+handler PC=… CR3=… (victim address space)
+fault frame: vec=… err=…
+...
+========= CORRUPTOR =========
+writer PC=… CS=… CR3=…
+writer privilege: KERNEL (CPL0)
+writer CR3 != victim CR3 (FOREIGN address space — frame aliasing/UAF suspect)
+```
+
+The last two lines are the answer: whether the kernel or a program made the
+write, and whether it came from the same address space as the victim. A
+write from a different address space usually means a page of memory was
+given to two owners at once. The whole session is saved to
+`builddir/rr-session.log`. Good addresses to try first are the faulting
+instruction address (if the code itself was overwritten) or a stack slot near
+the stack pointer.
+
+## What usually goes wrong
+
+- **`just debug-bt` says the kernel file is missing.** It doesn't build
+  anything; it attaches to a machine started with `just boot-debug`.
+- **Breakpoints early in boot never fire.** Use `hbreak`, not `break`.
+- **GDB prints Rust expressions oddly.** GDB uses Rust syntax for a Rust
+  program: write `(*frame).rip`, not `frame->rip`.
+- **The replay no longer fails.** The bug depends on timing that recording
+  changes, or needs more than one CPU. Debug it live instead, starting with
+  `just debug-bt` and the diagnostic console.
+- **Some tests are missing from a recorded run.** Two tests compare one
+  emulated clock with another, which recording decouples, so `rr-record`
+  skips them.
+- **An instruction faults that the program file says is fine.** Compare the
+  bytes in memory with the program file, which `inspect_fault.gdb` does for
+  you: if they differ, something overwrote the program's code, and the replay
+  can find out what.

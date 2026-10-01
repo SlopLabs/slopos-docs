@@ -1,60 +1,220 @@
 ---
-title: "OSTD Trusted Core"
-description: "What slopos-ostd owns"
+title: "The trusted core"
+description: "What the one crate allowed to use unsafe Rust contains, and how its API turns safety rules into types."
 ---
 
-`slopos-ostd` is the Operating System Trusted Domain. Every runtime-unsafe
-kernel mechanism belongs here or behind its safe APIs.
+If you write kernel code for SlopOS outside the trusted core, you never write
+`unsafe` Rust. Everything that needs it underneath (talking to the CPU,
+managing memory, switching between tasks, reading memory that belongs to a
+user program) is available as safe functions and types in one crate,
+`slopos-ostd`, usually called OSTD. Where a safety rule applies, such as
+"interrupts must be off", the API is shaped so that breaking the rule is a
+compile error. This page is the tour of that toolbox: what it contains, the
+few patterns it uses to turn rules into types, and the habits that follow for
+code outside it.
 
-## Main Responsibilities
+The idea and the name come from
+[Asterinas](https://asterinas.github.io/book/ostd/index.html), whose trusted
+crate is also called OSTD. [The framekernel](/docs/verification/framekernel)
+explains why the kernel is split this way.
 
-| Area | Examples |
-|------|----------|
-| CPU and arch | MSRs, CR3, CPUID, xsave, TSC, APIC MSR helpers |
-| GDT/TSS/syscall data | Per-CPU descriptor tables, RSP0, syscall scratch slots |
-| IRQ and exception substrate | IDT data, interrupt frames, raw handlers, IST-sensitive paths |
-| Memory | frames, user frames, VM cursors, heap, DMA, I/O memory |
-| Sync | spin locks, wait queues, event bus, intrusive lists, RCU-like helpers |
-| Tasks | task handles, scheduler registry, kernel task internals |
-| User access | user pointers, user-copy helpers, user contexts |
-| FFI and link sections | Edition 2024 unsafe attribute wrappers, extern declarations |
-| Test support | Hermetic state, architecture probes, Miri-facing tests |
+## What OSTD contains
 
-## Safe API Contract
+OSTD holds the mechanisms, and the safe crates make the decisions. OSTD knows
+how to map a page of memory into a program's view, but which page to map is
+up to the memory manager, a safe crate. Roughly:
 
-Higher kernel crates call OSTD helpers instead of spelling raw unsafe blocks.
-That indirection is the whole design, not a workaround: the unsafe operation
-lives in the trusted crate, and a service crate reaches it through an API the
-type system checks.
+| Area | What OSTD provides |
+|---|---|
+| CPU | Control registers, CPU feature detection, the timestamp counter, the per-CPU data each processor keeps, and the few assembly routines that enter and leave the kernel |
+| Interrupts | The table of interrupt handlers and the code that saves a program's registers when an interrupt arrives |
+| Memory | Physical pages and who owns them, the page tables that give each program its view of memory, the kernel heap, and memory shared with devices |
+| Synchronisation | Spin locks, wait queues, intrusive linked lists, read-copy-update, per-CPU slots |
+| Tasks | The task object, the reference that owns it, putting tasks on and off queues, the context switch, saving floating-point state |
+| Processes and permissions | The process object, resource accounts, the permission masks described in [Permissions](/docs/architecture/authority) |
+| User memory | Pointers into a user program's memory, and copying to and from it |
+| Linking | The macros that declare entry points called from assembly and tables that the linker assembles (see [Unsafe code and FFI](/docs/development/unsafe-ffi-boundaries)) |
+| Testing | Stand-ins for hardware so OSTD's own tests run on a normal computer and under [Miri](/docs/verification/kernmiri) |
 
-The property it rests on is that those APIs are **sound**: no possible
-safe caller can cause undefined behaviour. Folding `unsafe` behind a wrapper
-that holds is the framekernel working. Folding it behind a wrapper that
-merely *documents* what the caller must not do is not: the fault then lands
-in OSTD's code while the cause is an ordinary safe call somewhere else, which
-is the debugging cost of a trusted-core bug without the containment the
-trusted core is supposed to buy. The gate that ratchets OSTD's remaining
-`# Safety`-bearing safe functions exists to keep that set shrinking.
+Every one of these needs `unsafe` somewhere, and every one is wrapped so that
+the code calling it doesn't.
 
-Typical examples:
+## Why OSTD bans written safety conditions
 
-- Use `KBox`, `KVec`, `KArc`, and `PinBox` instead of direct `alloc`.
-- Use `UserPtr`, `UserSlice`, and user-copy wrappers at syscall boundaries.
-- Use OSTD frame and VM cursor APIs instead of manual page-table mutation.
-- Use OSTD intrusive-list roles instead of open-coded raw task links.
-- Use OSTD FFI macros for required `extern "C"` symbols, and `registry_entry!`
-  for linker-section items. OSTD owns the section labels, so a kernel crate
-  names a registry rather than a string.
-- Use `#[derive(SlotFields)]` and the `write_field!` family to initialise a
-  large struct in place; the field tokens are built from `offset_of!` and cost
-  no unsafe at the call site.
+A tempting way to wrap an `unsafe` operation is to write a safe function and a
+comment: "only call this with interrupts disabled". The function compiles,
+the caller doesn't need `unsafe`, and the rule is written down.
 
-## Audited-Only Surface
+But if a caller breaks the rule, memory gets corrupted inside OSTD while the
+mistake sits in a safe crate that nobody thought to audit, which defeats the
+point of keeping `unsafe` in one place ([The framekernel](/docs/verification/framekernel)
+calls the property OSTD needs *soundness*). So no safe function in OSTD may
+carry a `# Safety` section in its documentation, and a check fails the build
+if one appears. Every condition a caller has to meet must be something the
+compiler checks.
 
-Not every OSTD module is proved. The verified set focuses on memory-safety
-critical logic; the remaining unsafe modules are audited, require safety notes,
-and are covered by Miri where feasible.
+## How safety rules become types
 
-The SlopRing volatile `UFrame` accessors are a good example: their byte-copy and
-acquire/release behavior is small and audited, but the weak-memory protocol is
-not modeled by Verus.
+That leaves the question of how to say "only call this when ..." in a way the
+compiler understands. OSTD uses a handful of patterns over and over, all of
+them plain Rust with nothing kernel-specific about them.
+
+**A token that proves a condition holds.** Some operations are only correct
+while something is true, such as interrupts being off. OSTD gives out a token
+(a zero-sized value, so it costs nothing at run time) only while the condition
+holds, and the operation takes the token as an argument. The interrupt token
+can only be obtained inside a helper that turns interrupts off for the
+duration of a closure, and it can't be sent to another CPU, because interrupt
+state is per CPU. A similar token proves that code is running on the first
+CPU during boot, before the others start.
+
+```rust
+// Safe code, in the real-time clock driver:
+IrqDisabled::with(|irq| cmos.read(irq, reg))
+```
+
+**A value that was checked when it was built.** Writing a bad value to some
+CPU registers makes the CPU raise a fault. Instead of taking a plain integer, OSTD's
+function takes a type whose constructor rejects values this CPU doesn't
+support, so every value that exists is a good one.
+
+**A handle that can be used once.** Some memory is handed out at boot to last
+for the whole run. Giving out two mutable references to it would break Rust's
+rules, so OSTD hands out a handle that is consumed when it is turned into the
+reference. You can't use it twice because you no longer have it.
+
+**A reference that owns what it points at.** Tasks are shared between run
+queues, wait queues and the task table. OSTD's reference-counted pointer
+(`KArc`) means a task can't be freed while anything still refers to it, and
+moving a task between queues goes through functions that keep the count
+right. [Task lifetimes](/docs/architecture/task-ownership) covers the rules.
+
+**A trait nobody else can implement.** When only a few specific types are
+acceptable, OSTD uses a sealed trait: one that outside crates can name but not
+implement, so the list of types is closed.
+
+**A borrow checked at run time.** Per-CPU data is reached through a slot that
+counts its borrows, like a `RefCell`. A second overlapping borrow gets
+`None` back instead of an aliasing reference.
+
+**A slice instead of a pointer and a length.** Copying to or from user memory
+takes a slice, so the length and the buffer can't disagree.
+
+What is left is the set of items that keep an obligation the type system
+can't track: `pub unsafe fn` and `pub unsafe trait`. Code outside OSTD can't
+call or implement them, apart from a short named list of traits; their counts
+are on [Safety gates](/docs/verification/tcb-discipline#where-unsafe-may-appear).
+
+## What kernel code outside OSTD should use
+
+When you write a safe kernel crate, a few habits follow from the above:
+
+- **Allocate with OSTD's containers** (`KBox`, `KVec`, `KArc`, `KVecDeque`,
+  `KBTreeMap`, `PinBox`), not with `alloc`. A check rejects kernel crates that
+  depend on `alloc` directly.
+- **Reach user memory through user pointers and slices** (`UserPtr`,
+  `UserSlice`) and the copy helpers, never by casting an address.
+- **Change page tables only through a cursor** on the memory space
+  (`VmSpace`), which keeps the tables consistent.
+- **Hold tasks by their owning reference** and move them onto queues only
+  through OSTD's placement functions.
+- **Declare entry points, linker symbols and registered items** with OSTD's
+  macros. [Unsafe code and FFI](/docs/development/unsafe-ffi-boundaries)
+  shows how.
+
+## Building large values in place
+
+Kernel stacks are small and fixed in size, and the build fails if any function
+needs more than 2 KiB of stack. That rules out the usual Rust way of building
+a large struct, `KBox::new(Big { .. })`, because the `Big` value is assembled
+on the stack before it is moved to the heap.
+
+So OSTD lets you describe how to build a value and then builds it directly in
+its heap allocation. The description is an *initialiser*, a value of a type
+that implements the trait `Init<T, E>`: "here is how to write a valid `T`
+into a slot, or fail with `E`". You hand it to `KBox::try_init` (or `KArc` or
+`PinBox`), which allocates the slot and runs it. Here is the block-device
+driver describing its request table, in safe code:
+
+```rust
+#[derive(slopos_ostd::SlotFields)]
+struct EngineState {
+    queue: Option<KBox<dyn QueueOps>>,
+    slots: [RequestSlot; MAX_SLOTS],
+    quarantine: [Option<Quarantined>; QUARANTINE_SLOTS],
+}
+
+impl EngineState {
+    fn init_empty() -> impl Init<Self, AllocError> {
+        init_struct_with(|slot: SlotPtr<Self>| -> Result<Initialised<Self>, AllocError> {
+            write_field!(slot, queue, None);
+            write_array_field!(slot, slots, MAX_SLOTS, |_| RequestSlot::EMPTY);
+            write_array_field!(slot, quarantine, QUARANTINE_SLOTS, |_| None);
+            Ok(slot.finish())
+        })
+    }
+}
+```
+
+Three things keep this safe:
+
+- The `SlotFields` derive generates the offsets of each field, so the
+  `write_field!` macros write to the right place without the caller touching a
+  raw pointer. Naming a field the struct doesn't have is a compile error.
+- The closure has to return an `Initialised<T>`, and only `slot.finish()` can
+  create one. You can't report success without going through the slot.
+- In debug builds, `finish` checks that every field was written.
+
+For types where all-zero bytes are a valid value, the `Zeroable` trait and the
+`zeroed` constructors skip the initialiser entirely.
+
+This is a small in-house version of the in-place construction that
+Rust-for-Linux does with its `pin-init` crate, and OSTD depends on neither
+that crate nor `pinned-init`. It leaves out `Pin` support, because the kernel
+has no self-referential types and no `async`.
+
+## How we know it works
+
+The trusted core is the part that has to be right, so it gets three kinds of
+checking on top of ordinary tests:
+
+- Every `unsafe` block carries a `// SAFETY:` comment naming the rule it relies
+  on, and the code is reviewed against those rules.
+- OSTD's tests run under [Miri](/docs/verification/kernmiri), which reports
+  undefined behaviour the moment it happens.
+- The parts where a bug would corrupt memory, such as page reference counts,
+  the heap's slab allocator and page-table edits, have machine-checked
+  [proofs](/docs/verification/verus-status) of their key rules.
+
+The rest of OSTD (interrupt handling, locks, device access, user copies) is
+reviewed and tested under Miri but not proved.
+Some of it can't be proved with the current tools at all, because the proof
+tool has no model of how different CPUs see each other's memory writes.
+
+## Further reading
+
+- [*OSTD*](https://asterinas.github.io/book/ostd/index.html) in the Asterinas
+  book. The original trusted core, with its own account of what belongs in it.
+- [*The Scope of Unsafe*](https://www.ralfj.de/blog/2016/01/09/the-scope-of-unsafe.html)
+  by Ralf Jung. Why a safe function's soundness depends on the whole module
+  around it, which is the reasoning behind the "no prose contracts" rule.
+- [*Working with Unsafe*](https://doc.rust-lang.org/nomicon/working-with-unsafe.html)
+  in the Rustonomicon. The same point from the Rust project's own guide to
+  `unsafe`, with a worked example.
+- [`MaybeUninit`](https://doc.rust-lang.org/std/mem/union.MaybeUninit.html) in
+  the standard library documentation. The standard tool for memory that isn't
+  initialised yet, which OSTD's in-place construction builds on.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `slopos-ostd/src/` | The trusted core, one module per area in the table above |
+| `slopos-ostd/src/cpu/x86_64/interrupts.rs` | The interrupts-off token |
+| `slopos-ostd/src/mm/heap.rs` | The kernel's containers and their `try_init` constructors |
+| `slopos-ostd/src/mm/init.rs`, `slopos-ostd-derive/` | In-place construction and the `SlotFields` derive |
+| `slopos-ostd/src/user/ptr.rs` | User pointers and slices |
+| `scripts/check_safe_contract_surface.sh` | The check that keeps prose contracts out of safe functions |
+
+[Safety gates](/docs/verification/tcb-discipline) lists every check that
+applies to OSTD.

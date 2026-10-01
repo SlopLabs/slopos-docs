@@ -1,54 +1,270 @@
 ---
-title: "Privilege Separation"
-description: "Ring 0/Ring 3 isolation in SlopOS"
+title: "User mode and kernel mode"
+description: "How SlopOS uses the CPU's user and kernel modes, and how control passes between a program and the kernel."
 ---
 
-SlopOS runs the kernel in Ring 0 and user tasks in Ring 3. The implementation is
-Rust-first and centered on OSTD CPU, task, and user-context primitives.
+import { ModeSwitch } from '@/components/diagrams/kernel-entry';
 
-## Components
+Programs on SlopOS run in the CPU's user mode and the kernel in kernel mode,
+as on Linux. What is specific to SlopOS is where the boundary code lives and
+how it is shaped: every entry into the kernel and every exit from it goes
+through the trusted core, the kernel always returns to a program with the
+same instruction, and it touches a program's memory only through one routine
+that checks the program owns that memory.
 
-| Component | Role |
-|-----------|------|
-| Per-CPU GDT and TSS | Define kernel/user selectors and the Ring 3 to Ring 0 stack transition |
-| Syscall MSRs | Configure the normal x86-64 `SYSCALL` entry path |
-| User context | Holds the register and FPU state restored when a task returns to user mode |
-| Scheduler task state | Tracks task lifecycle, kernel stacks, user stacks, and SafeStack state |
-| Exception and IRQ entry | Handles traps from both kernel and user mode with appropriate stacks |
-| User memory access | Validates user pointers and copies data across privilege boundaries |
+OSTEP calls the general technique *limited direct execution*: run the program
+directly on the CPU, after setting up the hardware to limit what it can do.
+The next two sections recap how x86-64 enforces the limits and how control
+crosses them; the [SlopOS specifics](#how-slopos-crosses-the-boundary) come
+after, including where it differs from Linux.
 
-## Ring 3 entry
+## How the CPU enforces the limits
 
-User tasks carry a user context containing general registers, user RIP/RSP, and
-FPU state references. The scheduler installs per-task kernel stack state, updates
-per-CPU syscall scratch data, and returns through the OSTD user-return path.
-User code resumes with user selectors and user page tables.
+### Two privilege levels
 
-The TSS/RSP0 path remains important because interrupts and traps from Ring 3 need
-a known kernel stack. OSTD owns the descriptor and MSR details so higher kernel
-subsystems interact with safe abstractions.
+An x86 CPU always runs at a *privilege level*. The hardware offers four,
+numbered 0 to 3 and called *rings*, but SlopOS, like Linux and Windows, uses
+only two: ring 0 for the kernel (*kernel mode*) and ring 3 for programs (*user
+mode*). In user mode the CPU refuses the instructions that would let a
+program take over the machine: turning interrupts off, switching to a
+different set of memory mappings, talking to devices through I/O ports, or
+halting the CPU. Trying one causes a *fault*: the CPU stops the program at
+that instruction and runs a kernel handler instead.
 
-## Syscall entry
+### Each program sees only its own memory
 
-Normal SlopOS userland uses the x86-64 `SYSCALL` instruction. The entry
-trampoline snapshots the user register file into a user context, and the syscall
-layer routes to typed handlers.
+Programs don't use physical memory addresses. Every address a program uses
+goes through a *page table*, a structure the kernel builds for each process
+that maps the program's addresses, in chunks of 4 KiB called *pages*, to
+physical memory. A page that isn't in the table doesn't exist as far as the
+program is concerned, so a program has no way even to name another
+program's memory.
 
-A DPL=3 interrupt gate for vector `0x80` exists as a compatibility bridge. It
-converts the interrupt frame into the same user-context shape and calls the same
-dispatcher. It is not the normal fast path.
+Each entry in the table also carries permission bits: whether user mode may
+use the page at all, whether it may be written, and whether its contents may
+be run as code. The CPU checks them on every access. SlopOS maps the kernel
+into the top half of every process's address space, so that entering the
+kernel doesn't require switching tables, but marks all of it as kernel-only.
+A program that reads a kernel address gets a fault, the same as one that
+reads an address nothing is mapped at. [Memory](/docs/architecture/memory)
+explains how the kernel builds and changes these tables.
 
-## Isolation rules
+### Protecting the kernel from its own mistakes
 
-- Kernel-only mappings are not exposed through user page tables.
-- User pointers are represented as typed pointer or slice wrappers and validated
-  at syscall boundaries.
-- Process address spaces are mutated through VM-space cursor primitives.
-- Signals, fork, clone, exec, pidfd, signalfd, and SlopRing use the same task and
-  file-descriptor ownership model.
+Two further CPU features turn kernel bugs that would be exploitable into
+crashes. With SMEP (*supervisor mode execution prevention*) the CPU refuses
+to run code from a user page while in kernel mode, so a bug that sends the
+kernel to a program-supplied address can't run the program's code with
+kernel privileges. With SMAP (*supervisor mode access prevention*) the CPU
+refuses kernel reads and writes of user pages unless the kernel has opened
+an explicit window first, so a kernel bug can't read or write program memory
+by accident. SlopOS turns both on for every CPU that has them.
 
-## Verification boundary
+## How control passes between a program and the kernel
 
-Descriptor table installation, raw MSR access, naked assembly, user-copy
-machinery, intrusive task links, and low-level memory access are trusted OSTD
-responsibilities. Higher kernel crates should not introduce raw unsafe code.
+A program in user mode can't call into the kernel like a function, because
+then it could jump into the middle of the kernel, past whatever checks the
+kernel was about to make. So the CPU only lets control into the kernel at
+entry points the kernel registered at boot. There are three ways in:
+
+- **A system call.** The program asks for something on purpose, with the
+  `syscall` instruction. [System calls](/docs/architecture/syscalls) follows
+  one from start to finish.
+- **An interrupt.** A device needs attention, or the timer fires. The timer is
+  what guarantees the kernel gets the CPU back even from a program stuck in an
+  infinite loop: SlopOS sets it to fire 100 times a second, and each time the
+  scheduler can decide to run something else.
+- **A fault.** The program did something it isn't allowed to, or touched a
+  page the kernel hasn't filled in yet.
+
+In each case the CPU switches to kernel mode, switches to a stack that
+belongs to the kernel (the program's own stack can't be trusted), saves where
+the program was, and jumps to the entry point. When the kernel is done, it
+restores the program's registers and executes a return instruction that drops
+back to user mode and resumes the program exactly where it stopped. The
+program never notices it was interrupted, except that time passed.
+
+<ModeSwitch />
+
+### What happens when a program faults
+
+Not every fault is a mistake. The kernel often gives a program memory without
+filling it in yet, and fills in each page the first time the program touches
+it; it also shares pages between a parent and child process until one of
+them writes, and only then makes a private copy. Both start as a fault, the
+kernel resolves it, and the program carries on without knowing.
+
+A fault the kernel can't resolve, such as a read from an address with nothing
+mapped, becomes a signal, usually `SIGSEGV`. If the program has installed a
+handler for it, the kernel runs the handler; otherwise the program ends,
+with the signal as its exit status. Either way, the rest of the system is
+unaffected. [Processes and signals](/docs/architecture/processes) explains
+signals and how a program ends.
+
+## How SlopOS crosses the boundary
+
+The machinery that crosses between user mode and kernel mode is some of the
+most delicate code in any kernel: a mistake in it can hand a program the
+kernel's privileges. In SlopOS all of it lives in the trusted core (OSTD,
+described in [The trusted core](/docs/verification/ostd-trusted-core)): the
+CPU's descriptor tables, the entry and exit code, the switch between page
+tables, and the routine that copies program memory. The rest of the kernel
+reaches it only through safe Rust interfaces.
+
+**One way into user mode.** The kernel runs each program as a loop: enter user
+mode, wait for something to bring control back, deal with it, and enter user
+mode again. Only one function in the trusted core enters user mode, so
+there is one place that loads a program's registers and one place that makes
+sure nothing from the kernel leaks into them.
+
+**System calls come back to that loop.** The `syscall` instruction lands in a
+short piece of assembly in the trusted core. It saves the program's registers
+into the task's saved register record and returns to the loop, which runs the
+system call and then enters user mode again.
+
+**Interrupts and faults are handled where they land.** The trusted core's
+interrupt entry code saves the program's registers on the task's kernel stack
+and calls the kernel's handler. If the handler decides another task should
+run, the switch happens there, and the original task resumes later from the
+same point.
+
+**One way out.** SlopOS always returns to user mode with `IRETQ`, the
+instruction that returns from an interrupt, even after a system call. x86-64
+also offers a faster return made for system calls (`SYSRET`), which SlopOS
+doesn't use.
+
+**One way to touch program memory.** When the kernel needs to read a system
+call's arguments from program memory or write results back, it goes through
+the trusted core's copy routine. The routine checks that the whole range is
+in the program's half of the address space, then checks the program's page
+table to see that every page is present and accessible to the program (and
+writable, for a copy into it). Only then does it open the SMAP window, copy,
+and close it again; no other code in the kernel can open that window. If a
+page isn't filled in yet, because the program allocated memory but hasn't
+touched it, the kernel fills it in the way a fault would have and tries once
+more. If a fault interrupts the copy halfway, the routine stops, reports how
+far it got, and the copy is retried once. A buffer that still can't be
+copied makes the system call fail with `EFAULT`; it never crashes the kernel.
+
+**The legacy interface is closed.** Old 32-bit Linux programs make system
+calls with the `int 0x80` instruction. SlopOS doesn't support that; the
+instruction is answered with `ENOSYS` ("function not implemented") rather
+than killing the program.
+
+## Switching between programs cheaply
+
+Every switch from one process to another loads a different page table. The
+CPU caches recent address translations in a *TLB* (translation lookaside
+buffer), and loading a new table normally empties that cache, so the next
+program starts with every memory access slow until the cache refills.
+
+Where the CPU supports *process-context identifiers* (PCIDs), SlopOS tags each
+cached translation with the address space it belongs to, so switching tables
+doesn't have to empty the cache. Each CPU keeps 16 tags for programs (plus
+one for the kernel alone) and remembers which address space last held each
+one, so switching back to a recently run program reuses its cached
+translations. The kernel's own mappings are marked *global*, which keeps them
+in the cache across every switch. The scheme follows Linux's
+(`arch/x86/mm/tlb.c`). On CPUs without PCIDs, or with a known erratum that
+disables them, every switch empties the program part of the cache, which is
+slower but correct.
+
+## What SlopOS doesn't do
+
+**No kernel page-table isolation.** In 2018 the Meltdown flaw showed that on
+many Intel CPUs a program could read memory that is mapped but marked
+kernel-only, by exploiting speculative execution. Linux's defence, KPTI,
+gives each process a second page table with the kernel almost entirely
+removed while user code runs. SlopOS doesn't do this: the kernel stays mapped,
+kernel-only, in every process's table, so on a CPU with that flaw a program
+could read kernel memory. [Known limitations](/docs/status/known-limitations)
+lists this.
+
+## How it is tested
+
+Tests check the boundary from both sides. Kernel tests check the CPU's
+descriptor tables and the system call registers after boot, that a deep chain
+of traps from user mode can't overwrite the frames the kernel returns into,
+and that a user copy which faults partway through is retried. Host tests of the trusted
+core check that the copy routine refuses addresses outside the program's
+half, pages the program can't access and read-only pages. The invariant that
+user mappings can't reach kernel memory is one of the properties proved with
+Verus (see [Proofs](/docs/verification/verus-status)).
+
+## For contributors
+
+The rules any change to this boundary must keep:
+
+- **Only OSTD crosses.** Descriptor tables, MSR access, the naked entry and
+  exit assembly, CR3 writes, user copies and task switching belong to
+  `slopos-ostd`. Every other kernel crate is `#![forbid(unsafe_code)]`, and
+  [Safety gates](/docs/verification/tcb-discipline) lists the checks that keep
+  it that way.
+- **`UserMode::execute` is the only way into ring 3.** It returns a
+  `ReturnReason` read from the task's own `UserContext`, never from a per-CPU
+  slot, so a preemption or migration after entry can't mix up two tasks.
+- **The `SYSCALL` trampoline (`__ostd_user_return`) never pushes onto the
+  kernel stack.** The top of that stack is where the next interrupt's `IRETQ`
+  frame goes, so user state is spilled through per-CPU scratch slots instead.
+  The kernel's user loop handles only `ReturnReason::Syscall`; interrupts and
+  exceptions from ring 3 enter through the OSTD IDT stubs and return with
+  their own `IRETQ`.
+- **`SFMASK` clears** the interrupt, trap, direction, alignment-check, I/O
+  privilege and nested-task flags on `SYSCALL`, and the trampoline re-enables
+  interrupts. `STAR` follows the AMD64 selector order, with user data before
+  user code in the GDT.
+- **Every context switch** points `TSS.RSP0` and the per-CPU `SYSCALL` stack
+  at the incoming task's kernel stack, so no entry can land on another task's
+  stack.
+- **IST stacks.** Double faults, stack faults and general-protection faults
+  run on per-CPU IST stacks with guard pages, as do the keyboard and mouse
+  interrupts. The NMI deliberately has none: any `IRETQ` unblocks NMIs, and a
+  nested NMI would reset to the top of the same stack. The page fault has none
+  so that a user fault can block and push a signal frame. The kernel is also
+  built with SafeStack, which keeps address-taken locals on a separate stack.
+- **User copies return values, not references.** `copy_from_user::<T>`
+  returns `T` by value, so a user pointer never becomes a kernel reference,
+  and system call arguments that name user memory arrive as typed wrappers
+  (`UserPtr`, `UserSlice`, `UserPath`). No public API exposes `STAC` or
+  `CLAC`; the only window is between `__ostd_usercopy_start` and
+  `__ostd_usercopy_end`, which the page-fault handler recognises.
+- **Address spaces.** Every process table shares the kernel half (PML4
+  entries 256 to 511) with the kernel master table, supervisor-only and
+  global. The user half is changed only through VM-space cursor operations.
+  PCID 0 is kernel-only loads; PCIDs 1 to 16 are per-CPU slots. `INVPCID` is
+  used where the CPU has it. The dual-table KPTI scaffolding in
+  `mm/src/mmu/kpti.rs` and `mm/src/mmu/trampoline.s` is not linked in.
+
+## Further reading
+
+- [*Mechanism: Limited Direct Execution*](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-mechanisms.pdf),
+  chapter 6 of *Operating Systems: Three Easy Pieces* by Remzi and Andrea
+  Arpaci-Dusseau. Start here. It builds the whole idea from the problem up:
+  user and kernel mode, traps, the trap table, and the timer interrupt.
+- [*The Abstraction: Address Spaces*](https://pages.cs.wisc.edu/~remzi/OSTEP/vm-intro.pdf) and
+  [*Paging: Faster Translations (TLBs)*](https://pages.cs.wisc.edu/~remzi/OSTEP/vm-tlbs.pdf),
+  chapters 13 and 19 of the same book. Why each program gets its own view of
+  memory, and why switching between those views is expensive, which is what
+  PCIDs fix.
+- [*Supervisor mode access prevention*](https://lwn.net/Articles/517475/),
+  LWN (2012). What SMAP is for and how Linux opens and closes the window
+  around its own user copies.
+- [*The current state of kernel page-table isolation*](https://lwn.net/Articles/741878/),
+  LWN (2017). How KPTI works and what it costs, written as Linux adopted it;
+  the background to the one thing SlopOS doesn't do.
+- [*Kernel entries*](https://docs.kernel.org/arch/x86/entry_64.html), from the
+  Linux kernel documentation. A short, dense list of every way into the Linux
+  kernel on x86-64, for comparison with the three described here.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `slopos-ostd/src/user/mode.rs`, `slopos-ostd/src/user/asm/user_return.s` | Entering user mode and the `SYSCALL` return trampoline |
+| `slopos-ostd/src/irq/asm/handlers.s`, `slopos-ostd/src/irq/idt.rs` | Interrupt and exception entry |
+| `slopos-ostd/src/user/copy.rs` | The user-memory copy routine |
+| `slopos-ostd/src/cpu/x86_64/security.rs` | Turning on SMEP, SMAP and global pages |
+| `core/src/syscall/user_loop.rs` | The loop that runs each user task |
+| `boot/src/gdt.rs`, `boot/src/ist_stacks.rs` | System call registers and IST stacks |
+| `mm/src/mmu/asid.rs` | PCID slots |
+| `boot/src/exception.rs` | User faults becoming signals |

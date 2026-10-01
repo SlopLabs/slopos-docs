@@ -1,43 +1,196 @@
 ---
 title: "Drivers"
-description: "Platform and device driver architecture"
+description: "How SlopOS finds the hardware in a machine, picks a driver for each device, and what drivers it has."
 ---
 
-SlopOS targets QEMU `q35` first and expects modern interrupt delivery.
+SlopOS runs on the devices QEMU emulates and on one real machine, an Intel
+laptop: their disks, displays, keyboards, touchpad and (under QEMU) network
+card. At boot the kernel lists every device the machine reports and pairs
+each one with the part of the kernel that knows how to operate it (a
+*driver*). Once paired, a driver owns its device until shutdown. Drivers are
+written in safe Rust, so they can't touch memory or hardware except through
+the handles the [trusted core](/docs/verification/ostd-trusted-core) gives
+them. What SlopOS doesn't have yet is USB, so anything you'd plug into a USB
+port won't work.
 
-## Platform baseline
+The model is the one Linux uses: buses enumerate devices, drivers declare
+which devices they match, and a generic matching step pairs them. Resource
+cleanup on failure follows Linux's managed device resources (*devres*).
 
-| Feature | Role |
-|---------|------|
-| ACPI tables | Discover CPUs, interrupt controllers, HPET, and PCIe configuration |
-| HPET | High-precision reference clock and time source |
-| LAPIC | Per-CPU interrupt controller, timer, and IPIs |
-| IOAPIC | Platform interrupt routing |
-| MSI/MSI-X | Preferred PCI device interrupt delivery |
-| PCIe ECAM | PCI configuration access |
+## How the kernel finds devices
 
-## Timer model
+A program can't ask "what hardware is there?", and neither can the kernel
+without help. It learns about devices in two ways.
 
-HPET plus LAPIC timer are the primary timing stack:
+**PCI Express** is the bus most devices in a PC sit on: disks, graphics,
+network cards. Every PCI device carries a small, standard header that says
+who made it (a *vendor ID*), which model it is (a *device ID*) and what kind
+of device it is (a *class*, such as "mass storage, NVMe"). The kernel reads
+these headers for every slot on the bus, so it gets a complete list of PCI
+devices with no guessing.
 
-- HPET is used for high-precision time and timer calibration.
-- LAPIC timer provides periodic scheduler ticks and one-shot wake deadlines.
-- PIT is only a legacy polled fallback for calibration. It is not initialized as
-  a periodic IRQ source and does not drive scheduling.
+**ACPI** covers everything else. Some devices, like the laptop's keyboard
+controller and touchpad, aren't on PCI and can't describe themselves. The
+firmware instead ships a description of the machine (the ACPI tables) that
+names each such device with a standard ID (`PNP0303` is "a PS/2 keyboard")
+and says which I/O ports and interrupt lines it uses. Part of that
+description is a small program the firmware expects the operating system to
+run. SlopOS runs only the parts it needs to find and configure its devices.
+If it can't make sense of a machine's description, it treats the device as
+absent and keeps booting.
 
-## Device families
+## How a driver is matched to a device
 
-| Family | Status |
-|--------|--------|
-| VirtIO block | Root and test disk images |
-| VirtIO net | Network device, RX/TX queues, interrupt handling, zero-copy hooks |
-| PCI | Device discovery and capability parsing |
-| PS/2 input | Keyboard and mouse input |
-| Serial | Early and runtime logging |
-| TTY/PTY | Terminal line discipline, sessions, job control |
+Each driver declares, as data compiled into the kernel, what it can handle:
+"vendor 0x1af4, device 0x1042" (a virtio disk), or "any PCI device of class
+mass storage, subclass NVMe", or "ACPI ID `PNP0303`". The kernel collects
+these declarations from every driver at build time, so adding a driver
+doesn't mean editing a central list or the boot sequence.
 
-## Interrupt constraints
+At boot, after the buses have been listed, a single matching step runs over
+each bus:
 
-Legacy PIC code is not the supported interrupt path. VirtIO devices are attached
-with legacy mode disabled; device probe expects MSI-X or MSI. IOAPIC is required
-for platform interrupts that are not MSI/MSI-X.
+1. For each device, it finds the drivers whose declaration matches, ordered
+   by priority. A driver for one specific model can outrank a generic
+   driver for the whole class.
+2. It offers the device to the first candidate. The driver's *probe*
+   function talks to the device and decides.
+3. If the driver accepts, it owns the device and no other driver sees it. If
+   it declines or fails, the next candidate gets a turn.
+4. A driver that needs something that isn't ready yet can ask to be tried
+   again, once, after every other device has been offered.
+
+The same matching code serves both buses. Only the question "does this
+declaration match this device?" differs between PCI and ACPI.
+
+Once bound, a driver stays bound. SlopOS has no hot-plugging and no way to
+unbind a driver while running.
+
+## What a driver may do
+
+A driver needs a few things from the kernel: a window onto the device's
+registers, memory the device can read and write directly (*DMA* memory), and
+an interrupt so the device can say it has finished. In SlopOS a driver gets
+each of these by asking for it through the device handle it was given during
+probe, and only for that device. It can't pick an arbitrary address and
+write to it, and it can't claim an I/O port another driver holds.
+
+Everything a driver acquires is recorded against the device. If the probe
+fails halfway, the kernel releases it all, in reverse order, so a driver
+doesn't need cleanup code for every way it can fail. If the probe succeeds,
+the resources stay with the device.
+
+What drivers can't rely on:
+
+- **No protection from a misbehaving device.** DMA addresses are physical
+  addresses; SlopOS doesn't program an IOMMU (the hardware that would limit
+  which memory a device can reach), so a buggy or hostile device could write
+  anywhere.
+- **No unbinding.** A bound driver keeps its device until shutdown. Drivers
+  that need it (NVMe does) register a hook that runs at poweroff and reboot,
+  after the filesystems have written everything out.
+
+Writing a driver step by step is covered in
+[Add a driver](/docs/development/adding-a-driver).
+
+## The drivers SlopOS has
+
+| Device | What it is for | Where it runs |
+|--------|----------------|---------------|
+| NVMe | Disks. See [Disks](/docs/architecture/storage) | QEMU and laptop |
+| virtio-blk | Disks inside a virtual machine | QEMU |
+| virtio-net | Network. The only network driver | QEMU |
+| virtio-gpu | Display: picture, cursor and changing resolution | QEMU |
+| Intel Xe display | Display on Intel Gen12 and Gen13 graphics (Tiger Lake, Alder Lake, Raptor Lake) | Laptop |
+| i8042 | PS/2 keyboard, and a PS/2 mouse if one answers | QEMU and laptop |
+| DesignWare I2C | The low-speed bus the laptop's touchpad hangs off | Laptop |
+| I2C-HID touchpad | Touchpad, including gestures | Laptop |
+
+The Xe driver doesn't set the display mode itself. It takes over the mode the
+firmware already set and points the screen at the kernel's own picture. If
+the panel stops showing it, the driver falls back to the firmware's display
+on its own. All the virtio drivers use the current virtio standard and need
+message-based interrupts (MSI or MSI-X); a virtio device without them is not
+used.
+
+When more than one display driver could own the screen, a priority decides:
+a graphics driver outranks the plain framebuffer the firmware leaves behind.
+
+Most drivers have boot options to turn them off or debug them (for example
+`xe.modeset=off`, `tp.off`, `video=framebuffer`). They are all listed in
+[Boot options](/docs/abi/boot-options).
+
+### Devices every machine needs
+
+Some hardware isn't optional, and the kernel sets it up directly instead of
+through the matching step: the per-CPU interrupt controllers and the one that
+routes device interrupts, the timers (the HPET is required; the kernel stops
+at boot without one), the real-time clock, the serial port for logging, and
+the random number generator, seeded from the CPU's hardware random
+instructions. The terminal layer, with Linux-style line editing, sessions and
+job control, also lives in the drivers crate.
+
+### What is missing
+
+There is no USB support yet (a plan exists), so input is PS/2 and the I2C
+touchpad. There is no driver for the laptop's wired network card, so the
+laptop has no network. There is no SATA (AHCI) driver and no audio driver.
+[Known limitations](/docs/status/known-limitations) keeps the current list.
+
+## How it is tested
+
+The matching step is tested with fake drivers on both buses: priorities,
+declining, deferring, and a probe that fails after acquiring resources and
+must release them. The Xe driver's register logic lives in a separate module
+that is tested without the hardware. The device drivers themselves run in
+every test boot under QEMU, and the laptop drivers are checked by booting the
+laptop.
+
+## For contributors
+
+- **One `Bus` trait.** `driver_core::bus` defines matching and probing for
+  both buses and never interprets a device ID, so binding behaviour can't
+  drift between PCI and ACPI.
+- **Registries.** PCI drivers register with `pci_driver!`, platform drivers
+  with `platform_driver!`. Default priority is 128; lower binds first, ties
+  go in link order.
+- **Probe outcomes.** `Bound` moves the devres bag into the bus's claim
+  table; `Declined` and errors drop the bag and offer the next candidate;
+  `Err(ProbeError::Deferred)` retries once after the first pass.
+- **No locks across probe.** Probe runs with neither the enumeration lock
+  nor the claim lock held, so it may block and allocate.
+- **Resources only through `BoundDevice`.** DMA memory, register windows,
+  interrupts and I/O ports all come from the bound device handle, so they are
+  recorded for release. DMA goes through the registered mapper, which is the
+  identity mapper today.
+- **Drop order.** In a claim slot the binding is declared before the bag so
+  it drops first. That and `Deferred` are where an unbind path would hook in.
+- **ACPI.** `slopos-acpi` parses tables without allocating. The AML
+  evaluator walks only the parts of the namespace SlopOS needs; it is not a
+  general interpreter.
+
+## Further reading
+
+- [*I/O Devices*](https://pages.cs.wisc.edu/~remzi/OSTEP/file-devices.pdf),
+  chapter 36 of *Operating Systems: Three Easy Pieces*. Start here. What a
+  device looks like to the operating system, polling versus interrupts, DMA,
+  and why drivers exist.
+- [The Linux driver model overview](https://docs.kernel.org/driver-api/driver-model/overview.html).
+  The bus, device and driver split SlopOS's binding follows.
+- [Devres: managed device resources](https://docs.kernel.org/driver-api/driver-model/devres.html)
+  in the Linux kernel. The idea behind releasing a failed probe's resources
+  automatically.
+- [ACPI based device enumeration](https://docs.kernel.org/firmware-guide/acpi/enumeration.html)
+  in the Linux kernel. How IDs like `PNP0303` and the I2C-HID touchpad's
+  description are found in the ACPI tables.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `drivers/src/driver_core/` | The bus trait, matching step, devres, MSI setup and shutdown hooks |
+| `drivers/src/pci.rs` | PCI enumeration and the PCI registry |
+| `drivers/src/platform_bus/` | ACPI-described devices and their registry |
+| `acpi/` | ACPI table parsing and the AML evaluator |
+| `drivers/src/nvme/`, `virtio_blk.rs`, `virtio_net.rs`, `virtio_gpu/`, `xe/`, `ps2/`, `i2c/`, `touchpad/` | The device drivers |
+| `drivers/src/tests/` | Binding tests for both buses |

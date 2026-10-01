@@ -1,93 +1,240 @@
 ---
 title: "Troubleshooting"
-description: "Common first-run and QEMU issues"
+description: "What to do when setup, the build, a boot or the tests go wrong."
 ---
 
-## `just setup` Fails
+Each section below starts from what you see, says why it happens, and gives
+the fix. Most problems on a first run are a missing host tool or a download
+that could not complete.
 
-Check the tool named in the error:
+## `just setup` stops before finishing
 
-| Symptom | Fix |
-|---------|-----|
-| `rustup is required` | Install rustup, then rerun `just setup` |
-| Go missing or too old | Install Go `>= 1.22` and rerun `just setup` |
-| Go module download fails | Check network access or pre-populate the Go module cache |
-| Rust target missing | Let `just setup` install the pinned target |
+| Message | Cause | Fix |
+|---------|-------|-----|
+| `rustup is required to install the pinned nightly toolchain` | rustup is not on `PATH` | Install rustup, then rerun `just setup` |
+| ``ensure_go: `go` not found in PATH`` or `ensure_go: found go X; need >= 1.22` | `just setup` checks Go but does not install it | Install Go 1.22 or later, then rerun `just setup` |
+| ``ensure_go: `go mod download` failed in tools/run_tests`` | The Go modules of the test runner could not be downloaded | Check network access, or fill the Go module cache from another machine |
+| `toolchain <channel> has no rust-src component` | The pinned nightly lacks its standard library sources | `rustup component add rust-src --toolchain <channel>`, then rerun `just setup` |
+| `the rustup rust-src component is not pristine` | See the next section | |
 
-## Limine Download Fails
+## Setup says rust-src "is not pristine"
 
-The ISO build downloads the pinned Limine binary release into
-`third_party/limine` and verifies the tarball hash. In offline environments,
-pre-populate that directory with the Limine binaries required by the build.
+The `slopos` toolchain is built from an untouched copy of the nightly's
+standard library sources. Older versions of SlopOS edited those sources in
+place, so a machine that once built them still has SlopOS files inside the
+rustup component, and the build refuses to start over them. Reinstalling the
+component restores the edited files but leaves the added ones, so you need
+both steps:
 
-```text
-limine-bios.sys
-limine-bios-cd.bin
-limine-uefi-cd.bin
-BOOTX64.EFI
-limine
+```bash
+ch="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' rust-toolchain.toml)"
+rustup component remove rust-src --toolchain "$ch" && rustup component add rust-src --toolchain "$ch"
+find "$(rustc +"$ch" --print sysroot)/lib/rustlib/src" -name '*slopos*' -prune -exec rm -rf -- {} +
+just setup
 ```
 
-## No Hardware Acceleration
+## Downloads fail or you are offline
 
-If `/dev/kvm` is not usable on Linux, or HVF is not available on macOS, the QEMU
-wrapper switches to TCG with `-cpu max`. That is expected but slower.
+The build downloads a few pinned inputs on first use and checks each against
+a pinned SHA-256 sum. Each has an override, so you can point it at a mirror
+or a local copy:
 
-For deterministic replay debugging, TCG is required. For day-to-day interactive
-use, prefer KVM or HVF when available.
+| Input | Cached at | Override |
+|-------|-----------|----------|
+| Limine bootloader | `third_party/limine/` | Unpack the pinned release there, or set `LIMINE_URL`. `LIMINE_VERSION` and `LIMINE_TARBALL_SHA256` (empty skips the check) change the pin |
+| OVMF firmware for the live ISO | `third_party/ovmf/` | `OVMF_BASE_URL`, a mirror of the pinned edk2 nightly |
+| OVMF firmware for boot disks | `third_party/ovmf-nv/` | `OVMF_NV_PKG_URL`, a copy of the pinned `edk2-ovmf` package |
+| `libc` crate for the `slopos` toolchain | `$CARGO_HOME/registry/cache` | Fill the cargo cache, or set `LIBC_URL` |
+| `llvm-project` sources (for `just test`) | `third_party/llvm-project-<version>.src.tar.xz` | Place the pinned tarball there, or set `LLVM_URL` |
 
-## QEMU Display Errors
+A `third_party/limine` directory that holds a different Limine release is
+replaced with the pinned one. A directory named by `LIMINE_DIR` that holds a
+different release, or a partly filled one, stops the build instead: remove it
+or complete it.
 
-Check backend support:
+## The build says a host tool is missing
+
+| Message | Install |
+|---------|---------|
+| `build_bootdisk: missing host tools:` followed by any of `sfdisk mkfs.fat mmd mcopy truncate dd` | util-linux or fdisk (`sfdisk`), dosfstools (`mkfs.fat`), mtools (`mmd`, `mcopy`), coreutils (`truncate`, `dd`) |
+| `mke2fs is required` or `debugfs is required` | e2fsprogs |
+| `resize2fs is not installed, so the image cannot be grown` | e2fsprogs |
+| `gen_verity: python3 is required` | Python 3 |
+
+The first one only comes from `just boot` and the recipes that build a boot
+disk; the live ISO does not need those tools.
+
+## `just test` cannot find LLVM
+
+The test image includes a C++ runtime built from pinned LLVM sources. Building
+it needs `clang`, `clang++`, `ld.lld` and `llvm-ar` that all report the same
+LLVM version, 18 or later, plus `cmake` and `ninja`. The build looks for
+version 18 first (`clang-18`, `/usr/lib/llvm-18/bin`,
+`/usr/lib64/llvm18/bin`), then the unversioned tools, then any newer installed
+version.
+
+| Message | Fix |
+|---------|-----|
+| `no LLVM >= 18 toolchain found` | Install clang, lld, llvm, cmake and ninja from your distribution |
+| `the named toolchain is not one usable LLVM >= 18` | The tools named by `CLANG`, `CLANGXX`, `LD_LLD` or `LLVM_AR` are missing or report different versions; correct those variables |
+| `note: LLVM N is outside toolchain/cxx/PIN's tested majors` | Only a note: the build continues, and the C++ tests in `just test` show whether that version works |
+
+Set `CLANG`, `CLANGXX`, `LD_LLD` and `LLVM_AR` to choose the tools yourself,
+for example a distribution's `-18` binaries. Upgrading the host compiler
+rebuilds the runtime on the next run.
+
+## The build refuses to touch the persistent root
+
+`just boot` stops with a message that starts `preserve:`:
+
+```text
+preserve: the image is damaged, or a boot left it dirty (see above)
+  fs/assets/ext2-persist.img holds whatever the guest wrote, so this build stops here.
+  Fix it:     e2fsck -fy 'fs/assets/ext2-persist.img'
+  Discard it: rm -f 'fs/assets/ext2-persist.img' 'fs/assets/ext2-persist.img.stamp'
+```
+
+The development machine's disk holds whatever you did inside it, so the build
+never deletes it. Before each boot it updates the programs on that disk, and
+it stops when it cannot do that safely: the image is damaged or was not shut
+down cleanly, it cannot be grown or converted to the current format, or it
+carries an old kind of integrity trailer.
+
+To keep your work, run the `Fix it:` command. `e2fsck -fy` repairs the
+filesystem, and may throw away what it cannot repair. To start over instead:
+
+```bash
+just reset root
+just boot
+```
+
+The next boot builds a fresh disk with a new clone of `HEAD` at
+`/src/slopos`. Commits the guest already pushed are kept in
+`fs/assets/guest-push.git`.
+
+A disk that QEMU closed in the middle of a write is not refused. `just boot`
+prints `was closed mid-write; booting it unrefreshed so its journal replays`
+and boots it as it is, so the kernel can finish the interrupted writes. The
+next `just boot` after a clean shutdown updates it as usual. [Crash
+recovery](/docs/architecture/crash-recovery) explains the journal.
+
+## Files you write in the guest disappear after a reboot
+
+The root filesystem came up read-only. When the kernel finds a journal on the
+disk that it cannot replay safely, it mounts the disk read-only and leaves the
+repair to `e2fsck`. A read-only disk cannot be the root, so the system boots
+from its built-in RAM disk instead and mounts the real disk at `/mnt`.
+Everything looks normal, but nothing written to `/` is kept.
+
+Shut the guest down, then check and repair the disk on the host:
+
+```bash
+just check-fs-image fs/assets/ext2-persist.img
+e2fsck -fy fs/assets/ext2-persist.img
+```
+
+If the repair loses what you needed, `just reset root` gives you a fresh disk.
+
+## Boot keeps rebooting at the Wheel of Fate
+
+This is the Wheel of Fate doing its job: an even number reboots the machine
+and spins again. Skip it:
+
+```bash
+ROULETTE=0 just boot-live
+just boot-fast
+```
+
+Test boots never spin it.
+
+## QEMU stops with "the git peer cannot serve the path"
+
+`just boot` serves your checkout to the guest with `git daemon`, which QEMU
+starts from a command line that it splits on commas and spaces. So the wrapper
+refuses a checkout path, or a `GIT_PUSH_REPO` path, that contains a comma,
+`%`, a quote, a backslash or whitespace. Move the checkout to a plain path.
+The wrapper also needs `git` on `PATH`.
+
+## QEMU stops with "echo peer command '/bin/cat' is not executable"
+
+The network tests talk to an echo service that QEMU runs with `/bin/cat`. On a
+host without `/bin/cat`, point `ECHO_PEER_CMD` at `cat`:
+
+```bash
+ECHO_PEER_CMD="$(command -v cat)" just boot
+```
+
+## The boot prints "No hardware acceleration"
+
+QEMU could not use a hypervisor: on Linux `/dev/kvm` is missing or you cannot
+read and write it, or on macOS QEMU has no HVF. The system still runs, more
+slowly, by emulating the CPU. On Linux, add yourself to the group that owns
+`/dev/kvm` (usually `kvm`) and log in again.
+
+Recording a run for replay (`just rr-record`) always emulates, on one CPU.
+
+## No QEMU window opens, or the display is wrong
+
+See which display backends your QEMU has, then pick one:
 
 ```bash
 qemu-system-x86_64 -display help
-```
-
-Then force a backend:
-
-```bash
 QEMU_DISPLAY=sdl just boot-fast
 QEMU_DISPLAY=gtk just boot-fast
-QEMU_DISPLAY=cocoa just boot-fast
 ```
 
-On macOS, Cocoa is the default. GTK is usually not available there.
+`VIDEO=0` avoids the window entirely and puts the console in your terminal.
 
-## Boot Hangs Or Looks Blank
+If the wrapper warns that it `can't instantiate 'virtio-vga'`, your QEMU lacks
+its virtio-gpu display modules, and SlopOS falls back to a plain framebuffer.
+On Arch and CachyOS install `qemu-hw-display-virtio-gpu` and
+`qemu-hw-display-virtio-gpu-pci`.
 
-Start with serial output:
+## The boot hangs or the screen stays blank
+
+Boot the live ISO without a window and read what the kernel printed:
 
 ```bash
 just boot-log
 tail -n 120 test_output.log
 ```
 
-Then skip the wheel and enable debug logs:
+For more detail, skip the wheel and turn on debug logging:
 
 ```bash
-DEBUG=1 just boot-fast
-BOOT_CMDLINE='tests=off roulette=skip boot.debug=on' just boot-log
+ROULETTE=0 DEBUG=1 just boot
+BOOT_CMDLINE='tests=off root=initramfs roulette=skip boot.debug=on' just boot-log
 ```
 
-For a freeze, use `just boot-debug`, then run `just debug-bt` in another
-terminal to capture all-CPU backtraces into `builddir/freeze-gdb.log`.
+If a running system stops responding, press SysRq (Alt+PrintScreen) in the
+QEMU window, or send a serial BREAK, then a command key: `h` lists the
+commands and `t` prints every task. If even that gets no answer, boot with
+`just boot-debug` and run `just debug-bt` in another terminal; it writes every
+CPU's backtrace to `builddir/freeze-gdb.log`. [Diagnosing the
+kernel](/docs/development/diagnostics) covers both.
 
-## Tests Fail In QEMU
+## Tests fail
 
-Use the harness options before dropping to raw serial:
+Start with the runner's own options; filters are positional:
 
 ```bash
 just test-rerun-failed
-just test-verbose FILTER='slopos_mm::*'
-just test-json builddir/events.jsonl
+just test-verbose 'slopos_mm::*'
 just test-raw
 ```
 
-If the failure is a memory corruption and it reproduces under TCG single-core,
-record it:
+A filtered run whose tests create files must include `'*ext2_aaa*'`, because
+that test mounts the test disk for the tests after it.
+
+If a failure looks like memory corruption and still happens on one emulated
+CPU, record the run and find the instruction that wrote a given address:
 
 ```bash
 just rr-record
-just rr-gdb WATCH=0xdeadbeef
+just rr-gdb 0xffff800000123456
 ```
+
+[Debugging with GDB](/docs/development/debugging-gdb-record-replay) walks
+through it, and [Building and
+testing](/docs/getting-started/build-test-recipes#run-the-tests) explains the
+runner's output.

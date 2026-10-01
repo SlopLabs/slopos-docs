@@ -1,0 +1,273 @@
+---
+title: "Development machine"
+description: "A SlopOS virtual machine that keeps its disk between boots and can build, install and boot SlopOS from inside itself."
+---
+
+`just boot` starts SlopOS in a QEMU virtual machine that you can develop
+SlopOS on. It has a disk that keeps what you write between boots, a Rust and
+C toolchain that runs on SlopOS, and a git clone of the checkout you booted
+from. Inside it you can pull the host's commits, build the kernel and the
+programs, install the result as the next system, reboot into it, and push
+your commits back to the host. What you can't do yet is run any of this
+outside QEMU.
+
+An operating system that can build itself is called *self-hosting*. It is
+the most practical test of whether a system is complete: a compiler, a linker, git and
+a build system together touch almost every part of an OS, from threads and
+memory maps to files, pipes and the network. When something in SlopOS is
+missing or wrong, a build in the guest tends to find it.
+
+## What runs on the host and what runs in the guest
+
+The *host* is your Linux machine, where you ran `just boot`. The *guest* is
+SlopOS running inside QEMU. They share no files directly. The guest sees two
+disk images that live on the host:
+
+- **The root disk** (`fs/assets/ext2-persist.img` on the host) is an ext4
+  filesystem mounted as `/`. The first `just boot` creates it, and later boots
+  reuse it, so your home directory, your clone and your build outputs are still
+  there next time.
+- **The boot disk** (`builddir/boot-disk.img`) is laid out the way SlopOS
+  lays out a real disk: the boot loader on the EFI system partition, and two
+  complete systems, each a kernel plus the programs it boots with, on a boot
+  partition of their own. The guest installs what it builds onto this disk.
+  [Installing a system](/docs/self-hosting/installing-a-system) explains it.
+
+On the root disk you find:
+
+| Path | What it is |
+|------|------------|
+| `/src/slopos` | A git clone of your host checkout |
+| `/usr/local` | The toolchain: `rustc`, `cargo`, `clang`, `clang++`, `ld.lld`, `git`, `bash`, `cmake`, `ninja` and their licence texts |
+| `/home`, `/etc`, `/var` | Yours, as on any Unix machine |
+
+The system's own programs (`/bin`, `/sbin`, `/lib`, `/usr/bin`, `/usr/share`,
+`/etc/ssl`) don't come from the root disk. They come from the boot disk,
+packed together with the kernel that uses them, and are mounted read-only on
+top of the root. So a new system replaces all of them at once, and nothing you
+write to the root disk can replace a system program by accident.
+[Filesystem](/docs/architecture/filesystem) explains how that mount works.
+
+The default search path is `/bin:/sbin:/usr/local/bin`. The toolchain is found,
+but the system's own tools win if a name exists in both.
+
+The toolchain is cross-built on the host by `just toolchain`, which takes
+hours; [Toolchain](/docs/self-hosting/toolchain) explains what it builds. You
+can boot without it. The guest then has an empty `/usr/local`, and the build
+script tells you to run `just toolchain` when it finds no `cargo`.
+
+## How source moves between host and guest
+
+Source moves through git, over QEMU's built-in network. The clone in
+`/src/slopos` has two remotes that both point at the host:
+
+| Remote | URL | What it reaches |
+|--------|-----|-----------------|
+| `origin` | `git://10.0.2.4/slopos` | Your host checkout, read-only |
+| `host` | `git://10.0.2.4:9419/slopos` | `fs/assets/guest-push.git` on the host, a bare repository that accepts pushes. `git push` uses it by default |
+
+`10.0.2.4` isn't a real machine. QEMU's user-mode network intercepts
+connections to that address and, for each one, starts a `git daemon` on the
+host that serves exactly one repository. So nothing listens on a host port,
+and the guest can reach these two repositories and nothing else on your disk.
+
+The clone takes your host's `user.name` and `user.email`, so commits made in
+the guest are attributed to you. To bring them into your host checkout, fetch
+from the push repository:
+
+```sh
+git fetch fs/assets/guest-push.git <branch>
+```
+
+## A typical session
+
+On the host, boot the machine:
+
+```sh
+just boot
+```
+
+The kernel boots, and the guest's shell comes up. The guest's `/bin/sh` is the
+SlopOS shell; `bash` is in `/usr/local/bin` for scripts that need it. In the
+guest, take the commits you made on the host, then build and install the
+system:
+
+```sh
+cd /src/slopos
+git pull
+scripts/selfhost.sh install
+```
+
+`selfhost.sh install` builds the kernel, the user programs and the bundle of
+programs the kernel boots with, writes them into the spare system slot on the
+boot disk, and arranges for the next boot, and only the next, to use them. It
+ends with:
+
+```text
+selfhost: bootctl reboot tries slopos-b once; bootctl commit there keeps it
+```
+
+Reboot into the new system. If it works, make it the default:
+
+```sh
+bootctl reboot
+# ...the new system boots...
+bootctl commit
+```
+
+Then commit your change and send it to the host:
+
+```sh
+cd /src/slopos
+git commit -am 'Fix the thing'
+git push
+```
+
+On the host, `git fetch fs/assets/guest-push.git <branch>` brings the commit
+over.
+
+`scripts/selfhost.sh build` does the same build without installing. Both take
+an optional variant: `release` (the default), `dev`, or `tests`, which builds
+the kernel with its test suite and needs more memory (see
+[Limits](#limits)). The outputs are in `builddir/` inside the clone, for
+example `builddir/kernel-release.elf`.
+
+A build in the guest is graded the same way as one on the host: the checks
+on the kernel binary and the test suite must pass. It doesn't have to be
+byte-for-byte identical to a host build, and it isn't (panic messages, for
+instance, carry slightly different source paths).
+
+## What survives a reboot, a new session and a reset
+
+| Event | Root disk (`/src`, `/home`, `/usr/local`...) | Boot disk (the two systems) |
+|-------|---------------------------------------------|-----------------------------|
+| Reboot inside the guest (`bootctl reboot`) | Kept | Kept, including what you installed and committed |
+| Quit QEMU and run `just boot` again | Kept. The host's toolchain files in `/usr/local` are refreshed if the toolchain changed | Rebuilt from the host's build. What the guest installed is gone |
+| `just reset root` | Deleted. The next `just boot` makes a fresh root with a new clone | Rebuilt as usual |
+
+This has two consequences. First, the boot disk always starts a new session with the
+system your host built, so an old experiment never boots by accident. Second,
+work you haven't pushed lives only on the root disk, and `just reset root`
+deletes it. Commits you already pushed are safe, because the push repository
+is outside the root disk.
+
+To copy a single build output off the root disk instead of going through git,
+shut the guest down and use:
+
+```sh
+just export-file PATH=/src/slopos/builddir/kernel-release.elf OUT=builddir/guest.elf
+```
+
+This reads the disk image directly, so the guest must be shut down cleanly. If
+the guest was killed mid-write, boot it once so the kernel can finish its
+[crash recovery](/docs/architecture/crash-recovery), shut it down, then export.
+`just boot` handles the same situation by itself: a root disk left mid-write
+boots without the host's usual refresh, so the kernel recovers it first.
+
+## Settings for `just boot`
+
+`just boot` runs the optimized (release) kernel with 4G of memory. The release
+kernel is the default because a compiler makes a great many system calls and
+page faults, and the debug kernel spends about ten times as long on each. A few
+environment variables change this:
+
+| Variable | Effect |
+|----------|--------|
+| `DEV_QEMU_MEM=8G` | Give the guest more memory |
+| `KERNEL_RELEASE=0` | Boot the debug kernel |
+| `VIDEO=0` | Serial console only, no window |
+
+`just boot-fast` is the same machine without the Wheel of Fate, the boot-time
+roulette, and `just boot-debug` adds QEMU's debugger stub (see
+[Debugging with GDB](/docs/development/debugging-gdb-record-replay)).
+[QEMU options](/docs/getting-started/qemu-options) lists the rest.
+
+## Limits
+
+- **The tests kernel needs 8G.** At the default 4G, linking the kernel with its
+  test suite fails: the linker maps more files than SlopOS lets one process map
+  (an eighth of memory). Use `DEV_QEMU_MEM=8G just boot` to build the `tests`
+  variant until that limit is sized for a linker.
+- **QEMU only.** The boot disk already has the layout meant for real
+  computers, one that shares a disk with another OS, but running the loop on
+  a real computer still needs an installer, a crash record that survives a
+  reset and a real network driver, none of which exist yet. See
+  [Known limitations](/docs/status/known-limitations).
+- **The guest doesn't rebuild its own compiler.** LLVM and rustc are
+  cross-built on the host. Building them in the guest would need Python, tens
+  of gigabytes of disk and hours of CPU, and isn't planned.
+- **Speed.** With KVM a full system build in the guest takes minutes. Without
+  it (QEMU emulating every instruction) it takes hours.
+
+## How it is tested
+
+`just test` doesn't need the toolchain. The heavier checks boot a root disk of
+their own, rebuilt on every run, that is shaped like the development root but
+carries a vendored copy of every crate, so no build reads the network:
+
+- `just test-toolchain` boots that root twice and climbs a ladder of builds:
+  `rustc` alone, then cargo with build scripts and procedural macros, a git
+  dependency, a crate fetched over TLS, C and C++ with clang, git clones
+  (including one of the GitHub repository), a bash script, a Ninja graph and
+  a CMake project. A git repository committed on the first boot must pass
+  `git fsck --strict` on the second.
+- `just test-selfhost` has the guest fetch the host's `HEAD` and build the dev
+  and tests systems. The host then checks the disk with `e2fsck`, copies the
+  guest's kernels out, and runs the kernel checks and the full test suite on
+  what the guest built.
+- `just test-install-guest` runs the whole session above: build, install, boot
+  the new system, push a commit the host fetches, commit the slot, and roll
+  back a slot that crashes.
+
+The last two need a built toolchain and a clean working tree (the guest builds
+`HEAD`), and `DEV_QEMU_MEM=8G`. The crates.io and GitHub steps of the ladder need
+the host to be online.
+
+## For contributors
+
+The host writes into the root image with `debugfs` on every `just boot`, and it
+treats two kinds of directory differently:
+
+- A **host tree** stays the host's. `/usr/local` is one. The host records the
+  files it installed in a manifest beside the image (with a copy under
+  `/var/lib/slopos/trees` for the guest to read). When the toolchain changes,
+  the next boot removes exactly the files the old manifest named and installs
+  the new ones, leaving anything the guest added. If a new file would
+  overwrite one the guest created, the host refuses, warns, leaves the tree
+  alone and tries again next time.
+- A **seed tree** becomes the guest's once copied. `/src/slopos` is one: the
+  host copies it only onto a root that has no `/src`.
+
+The host also grows the root image with `resize2fs` on every boot to keep a
+minimum of free space (`ROOT_FREE_FLOOR`, 6G by default), enough for a clean
+build of the dev and tests systems.
+
+The whole build runs in the guest with the same scripts the host uses.
+`scripts/build_kernel.sh` is POSIX `sh`; the userland and C++ runtime builds are
+bash scripts that call cargo, clang, CMake and Ninja. Steps that only make
+sense on the host (preparing the [owned sysroot](/docs/self-hosting/toolchain)
+and running the kernel binary checks) live in the justfile, so the guest skips
+them. The list of programs in a system comes from `scripts/lib/base.sh`, which
+both sides read, so host and guest pack the same system.
+
+## Further reading
+
+- [*Git on the Server: Git Daemon*](https://git-scm.com/book/en/v2/Git-on-the-Server-Git-Daemon),
+  from the Pro Git book. What `git daemon` serves and how, which is all the
+  guest's remotes are.
+- [*Bootstrapping the compiler*](https://rustc-dev-guide.rust-lang.org/building/bootstrapping/intro.html)
+  in the rustc dev guide. How a compiler comes to build itself, the problem one
+  level down from an OS building itself.
+- [*Operating Systems: Three Easy Pieces*](https://pages.cs.wisc.edu/~remzi/OSTEP/),
+  by Remzi and Andrea Arpaci-Dusseau. Free chapters on processes, memory and
+  files, the parts of an OS a compiler exercises hardest.
+
+## In the source
+
+| Where | What |
+|-------|------|
+| `justfile` (`boot`, `reset`, `export-file`) | The recipes on this page |
+| `scripts/selfhost.sh` | The guest's build and install command |
+| `scripts/stage_workspace.sh` | Seeding the clone and its two remotes |
+| `scripts/qemu_run.sh` | QEMU's network, including the per-connection `git daemon` |
+| `scripts/lib/base.sh` | Which programs a system carries |

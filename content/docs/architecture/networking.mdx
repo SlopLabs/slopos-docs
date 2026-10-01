@@ -1,46 +1,230 @@
 ---
 title: "Networking"
-description: "Network stack and socket architecture"
+description: "What the network stack gives your programs, how a packet travels between the card and your code, and how you configure it."
 ---
 
-The SlopOS network stack provides a small but real socket system for userland
-tools and the async runtime.
+import { PacketPath } from '@/components/diagrams/packet-path';
 
-## Stack map
+A program on SlopOS talks to the network the same way it would on Linux:
+through *sockets*, with the same calls, flags and error codes. You get TCP
+connections, UDP datagrams, ping, local Unix sockets between programs on the
+same machine, name lookups through DNS, and an address handed out
+automatically by DHCP when the machine boots. That is enough for git, curl
+and cargo to fetch over the network on the
+[development machine](/docs/self-hosting/development-machine). What you don't
+get is IPv6: the stack speaks IPv4 only.
 
-| Layer | Responsibility |
-|-------|----------------|
-| Device | VirtIO net queues and interrupt-driven packet movement |
-| Link and routing | ARP, neighbor state, routes, and device selection |
-| IPv4 | Packet validation, fragmentation-related handling, protocol dispatch |
-| ICMP | Echo and control-message support |
-| UDP | Datagram demux, send, receive, and DNS transport |
-| TCP | Connections, listeners, retransmit, congestion, receive reassembly |
-| DNS | In-kernel resolver client for userland requests |
-| AF_UNIX | Local sockets and fd-passing support |
-| Socket file ops | File descriptor behavior and poll readiness |
+Nothing here is new. The protocols are the ones the IETF wrote down in its
+RFCs, and we implemented them from those documents, in Rust, inside the
+kernel. No existing network stack is linked in. We did read one closely:
+[smoltcp](https://github.com/smoltcp-rs/smoltcp), the embedded Rust TCP/IP
+stack, settled how our TCP connections represent their states. The side
+that programs see copies Linux, so code written against Linux sockets
+compiles and behaves the way you expect.
 
-## Syscall surface
+## How a packet reaches your program
 
-The public socket surface includes create, bind, listen, accept, connect,
-send/receive, datagram send/receive, DNS resolve, socket options, shutdown,
-message send/receive, and local/peer address queries.
+<PacketPath />
 
-Message send/receive supports SCM_RIGHTS-style file descriptor passing for local
-protocol surfaces.
+1. **The card receives a frame.** The network driver gave the card empty
+   buffers in advance, so the card writes the frame straight into memory and
+   then raises an interrupt.
+2. **A receive thread collects a batch.** The interrupt code does no protocol
+   work. It wakes a kernel thread that belongs to the driver, and that
+   thread picks up packets in batches, up to a fixed number per round, so a
+   flood of traffic can't keep one processor busy forever. Linux calls this
+   scheme *NAPI*, and the code uses the same name.
+3. **The packet is checked and sorted.** The stack validates the IPv4 header,
+   reassembles packets that were split into fragments on the way, answers ARP
+   requests, and hands the rest to TCP, UDP or ICMP.
+4. **The protocol finds the socket.** TCP and UDP look up the socket by the
+   addresses and ports in the packet. TCP also acknowledges the data and puts
+   out-of-order pieces back in sequence.
+5. **The data waits in the socket.** Each socket has its own queue and its
+   own list of programs waiting on it, so data for one socket wakes only the
+   programs waiting on that socket.
+6. **Your `recv` returns.** The bytes are copied into your buffer.
 
-## SlopRing integration
+Sending is the same in reverse: `send` puts bytes in the socket, TCP cuts them
+into segments and keeps a copy until they are acknowledged, the route table
+picks the next hop, ARP supplies its hardware address, and the driver hands
+the frame to the card.
 
-SlopRing routes socket operations through the same synchronous socket semantics
-where possible. Current ring behavior covers send, receive, accept, connect,
-poll, registered fixed buffers, provided buffer selection, and zero-copy send
-notifications.
+## What programs can use
 
-Zero-copy send uses registered buffers and posts a terminal notification when
-the buffer is reusable. UDP/ICMP can use one-shot NIC DMA; TCP keeps pins across
-retransmit until ACK or teardown.
+The socket calls use Linux's numbers and meanings: `socket`, `bind`,
+`listen`, `accept`, `accept4`, `connect`, `send`/`recv` and their `to`/`from`
+and `msg` variants, `shutdown`, `setsockopt`, `getsockopt`, `getsockname` and
+`getpeername`. C programs reach them through slibc and Rust programs through
+`std::net`, as described in [Userland](/docs/architecture/userland).
 
-## Userland consumers
+| You ask for | You get |
+|---|---|
+| `AF_INET`, `SOCK_STREAM` | A TCP connection or listener |
+| `AF_INET`, `SOCK_DGRAM` | UDP datagrams |
+| `AF_INET`, `SOCK_DGRAM`, `IPPROTO_ICMP` | Ping without special permission, as on Linux |
+| `AF_UNIX`, `SOCK_STREAM` | A local stream between programs, named by a file path |
+| `AF_INET6` | Refused with `EAFNOSUPPORT` |
 
-Network tools, shell commands, `slopfut` I/O futures, and the compositor protocol
-all exercise the socket layer.
+A few things behave in ways worth knowing:
+
+- **Non-blocking and close-on-exec flags work at creation.** `SOCK_NONBLOCK`
+  and `SOCK_CLOEXEC` are accepted by `socket` and `accept4`. An accepted
+  socket starts blocking unless you asked otherwise, whatever the listener's
+  mode, which is also what Linux does.
+- **Writing to a closed connection** raises `SIGPIPE`, unless you pass
+  `MSG_NOSIGNAL`.
+- **Unix sockets can carry open files.** With `sendmsg` and `SCM_RIGHTS` one
+  program can hand another an open file descriptor. The desktop relies on this
+  to share window contents; see [Desktop and windowing](/docs/architecture/userland-windowing).
+- **Name lookups go through the kernel.** The kernel has a small DNS client
+  (a *stub resolver*) behind a `resolve` system call, and slibc's
+  `getaddrinfo` uses it. It looks up IPv4 addresses (A records), follows
+  aliases, and caches answers.
+- **Everything is available asynchronously.** Send, receive, accept, connect
+  and poll can also be queued on [SlopRing](/docs/abi/slopring), SlopOS's
+  submission and completion queue, including a send that reads straight from
+  your memory without copying it first.
+
+The exact list of socket options and error codes is in the
+[System call ABI](/docs/abi/syscalls).
+
+## How interfaces are configured
+
+An *interface* is something packets go out of: the virtio network card
+(`eth0`) or the *loopback* interface (`lo`, `127.0.0.1`), which delivers
+packets back to the same machine. Loopback comes up first and stays up even
+when networking is switched off, so programs that talk to each other over
+localhost keep working.
+
+When the card comes up, the kernel's DHCP client asks the local network for
+an address. The lease it gets installs the address, a default route through
+the gateway, and DNS servers, and renews itself before it expires. If the
+lease is lost, everything it installed goes with it. You don't need to do
+anything for a QEMU guest to reach the internet.
+
+To look at or change the configuration, use `ip`, which follows the Linux
+command of the same name:
+
+```bash
+ip -br addr         # addresses, one line per interface
+ip route            # the route table
+ip dhcp             # the current lease
+ip status           # the whole stack on one screen
+ip monitor          # print changes as they happen
+ip link set eth0 down
+```
+
+Anyone can read the configuration, but changing it takes the network
+administration permission, and the kernel grants that only to `/bin/ip`. So a
+program that wants to change the network runs `ip`, which is what the
+desktop's network menu does too. [Permissions](/docs/architecture/authority)
+explains how a program gets that kind of grant. For familiar habits,
+`ifconfig` is `ip` under another name and `netstat` is `ss` under another
+name.
+
+The desktop's top bar shows whether you have no connection, only the local
+network, or the internet. It works this out from the card's link state, the
+address and the default route, and confirms it by pinging the gateway and a
+machine beyond it.
+
+## Encryption (TLS)
+
+The kernel knows nothing about encryption. TLS, the protocol behind HTTPS,
+runs inside the programs that need it, the same as on Linux. SlopOS has its
+own TLS 1.3 client library (`tls-core`), written for SlopOS in safe Rust along
+with every cryptographic primitive it uses, and `curl` is built on it.
+Certificates are checked against Mozilla's root list, shipped in
+`/etc/ssl/certs/ca-certificates.crt`. [Userland](/docs/architecture/userland)
+lists the network tools that use it.
+
+## What is missing
+
+- **IPv6.** Not implemented.
+- **Real network cards.** The only network driver is for virtio, the virtual
+  card QEMU provides. On physical hardware SlopOS has no network yet. A driver
+  for a wired card is part of the bare-metal plan.
+- **Some socket kinds.** No `socketpair`, no Unix datagram or sequenced-packet
+  sockets, and no raw or packet sockets for capturing traffic.
+- **TCP out-of-band data.** Urgent bytes arrive inline with the rest, and
+  `MSG_OOB` is refused.
+
+[Known limitations](/docs/status/known-limitations) keeps the current list.
+
+## How it is tested
+
+Most of the stack is pure logic, so the kernel's test suite exercises it
+directly: TCP connections are opened, fed lost, duplicated and reordered
+segments, and closed, the DHCP client is walked through a lease's whole life
+on a fake clock, and DNS replies are forged to check they are refused. The
+parsing that `ip` shares with the desktop (`net-core`) is tested on the host
+with `just test-host`. Inside a booted guest, git and cargo fetching over the
+network exercise the whole path.
+
+## For contributors
+
+The rules a change to the stack has to keep:
+
+- **The interrupt does no protocol work.** It only wakes the driver's receive
+  thread, which drains a bounded batch and reschedules itself if it used the
+  whole budget. Receive queues are bounded against a shared packet pool, and
+  the virtio driver refills receive buffers whose allocation failed so the
+  ring doesn't shrink under memory pressure.
+- **Packet filters are safe Rust.** The *XDP* hook (the name comes from
+  Linux's eXpress Data Path) runs a chain of Rust filters on each raw frame
+  before IP sees it; a filter can pass, drop, transmit or redirect. Linux
+  checks its filter bytecode with a verifier and a JIT; here the compiler and
+  the crate's `forbid(unsafe_code)` do that job. The chain is published
+  before any card can deliver a packet.
+- **A half-open connection costs one bounded slot.** Each listener has a
+  queue for connections still in their handshake and one for finished ones.
+  Only the final ACK moves a connection into the machine-wide table, so a
+  flood of fake connection attempts fills one listener's queue and nothing
+  else. Overflow of the accept queue resets the new connection.
+- **TCP follows the RFCs it cites.** Retransmission timing is RFC 6298 with
+  Karn's rule, loss recovery uses SACK (RFC 6675), windows scale per RFC 7323,
+  and congestion control is CUBIC (RFC 8312) with HyStart++ (RFC 9406).
+  Initial sequence numbers are keyed SipHash-2-4 (RFC 6528), and unexpected
+  segments on an established connection get a rate-limited challenge ACK
+  rather than a reset (RFC 5961).
+- **The DHCP client is a state machine without I/O.** Transport is separate,
+  which is what lets tests drive it on a mock clock. Addresses, routes and
+  DNS servers it installs are tagged with their origin and removed with the
+  lease.
+- **DNS queries don't share fate.** Each lookup has its own slot, random
+  source port and transaction id from the kernel's random number generator,
+  and a reply is accepted only from the queried server to that port.
+- **Configuration changes are observable.** Every change is published as a
+  sequenced record that `net_monitor` streams, with an explicit marker when a
+  reader falls behind.
+
+## Further reading
+
+- [Beej's Guide to Network Programming](https://beej.us/guide/bgnet/). Start
+  here. The socket API from a program's side, free and readable; its IPv4
+  examples use the same calls SlopOS provides.
+- [`socket(7)`](https://man7.org/linux/man-pages/man7/socket.7.html),
+  [`tcp(7)`](https://man7.org/linux/man-pages/man7/tcp.7.html) and
+  [`unix(7)`](https://man7.org/linux/man-pages/man7/unix.7.html). The Linux
+  manual pages for the behaviour SlopOS copies.
+- [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293), the current TCP
+  specification, which gathers forty years of corrections into one document.
+- [smoltcp](https://github.com/smoltcp-rs/smoltcp). A small TCP/IP stack in
+  Rust whose socket design influenced ours.
+- [*Monitoring and Tuning the Linux Networking Stack: Receiving Data*](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-receiving-data/)
+  from packagecloud. A detailed tour of Linux's receive path, including NAPI,
+  for comparison with the steps above.
+
+## In the source
+
+| Path | What is there |
+|---|---|
+| `net/src/` | The stack: interfaces, ARP, routing, IPv4, UDP, ICMP, DHCP, DNS, Unix sockets |
+| `net/src/tcp/` | TCP |
+| `net/src/napi.rs`, `net/src/ingress.rs`, `net/src/xdp/` | The receive path and packet filters |
+| `net-core/` | Address types and `ip` parsing shared with user space, host-tested |
+| `userland/src/apps/ip/` | The `ip` command |
+| `tls-core/` | The TLS 1.3 client |
+
+The [System call ABI](/docs/abi/syscalls) lists the socket and
+network-configuration calls with their exact arguments.

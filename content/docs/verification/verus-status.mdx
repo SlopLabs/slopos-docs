@@ -1,49 +1,156 @@
 ---
-title: "Verus Status"
-description: "Machine-checked proof coverage"
+title: "Proofs"
+description: "Which rules in the trusted core are proven by a machine, what that proof covers, and how to run it."
 ---
 
-SlopOS verifies selected OSTD critical-path invariants with Verus. The source
-repo's verification metadata defines the exact pinned toolchain and proof set;
-`just verify` uses that metadata directly.
+For the parts of SlopOS's trusted core where a bug would corrupt memory, you
+can rely on more than tests. A tool has checked, for every possible sequence
+of operations, that rules such as "a page of memory is never freed twice"
+can't be broken, and every change to the trusted core has to keep those
+checks passing. The proofs cover the logic of each mechanism, written out as a
+small model next to the kernel. They don't cover the kernel's actual code line
+by line, and they say nothing about how CPUs see each other's memory writes.
+This page explains what that means, lists what is proven, and shows how to
+run the proofs.
 
-## Run the verifier
+The tool is [Verus](https://verus-lang.github.io/verus/guide/), an open-source
+verifier for Rust built by a group of university and industry researchers. Asterinas, whose
+design SlopOS follows, did similar work on its own trusted core
+([vostd](https://github.com/asterinas/vostd)), and that is why we thought the
+effort worthwhile.
+
+## What a machine-checked proof is
+
+A test runs the code on some inputs and checks the results. It tells you the
+code worked for those inputs. A proof is an argument that the code works for
+every input, and a machine-checked proof is one where a program checks every
+step of the argument, so it can't contain a hand-waved gap.
+
+With Verus you write ordinary Rust, plus statements about it: what must be
+true before a function runs (`requires`), what it guarantees afterwards
+(`ensures`), and what stays true on every pass through a loop (`invariant`).
+Verus turns each statement into a logic problem and hands it to an *SMT
+solver*, a program that decides whether a set of logical formulas can be
+satisfied. If the solver shows that no input can break a statement, the
+statement is proven. If it can't, Verus reports which one failed and the
+proof doesn't pass.
+
+Here is the kind of thing that gets proven, in words: "after any sequence of
+allocations, clones and drops of page references, a page with a nonzero count
+is never on the free list". A test could try thousands of sequences, and the
+proof covers all of them, including the ones nobody thought to write.
+
+## How SlopOS uses it
+
+Each proof is a single file that restates one part of the trusted core in the
+form Verus understands: the data it keeps, the steps that change it, and the
+rules those steps must preserve. Verus then proves that every step keeps every
+rule.
+
+Many proofs also contain a deliberately broken version of a step, such as a
+release that frees a page before resetting it, and show that Verus rejects it.
+That checks the rules are strong enough to catch a real mistake, because a
+rule that even the broken version satisfies says nothing.
+
+The proofs are models, so they can drift from the code, and this has happened.
+The page-table proof passed while the kernel had a bug in it: when mapping a
+page failed, the kernel freed the page, and the caller, which still held its
+address, freed it again. The model had no step for a failed mapping, so it had
+nothing to say about one. The proof now includes that step and proves the page
+is handed back to the caller. That is the general limit: a proof covers what
+the model describes, and the model is reviewed by people.
+
+## What is proven
+
+| Proof | In plain words |
+|---|---|
+| Page reference counts | A physical page is never freed twice, never used after it is freed, and is always reset before it goes back on the free list |
+| Slab allocator | An object handed out by the kernel's small-object allocator can't outlive the memory it lives in, and each object fits the slot it is given |
+| Page tables | Mapping and unmapping keep the page tables well formed and the page counts balanced, a program can only be given pages that are safe for it to see, and a mapping that fails gives the page back |
+| Copying between pages | Reading or writing memory through the kernel's copy helpers never runs past the end of a page or touches a page that doesn't exist |
+| Task lifetimes | A task is freed exactly once, never while it is running or queued, and only after it has been removed from everything that referred to it ([Task lifetimes](/docs/architecture/task-ownership)) |
+| Permissions | Only starting a program can raise a task's permissions, only to what that program is granted, and only if the task starting it may launch programs; dropping permissions always works ([Permissions](/docs/architecture/authority)) |
+| Resource accounting | Every account's usage equals the sum of what is charged to it, a charge never takes an account over its limit, and nothing is refunded twice ([Resource limits](/docs/architecture/resource-accounting)) |
+| SlopRing queues | The kernel never overwrites a completion a program hasn't read, never runs ahead of what the program submitted, and never has more requests in flight than allowed ([SlopRing](/docs/abi/slopring)) |
+| SlopRing layout | Entries in the shared queues are always read and written inside the queue's memory |
+| SlopRing buffers | Buffers a program registers with the ring are only read and written inside their bounds |
+| Zero-copy TCP sends | Data sent without copying is only read from memory that is still pinned, and the pin is released only when the other side has acknowledged it or the connection is closed |
+
+## What is deliberately not proven
+
+**Code that more than one CPU runs at once.** Each proof treats its steps as
+happening one at a time. Real CPUs can see each other's writes late or out of
+order unless the code uses the right atomic operations, and Verus has no model
+of that. So the atomic operations underneath each proof, such as the
+compare-and-swap that decides which CPU frees a task, are checked by review
+and by [Miri](/docs/verification/kernmiri), not by proof.
+
+**Rules the build checks instead.** A few things each proof relies on are
+enforced by a script rather than by Verus. For example, the page-table proof
+assumes there is one writer per address space at a time, and a check makes
+sure nothing writes the kernel's own page tables except through the one locked
+path. [Safety gates](/docs/verification/tcb-discipline) lists those checks.
+
+**The rest of the trusted core.** Interrupt handling, locks, device access,
+copying to and from user programs, the boot code and most of the memory code
+outside the parts above are reviewed and tested under Miri, but not proved.
+Proving the whole trusted core isn't a goal. The proofs cover the places where
+a bug would corrupt memory rather than return an error, which is where they
+buy the most.
+
+## Running the proofs
 
 ```bash
-just ensure-verus
-just verify
-just verify frame_refcount
+just verify                   # check every proof
+just verify task_ownership    # check one proof, by file name
 ```
 
-## Verified coverage
+The first run downloads the pinned version of Verus into
+`third_party/verus` (`just ensure-verus` does only that step). Any statement
+Verus can't prove fails the run, and the failing proof file is named. CI runs
+every proof on each change, in the same job as Miri.
 
-| Area | Proves |
-|------|--------|
-| Frame ownership | Ref-count invariants, including no double-free and no use-after-free |
-| Slab lifetime | Heap slot lifetime and fit invariants |
-| VM cursor logic | Map/unmap well-formedness and user-mapping sensitivity rules |
-| SlopRing cursor logic | Completion queue overwrite prevention, overflow latch, and in-flight bounds |
-| SlopRing layout logic | Masked indices and layout arithmetic stay in bounds |
-| TCP zero-copy send logic | Pinned send windows stay in bounds and live until ACK or teardown |
-| Task ownership | Existence-reference uniqueness, container count conservation, single-winner destruction, and the reap gate |
+The download is a prebuilt release for x86-64 Linux. On any other machine,
+build Verus from the pinned commit and point `VERUS_BIN` at it.
 
-## Explicit gaps
+## For contributors
 
-- VM-space proofs use a coarse lock-per-space model. This is a scalability gap,
-  not a current soundness gap.
-- SlopRing proofs model index and state-machine logic, not the volatile
-  user-frame accessors or weak-memory behavior.
-- TCP zero-copy proofs model send-queue logic, not runtime atomics in the
-  notification token.
-- Task-ownership proofs model the ownership logic, not the weak-memory ordering
-  of the existence flag exchange or the reference-count release loop, not the
-  intrusive placement links or the provenance of the raw pointers they pass
-  around, and not the saturation arm or the weak count. Those stay
-  KernMiri-covered.
+- **The pin.** `verification/verus.toml` names the Verus release, its commit,
+  the release file's SHA-256 and the Rust toolchain Verus itself uses
+  (1.95.0, separate from the kernel's nightly). It tracks a release on Verus's
+  main branch, not its experimental `async` branch, because the kernel has no
+  `async`.
+- **Bumping it.** At most once a quarter, and only when a needed feature
+  lands. A bump has to pass `just verify` unchanged: a proof that breaks is
+  fixed or the bump is reverted, never weakened. If Verus stops being
+  maintained, the fallback is bounded model checking with Kani, which checks
+  inputs up to a size limit and is a weaker guarantee.
+- **Adding a proof.** One file per trusted-core module, named after it, in
+  `verification/proofs/`. Files whose names start with `_` are shared helpers
+  and aren't run on their own. When a proof lands, record it in
+  `verification/STATUS.md`, including what the model leaves out.
+- **Changing proven code.** If you change a module that has a proof, change
+  the model to match and run `just verify`. A proof that still passes against
+  an outdated model proves nothing about your change.
 
-## Upgrade policy
+## Further reading
 
-Verus bumps should happen on dedicated verification branches, at most quarterly
-unless a required feature lands. A pin bump must update the source verification
-metadata, redownload the toolchain, run `just verify`, and update the status
-record in the source repo.
+- [*The Verus guide*](https://verus-lang.github.io/verus/guide/). A tutorial
+  that starts from `requires` and `ensures` and works up to proofs about data
+  structures. Start here if you want to read or write a proof.
+- [*Verus: A Practical Foundation for Systems Verification*](https://www.andrew.cmu.edu/user/bparno/papers/verus-sys.pdf)
+  by Lattuada et al., SOSP 2024. How Verus works and what it has been used for.
+- [vostd](https://github.com/asterinas/vostd). Asterinas's Verus proofs of its
+  own trusted core, the closest project to this one.
+- [*Asterinas*](https://arxiv.org/abs/2506.03876) by Peng et al., USENIX ATC
+  '25. The invariants a trusted core has to keep, several of which the proofs
+  here state.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `verification/proofs/` | One proof per file, named after the module it models |
+| `verification/STATUS.md` | What each proof covers and what its model leaves out |
+| `verification/verus.toml` | The pinned Verus version |
+| `scripts/verify.sh`, `scripts/ensure_verus.sh` | Running the proofs and fetching Verus |
