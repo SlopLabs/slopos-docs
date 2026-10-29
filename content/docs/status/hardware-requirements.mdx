@@ -32,7 +32,8 @@ guest takes many times longer.
 | Test suite (`just test`) | 1 GB | `QEMU_MEM` |
 | Development machine (`just boot`, `just boot-fast`) | 6 GB | `DEV_QEMU_MEM` or `QEMU_MEM` |
 | Self-hosting checks, `test-installer`, `test-install-guest` | 6 GB | `DEV_QEMU_MEM` or `QEMU_MEM` |
-| `test-install`, `test-capacity`, `ui-shots` | 2 GB | `QEMU_MEM` (`CAPACITY_QEMU_MEM` for `test-capacity`) |
+| `test-capacity` | 2 GB | `CAPACITY_QEMU_MEM` or `QEMU_MEM` |
+| `test-install`, `ui-shots` | 2 GB | Fixed in the recipe |
 | `test-remote` | 1 GB | Fixed in the recipe |
 
 The guest gets 4 CPUs by default (`QEMU_SMP`, which must be a power of two).

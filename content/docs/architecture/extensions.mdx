@@ -40,13 +40,13 @@ through building and installing one, and
 
 None of the parts is new. systemd's
 [system extension images](https://www.freedesktop.org/software/systemd/man/latest/systemd-sysext.html)
-add read-only images beside an immutable `/usr`. The tree of SHA-256 hashes
+extend a host's `/usr` and `/opt` with read-only images. The tree of SHA-256 hashes
 that follows an extension's filesystem, checked as each block is read, is
 Linux's [dm-verity](https://docs.kernel.org/admin-guide/device-mapper/verity.html)
 tree, laid out byte for byte as `veritysetup` writes it. Android's
 [APEX](https://source.android.com/docs/core/ota/apex) packages are
 dm-verity-backed ext4 images whose updates must be signed by the same key as
-the copy already on the device, which is the rule SlopOS applies to signed
+the copy built into the device, which is the rule SlopOS applies to signed
 updates. An extension ships privileged actions the way a program ships
 [polkit](https://polkit.pages.freedesktop.org/polkit/polkit.8.html) action
 files, its services take their sockets the way a systemd service does
@@ -54,8 +54,8 @@ through `LISTEN_FDS`, its settings are edited the way `sudoedit` edits a
 file, and its signatures are the ones `ssh-keygen -Y sign` makes.
 
 What is SlopOS's own is how the pieces meet the rest of the system: the
-kernel attests an extension's programs as the extension's, the owner grants
-capabilities rather than a vendor, and an image goes in and out while the
+kernel attests an extension's programs as the extension's, the owner rather
+than a vendor grants capabilities, and an image goes in and out while the
 system runs.
 
 ## Why the base is not enough
@@ -371,9 +371,10 @@ all of it unasked.
 When an extension stops the system working properly, there are two ways
 back. Booting once with `extensions=off` on the kernel command line shows no
 extension at all (the kernel refuses `ext_activate` for that boot, so
-nothing in userland can override it). From the install medium's rescue
-shell, `extctl --root /mnt disable <name>` turns one off on a disk mounted at
-`/mnt`.
+nothing in userland can override it). From the install medium's
+[rescue shell](/docs/self-hosting/installing), `extctl --root /mnt disable
+<name>` turns one off on a disk mounted at `/mnt`; no privd action takes
+`--root`, so only a shell that already holds the capabilities can do this.
 
 For a developer, an extension is the way to ship anything that needs a
 daemon, a capability or a privileged helper without rebuilding the base.
@@ -431,8 +432,8 @@ that meets it to fail. On the host, the hash tree is checked against what
 ## Further reading
 
 - [systemd-sysext(8)](https://www.freedesktop.org/software/systemd/man/latest/systemd-sysext.html).
-  The closest relative on Linux: read-only extension images beside an
-  immutable `/usr`, and how their compatibility is checked.
+  The closest relative on Linux: read-only images merged into a host's
+  `/usr` and `/opt`, and how their compatibility is checked.
 - [dm-verity](https://docs.kernel.org/admin-guide/device-mapper/verity.html),
   in the Linux kernel's documentation. The hash tree an extension image
   carries, and why a read that fails its hash fails outright.

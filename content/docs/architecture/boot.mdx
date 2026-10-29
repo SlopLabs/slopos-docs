@@ -7,9 +7,9 @@ import { BootSequence } from '@/components/diagrams/boot-sequence';
 
 When SlopOS boots, every stage between the firmware and the first session
 leaves a line in the log, so a boot that stops partway tells you which stage
-it reached and usually why. The screen says nothing you have to read: from
-the firmware's logo to the desktop it stays black, with one ring of twelve
-segments on it that lights up as the kernel works. On an installed system you
+it reached and usually why. The screen says nothing you have to read: after
+the firmware's logo and until the desktop it stays black, with one ring of
+twelve segments on it that lights up as the kernel works. On an installed system you
 also get two fallbacks. The disk keeps two kernels and two copies of the
 userland, so a new kernel that crashes, or a new userland the kernel can't
 run, gives way to the old one at the next boot. This page walks through the
@@ -138,8 +138,8 @@ BOOT: base current (<n> bytes), interface <i>
 BOOT: base previous (interface <i>) not booted; its memory goes to the allocator
 ```
 
-If the kernel serves neither, the boot stops at its `initramfs root` step
-with a line naming both, such as
+If the kernel serves neither, the boot stops with a panic at its
+`initramfs root` step, after a line naming both, such as
 `BOOT: no base this kernel serves (interfaces <a>-<b>): current interface <i>, previous interface <j>`.
 So installing a new base that needs a newer kernel can't leave a machine that
 doesn't start: until the new kernel is there, the old kernel boots the old
@@ -172,7 +172,8 @@ line decides:
 Either way, the system's own programs come from the base that Limine loaded,
 not from the disk. The kernel mounts the base read-only over `/bin`, `/sbin`,
 `/lib`, `/usr/bin`, `/usr/share` and `/etc/ssl`, and no program can unmount
-it, so the programs always come from the base this kernel chose. The disk
+it, so the system's programs always come from a base and never from the disk,
+whatever the disk holds at those paths. The disk
 holds everything else: settings, home directories, software installed under
 `/usr/local` and on the development machine a checkout of the source.
 [Filesystem](/docs/architecture/filesystem) explains the mounts, and
@@ -197,36 +198,18 @@ does with both.
 ## From init to the session
 
 `init` is an ordinary program running in user mode, and everything after this
-point happens through system calls. It runs as uid 0 and holds every
-capability, which it hands out piece by piece to what it starts. In order, it:
-
-1. Loads the console font and runs `bootctl collect`, which saves any crash
-   record a previous boot left (see
-   [Diagnosing the kernel](/docs/development/diagnostics#the-kernel-panicked)).
-2. Lays out the root's directories and owners, writes the user database
-   from the accounts record (`users sync`), and shows the installed
-   [extensions](/docs/architecture/extensions).
-3. Starts [privd](/docs/architecture/privd), the program that runs what a
-   session may not, and waits until it is ready. On a machine paired for
-   [remote control](/docs/self-hosting/remote-control) it also starts
-   `remoted`.
-4. Applies the saved keyboard layout and runs the Wheel of Fate (next
-   section).
-5. Starts the login prompt on the console and puts a session on the screen:
-   the desktop of the person the accounts record logs in automatically, or
-   the login screen. A desktop is the compositor, then a terminal once the
-   compositor is ready. On a live boot from the install medium the desktop
-   opens the installer's welcome window in place of the terminal.
-
-After that, `init` stays running for the life of the system. It starts
-privd, the sessions and the extensions' services again when they exit, at
-most five times a minute each, and re-executes itself when a new base
-changes it. [Init and services](/docs/architecture/init) describes all of it,
-and [Sessions and login](/docs/architecture/sessions) describes the login
-screen and switching between people.
-
-A test boot (`tests=on`) runs no wheel and starts no session: init runs the
-userland tests in a copy of itself and serves while they run.
+point happens through system calls. It first saves any crash record a
+previous boot left (see
+[Diagnosing the kernel](/docs/development/diagnostics#the-kernel-panicked)),
+then starts [privd](/docs/architecture/privd) and the other services, runs
+the Wheel of Fate (next section), and puts a session on the screen: the
+desktop of the person the accounts record logs in automatically, or the
+login screen. On a live boot from the install medium, that desktop opens the
+installer's welcome in place of a terminal. A test boot (`tests=on`) runs no
+wheel and starts no session. [Init and services](/docs/architecture/init)
+describes what init starts, in what order and how it keeps it running, and
+[Sessions and login](/docs/architecture/sessions) describes the login screen
+and switching between people.
 
 ## The Wheel of Fate
 
@@ -293,7 +276,7 @@ and opens the installer's welcome, which asks whether you want to try SlopOS
 or install it; [Installing SlopOS](/docs/self-hosting/installing) walks
 through that.
 
-**The installed system** lives on a disk with four SlopOS partitions. The
+**The installed system** lives on a disk with four partitions it uses. The
 *EFI system partition* (ESP), the FAT partition every UEFI firmware reads,
 holds Limine and its configuration under `\EFI\SlopOS\`, so it can sit beside
 another operating system's boot loader on the same ESP. SlopOS's own boot
@@ -309,10 +292,10 @@ a machine that doesn't boot. Which slot boots by default is recorded in a
 firmware variable, not in Limine's configuration, and after an install it is
 slot a. `bootctl` writes a new kernel into the other slot and asks Limine to
 boot it once. An installed system boots with `panic=reboot`, so if the new
-kernel panics, the machine resets onto the old default and the next boot
-saves the panic's record if the disk is an NVMe drive. If the new kernel comes up, `bootctl commit` makes
-it the default. A new base goes beside the old one in the same way, and runs
-without a reboot when the running kernel serves it.
+kernel panics, the machine resets onto the old default, and on an NVMe drive
+the next boot saves the panic's record. If the new kernel comes up,
+`bootctl commit` makes it the default. A new base goes beside the old one
+too, and runs without a reboot when the running kernel serves it.
 [Updating SlopOS](/docs/self-hosting/updating) walks through both, and
 [Development machine](/docs/self-hosting/development-machine) shows the
 setup `just boot` starts, where SlopOS rebuilds and installs itself; there

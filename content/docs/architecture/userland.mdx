@@ -285,8 +285,8 @@ vectors and against OpenSSL and `ssh-keygen`) are tested on the host with
 `just test-host`. The kernel test suite then runs real programs inside the
 guest: C programs for libc, statically and dynamically linked, the loader's
 search order (`dl_test`), C++ exceptions and iostreams (`cxx_test`), the
-coreutils and shell scripts, and the self-hosting tests, which build software
-with cargo on SlopOS itself. On every commit CI also runs the checks on
+coreutils and shell scripts, and, on a root that carries the toolchain, the
+self-hosting tests, which build software with cargo on SlopOS itself. On every commit CI also runs the checks on
 `libc.so`'s exports and layouts, its licence, and the apps' linking.
 
 ## For contributors
@@ -316,7 +316,8 @@ with cargo on SlopOS itself. On every commit CI also runs the checks on
 - **Licences are checked.** `check_libc_license.sh` holds every crate
   `libc.so`, `libc.a`, `crt0.o` and `libbuiltins.a` are built from to a
   licence MIT alone satisfies, and their sources to files inside `slibc/`,
-  `slibc-core/` and `abi/`. A third-party crate needs an entry in
+  `slibc-core/` and `abi/`, bar the `toolchain/libc/` fork the headers are
+  rendered from. A third-party crate needs an entry in
   `slibc/NOTICE`, which ships in `/usr/share/licenses/slibc/`.
 - **The search path is stated once,** as `DEFAULT_PATH` in `slopos-abi`,
   which the shell, `execvp` and the tools that search `PATH` share.

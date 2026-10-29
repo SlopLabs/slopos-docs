@@ -83,14 +83,16 @@ and how a program is given a capability.
 | `ConsoleIo`, `ClipboardGlobal`, `Fate` | A holder of that capability. These three are universal: every program holds them unless it or its spawner dropped them |
 | Any other capability (`Power`, `Mount`, `SysInspect`, ...) | A holder of that capability, which only a spawner that holds it can delegate |
 
-Some calls check more inside the handler, through `SyscallContext::holds`:
-the credential calls (`SetId`), `setpriority` (`SchedHigh`), `net_query`'s
-socket owners (`NetAdmin`), and the display calls, which also require the
-screen or input seat.
+Some calls check more inside the handler. The credential calls ask
+`SyscallContext::holds` for `SetId`, `setpriority` for `SchedHigh` and
+`net_query` for `NetAdmin` before naming a socket's owner, and the display
+calls require the caller to hold the screen or input seat.
 
 ## Linux-numbered calls
 
-Each behaves as its Linux man page says, except as noted.
+Each takes Linux's arguments and follows its Linux man page. The notes
+record what SlopOS restricts or adds, as the source states it; an empty note
+does not promise every flag of the Linux call.
 
 | Number | Call | Class | Notes |
 |---|---|---|---|
@@ -201,8 +203,8 @@ Each behaves as its Linux man page says, except as noted.
 | 153 | `vhangup` | `ConsoleConfig` | |
 | 158 | `arch_prctl` | `NoneSelf` | `ARCH_SET_FS` and `ARCH_GET_FS` |
 | 162 | `sync` | `NoneSelf` | |
-| 165 | `mount` | `Mount` | `fstype` `ext2`, `ext3`, `ext4`, `ramfs` or `devfs` (else `ENODEV`); a non-null `data` is `EINVAL` |
-| 166 | `umount2` | `Mount` | |
+| 165 | `mount` | `Mount` | `fstype` `ext2`, `ext3`, `ext4`, `ramfs` or `devfs` (else `ENODEV`); a non-null `data` is `EINVAL`. `EBUSY` at `/`; `EPERM` at or beneath a pinned mount (the base's, the install medium's) and at, above or beneath a directory the kernel keeps (`KEPT_DIRS`: `/etc`, `/var/lib/slopos` and the stores in it) |
+| 166 | `umount2` | `Mount` | `EBUSY` at `/`, and while a descriptor is open on the mount unless `MNT_DETACH`; `EPERM` for a pinned mount and at, above or beneath a kept directory |
 | 169 | `reboot` | `Power` | `LINUX_REBOOT_CMD_RESTART`, `_POWER_OFF` and `_HALT` |
 | 186 | `gettid` | `NoneSelf` | |
 | 202 | `futex` | `NoneSelf` | `WAIT`, `WAKE`, `REQUEUE`, `CMP_REQUEUE`, `WAIT_BITSET`, `WAKE_BITSET` |

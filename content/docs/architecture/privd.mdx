@@ -110,8 +110,10 @@ and the paired agent of [Remote control](/docs/self-hosting/remote-control).
 The policy lives at `/usr/share/slopos/privd/actions`, inside the sealed base,
 so no process can edit it. A request reads it as it stands when the request
 arrives. An enabled extension may add actions of its own, named
-`ext.<extension>.<action>`, which run as the extension's own user and never
-allow `root` (see [Extensions](/docs/architecture/extensions)).
+`ext.<extension>.<action>`. Their mechanisms are programs of the extension's
+image and run as the extension's first user, never as uid 0, holding no more
+than the extension was granted; they never allow `root`, and the dialog says
+which extension's action it is (see [Extensions](/docs/architecture/extensions)).
 
 ## A request from start to finish
 
@@ -185,7 +187,10 @@ Because a program from the base can be trusted to be what it says, a policy
 may name one: `allow program /bin/compositor` means "any process running the
 base's compositor". privd refuses its whole policy if such a line names a
 program that is not statically linked, since the dynamic loader could map a
-library from outside the base into it.
+library from outside the base into it. An extension's action may name one of
+the extension's own programs the same way; that line matches only a process
+running that file of the extension's activation, whose label names the
+extension and the image its record installed.
 
 ## Who may ask, and what they must do
 

@@ -55,9 +55,9 @@ loader's alone and logs
 
 - An option the kernel does not know is ignored.
 - A known option with a value it does not accept is ignored and its default
-  stays. Most such options log a line in the form
-  `Boot option: <key>=<value> ignored (want on or off)`, naming what they
-  accept.
+  stays. Most such options log a `Boot option:` line naming what they
+  accept; an on/off option logs
+  `Boot option: <key>=<value> ignored (want on or off)`.
 - On/off options accept exactly `on` and `off`.
 - Where an option appears more than once, the last accepted value wins.
   The exceptions: `mount=`, `tests.run=` and `tests.skip=` accumulate;
@@ -65,7 +65,8 @@ loader's alone and logs
   `extensions=off` takes effect wherever it appears, and a later
   `extensions=on` does not undo it.
 - `video=framebuffer`, `roulette=skip`, `tp.off`, `tp.poll`, `tp.debug`,
-  `platform.debug` and the `panic.*_smoke=on` options are matched as text
+  `platform.debug`, `panic.post_boot_unwind=on`, `panic.fatal_smoke=on` and
+  `panic.nested_drop_smoke=on` are matched as text
   anywhere in the line, and the userland test mode is set by any `tests=on`.
 
 ## Names Linux also uses
@@ -138,7 +139,7 @@ The rest of the options have no Linux counterpart of the same name.
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `mount=` | `<source>:/<path>`, repeatable | none | Once the root is up, mounts the ext2/3/4 volume `<source>` at `/<path>`, read-write, in command-line order, so a later entry may mount inside an earlier one. The value splits at its first `:/`, so a `LABEL=` may hold a colon. `<source>` takes every spelling `root=` takes; an absent one is waited for as for `root=`. Each logs `MOUNT: <source> at <path> (ext4, read-write)` (or `read-only`); a failure logs `MOUNT: mount=<value> failed (...); continuing` and the boot goes on |
+| `mount=` | `<source>:/<path>`, repeatable | none | Once the root is up, mounts the ext2/3/4 volume `<source>` at `/<path>`, read-write, in command-line order, so a later entry may mount inside an earlier one. The value splits at its first `:/`, so a `LABEL=` may hold a colon. `<source>` takes every spelling `root=` takes; an absent one is waited for as for `root=`. The target is refused as `mount(2)` refuses it: `/` itself, anything at or beneath a base directory, and anything at, above or beneath a directory the kernel keeps (`/etc` and `/var/lib/slopos`, so `/var` and `/var/lib` too). Each logs `MOUNT: <source> at <path> (ext4, read-write)` (or `read-only`); a failure logs `MOUNT: mount=<value> failed (...); continuing` and the boot goes on |
 | `verity=` | `require` | off | The root disk must mount with a verity trailer (a hash tree that attests its blocks), or the `fs init` boot step fails. A boot with no disk at all still passes |
 
 ### Boot and userland
@@ -204,7 +205,7 @@ does not accept is ignored without a log line.
 | `lockdep=` | `off`, `warn`, `panic` | `panic` | What the lock-order checker does when it finds two locks taken in an order that could deadlock. `warn` reports each distinct pair once and keeps booting; `off` skips the ordering checks but still tracks which locks each CPU holds |
 | `watchdog=` | `on`, `off` | `on` | Whether the watchdog reports a CPU that has stopped making progress |
 | `watchdog.miss_threshold=` | positive integer | `100` | Consecutive heartbeat samples (one per timer tick, so 100 is a second) a CPU may miss before it is reported. `0` is refused |
-| `watchdog.panic=` | `on`, `off` | `on` on bare metal, `off` under a hypervisor | Whether a long stall panics the kernel: one five thresholds long, or one threshold long when the stalled CPUs wait on each other in a cycle. A hypervisor can pause a virtual CPU, which looks the same as a stalled one, which is why the default differs |
+| `watchdog.panic=` | `on`, `off` | `on` on bare metal, `off` under a hypervisor | Whether a long stall panics the kernel: a stall five thresholds long, or one threshold long when the stalled CPUs wait on each other in a cycle. A hypervisor can pause a virtual CPU, which looks the same as a stalled one, which is why the default differs |
 
 ### Panics
 
@@ -226,7 +227,7 @@ report. `just test` never sets them.
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `tests=` | `on`, `off` | `off` | Runs the kernel test harness. `off` also clears `tests.shutdown`. Any `tests=on` also puts userland in test mode: init runs the userland tests in a copy of itself, `test_key` answers, and the Wheel of Fate cannot restart the machine |
-| `tests.run=` | globs separated by commas | all tests | Runs only tests whose `module::name` matches one of the globs. A test registered as explicit runs only when a glob is its full name |
+| `tests.run=` | globs separated by commas | all tests | Runs only tests whose `module::name` matches one of the globs. A test registered as explicit runs only when a pattern is exactly its full name |
 | `tests.skip=` | globs separated by commas | none | Skips matching tests |
 | `tests.verbosity=` | `quiet`, `summary`, `verbose` (any case) | `summary` | `quiet` prints only failures; `verbose` adds the captured log of passing tests. Any other value means `summary` |
 | `tests.warn_ms=` | milliseconds, optional `ms` suffix | `0` (off) | Marks passing tests slower than this as `OVER_TIME` |

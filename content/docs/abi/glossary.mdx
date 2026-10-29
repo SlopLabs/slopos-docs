@@ -1,0 +1,66 @@
+---
+title: "Glossary"
+description: "The words these docs and the SlopOS source use for their own ideas, what each means, and where it is explained."
+---
+
+The terms below are the ones SlopOS gives its own ideas, in the sense the
+source tree uses them. Each entry says what the term means, what other
+systems call the nearest thing where there is one, and which page explains
+it. Words with their usual Unix meaning (process, file descriptor, inode,
+mount) are not listed.
+
+| Term | Meaning | Elsewhere | Explained in |
+|---|---|---|---|
+| Action | A named thing privd will do on request, such as `org.slopos.power.reboot`: the program it runs, the arguments it accepts, the capabilities it gets and who may ask for it | A polkit action | [Privileged actions](/docs/architecture/privd), [privd actions](/docs/abi/privd-actions) |
+| Activation | One extension image shown read-only at `/opt/<name>`. Replacing it makes a new activation; the old one is freed once nothing uses it | A mounted system extension | [Extensions](/docs/architecture/extensions) |
+| Administrator | A person the accounts record marks as one, and so a member of the `admin` group. Being one is a level privd checks, not a power the kernel grants | A member of `wheel` or `sudo` | [Users and file permissions](/docs/architecture/users) |
+| App | A program with a window and an entry in the dock. The shipped apps outside the base (editor, files, image viewer, widget gallery) live in a tree under `/usr/local` | Desktop application | [Desktop](/docs/architecture/desktop), [Installed software](/docs/architecture/software) |
+| App entry | A `share/slopos/apps/<id>.app` file naming an app's id, name, program and icon, which the dock reads | A `.desktop` file | [Installed software](/docs/architecture/software) |
+| Base | The read-only userland image: `/bin`, `/sbin`, `/lib`, `/usr/bin`, `/usr/share` and `/etc/ssl`, packed as one archive and mounted over the root at boot | The read-only `/usr` of an image-based system | [Base system](/docs/architecture/base) |
+| Base interface | The number naming the private call surface a base was built against. A kernel serves a range of them and boots only a base inside it | | [Base system](/docs/architecture/base), [Interfaces and stability](/docs/abi/interfaces) |
+| Boot partition | The FAT32 partition holding the kernel slots and the two bases, `current` and `previous` | `/boot` | [Updating SlopOS](/docs/self-hosting/updating) |
+| Broker | The program on the developer's host (`scripts/remote.py serve`) that a paired machine dials and that hands it commands | | [Remote control](/docs/self-hosting/remote-control) |
+| Capability | A named power, such as `Power` or `Mount`, held as one bit of a process's capability mask. A uid grants none | A Linux capability (`CAP_SYS_BOOT`) | [Capabilities](/docs/architecture/authority) |
+| Ceiling | The most a grant may include: the base's list for extensions, a signing key's list, or `REQUESTER_CEILING` for what `priv` runs | A bounding set | [Extensions](/docs/architecture/extensions), [Privileged actions](/docs/architecture/privd) |
+| Claim | A block device's record of who is using it: a write claim is exclusive, read claims share. Mounts and raw writes take one | Exclusive open of a block device | [Disks](/docs/architecture/storage) |
+| Commit (a slot) | Making the kernel that booted this time the default, after a one-shot boot proved it | Marking a boot entry good | [Updating SlopOS](/docs/self-hosting/updating) |
+| Consent dialog | The question the desktop shows when privd needs a person to allow an action, with a click or a password | A polkit authentication agent, UAC prompt | [Privileged actions](/docs/architecture/privd), [Desktop](/docs/architecture/desktop) |
+| Crash partition | A small partition on the boot disk where a panicking kernel writes a crash record | pstore backend | [Diagnosing the kernel](/docs/development/diagnostics) |
+| Crash record | The panic report and the tail of the kernel log, written to the crash partition as the kernel dies and copied to `/var/log/crash/` at the next boot | A pstore or ramoops record | [Diagnosing the kernel](/docs/development/diagnostics) |
+| Credentials | A process's real, effective and saved uid and gid and its supplementary groups. They say who a process is, never what it may do beyond file permissions | Linux `struct cred` | [Users and file permissions](/docs/architecture/users) |
+| Delegate | To hand a child, when spawning it, some of the capabilities the parent holds. A child never gets more than its parent | | [Capabilities](/docs/architecture/authority) |
+| Diagnostic console | Keys pressed on the physical keyboard (Alt+PrintScreen, then a command key) or a serial BREAK that make the kernel print its state | Magic SysRq | [Diagnosing the kernel](/docs/development/diagnostics) |
+| Extension | Software installed as a signed or approved image, shown read-only at `/opt/<name>`, whose services run as users of its own and whose powers are its grant | A systemd system extension | [Extensions](/docs/architecture/extensions) |
+| First person | The person with uid 1000, named `user` unless the installer was told otherwise. They hold the workspace at `/src` and cannot be removed | The first user an installer creates | [Users and file permissions](/docs/architecture/users) |
+| Framekernel | A kernel in which one trusted crate holds every line of `unsafe` code and all others are forbidden it | (Asterinas's term) | [The framekernel](/docs/verification/framekernel) |
+| Gated capability | Any capability except the three universal ones; holding one makes a program start `AT_SECURE` | | [Capabilities](/docs/architecture/authority) |
+| Generation | One base as served while the system runs. The base booted is generation 1; each live replacement is the next | | [Base system](/docs/architecture/base) |
+| Grant | What an extension may hold and do: capabilities, actions people reach unasked, users and commands. Approved at its first install | | [Extensions](/docs/architecture/extensions) |
+| Greeter | The login screen, run by the compositor as the base's `greeter` user (uid 50) | A display manager's greeter | [Sessions and login](/docs/architecture/sessions) |
+| In front, behind | Whether a graphical session holds the screen and the input now. A desktop behind is locked | Active and inactive sessions | [Sessions and login](/docs/architecture/sessions) |
+| Install medium | The live ISO, on a CD or a USB stick, that boots SlopOS from RAM and carries the installer | Installation media | [Installing SlopOS](/docs/self-hosting/installing) |
+| Kept directory | A directory the kernel holds in place from boot (`/etc`, `/var/lib/slopos` and the stores under it): it cannot be renamed, removed or mounted over | | [Filesystem](/docs/architecture/filesystem) |
+| KTAP | The line format the test harness prints results in | (Linux's kernel test format) | [Test output format](/docs/abi/ktap-test-output) |
+| Level | How privd asks before running an action for a principal: not at all, `confirm` (a click) or `password` | polkit's `yes`, `auth_self` | [Privileged actions](/docs/architecture/privd) |
+| Login tag | A number every process carries and passes to its children, naming the session it belongs to. Only a `SetId` holder sets it | Linux's audit session id | [Sessions and login](/docs/architecture/sessions) |
+| Manifest | The list of what a base or a tree holds, kept beside it, which an install, an update or a replacement reads to know what is there | | [Base system](/docs/architecture/base), [Installed software](/docs/architecture/software) |
+| Mechanism | The program privd starts to carry out an action, with the action's capabilities | A polkit mechanism | [Privileged actions](/docs/architecture/privd) |
+| OSTD | `slopos-ostd`, the one kernel crate allowed `unsafe`. SlopOS reads the name as Operating System Trusted Domain; Asterinas, where it comes from, as Operating System Standard Library | | [The trusted core](/docs/verification/ostd-trusted-core) |
+| Paired agent | `remoted` on a machine whose base carries a pairing with a broker. privd's `paired` principal | | [Remote control](/docs/self-hosting/remote-control) |
+| Payload | The partition on an install medium that holds the toolchain and the source, installed alongside SlopOS | | [Installing SlopOS](/docs/self-hosting/installing) |
+| Person | A human with an account in the accounts record, uid 1000 to 59999 | A regular user | [Users and file permissions](/docs/architecture/users) |
+| Pinned mount | A mount that `umount` refuses and under which nothing else may be mounted, as the base's directories are | | [Filesystem](/docs/architecture/filesystem) |
+| Principal | Who an `allow` line in privd's policy names: `root`, `user`, `admin`, `greeter`, `paired` or a `program` | polkit's subject | [Privileged actions](/docs/architecture/privd) |
+| privd | The privilege broker: the service that runs actions on behalf of programs that may not do them, asking the person first when the policy says so | polkitd | [Privileged actions](/docs/architecture/privd) |
+| Requester | The program that asks privd for an action | polkit's subject process | [Privileged actions](/docs/architecture/privd) |
+| Rescue shell | A shell holding every delegable capability, started from the install medium to repair an installed system | A recovery shell | [Installing SlopOS](/docs/self-hosting/installing) |
+| Seal | A file or directory marked immutable, which only a `Seal` holder can mark or unmark. Every file of the base is sealed | The immutable attribute (`chattr +i`) | [Filesystem](/docs/architecture/filesystem) |
+| Seat | The screen and the input stream, held by one process at a time and handed between sessions by init | A logind seat | [Sessions and login](/docs/architecture/sessions), [Windowing](/docs/architecture/userland-windowing) |
+| Session | A person's desktop, the login screen, or a shell a console login started, each with its own login tag | A logind session | [Sessions and login](/docs/architecture/sessions) |
+| Slot | A directory on the boot partition holding one kernel, `/boot/a` or `/boot/b`. The loader offers each as an entry, `slopos-a` and `slopos-b` | An A/B partition | [Updating SlopOS](/docs/self-hosting/updating) |
+| SlopRing | SlopOS's submission and completion ring for asynchronous I/O | io_uring | [SlopRing](/docs/abi/slopring) |
+| slibc | SlopOS's C library, `libc.so`, written in Rust | glibc, musl | [Userland](/docs/architecture/userland) |
+| Spare slot | The slot whose kernel is not the default, where a new kernel is installed to be tried | The inactive slot | [Updating SlopOS](/docs/self-hosting/updating) |
+| Tree | A set of files installed under `/usr/local` or `~/.local` together with a manifest, such as the toolchain or the apps | A package | [Installed software](/docs/architecture/software) |
+| Universal capability | `ConsoleIo`, `ClipboardGlobal` and `Fate`, which every program holds and keeps across `exec` | | [Capabilities](/docs/architecture/authority) |
+| Wheel of Fate | The roulette spin at every boot; an even number under the reboot fate restarts the machine | | [Boot](/docs/architecture/boot) |

@@ -101,8 +101,8 @@ answers when nothing else does.
 - **The console is off.** `kconsole=off` turns it off entirely; the default,
   `kconsole=on`, allows the commands that only print.
 - **The key came too late.** The trigger stays armed for three seconds
-  (`kconsole.arm_ms`). A key no command takes logs
-  `kconsole: no command for '<key>'`.
+  (`kconsole.arm_ms`). A key no command takes logs a line starting
+  `kconsole: no command for`.
 - **The serial trigger is off.** `kconsole.serial=off` disarms BREAK.
 
 Nothing a program does can reach a command that changes the machine: the
@@ -227,8 +227,8 @@ If it isn't, or you need to see variables,
 [Debugging with GDB](/docs/development/debugging-gdb-record-replay) shows how
 to stop at the panic and how to record a run and step backwards from it.
 
-By default a panicked machine waits on its panic screen so you can read it,
-and powers off when you press Enter. With `panic=reboot` it resets instead,
+By default a panicked machine stops on its panic screen so you can read it,
+and nothing runs after that. With `panic=reboot` it resets instead,
 after holding the screen for ten seconds on real hardware (not under a
 hypervisor, whose log you already have). An installed system boots with
 `panic=reboot`, so a kernel tried in the spare slot that panics hands the

@@ -154,10 +154,10 @@ just boot-fast
 
 This is `just boot` with the wheel skipped. It boots an optimised kernel and
 the system's programs (its *base*) from a boot disk it rebuilds on every run,
-with 6 GB of
-memory and a persistent root filesystem at `fs/assets/ext4-persist.img`. The
-first run builds that disk and puts a clone of your checkout at
-`/src/slopos`; after that, what you write to it is still there next time.
+with 6 GB of memory and a persistent root filesystem at
+`fs/assets/ext4-persist.img`. The first run builds that root and puts a clone
+of your checkout at `/src/slopos`; after that, what you write to it is still
+there next time.
 Before QEMU starts, the recipe prints what to type in the guest:
 
 ```text

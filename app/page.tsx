@@ -135,7 +135,7 @@ export default function HomePage() {
               <Reveal>
                 <div className="proof__figures">
                   <div className="proof__fig">
-                    <div className="proof__n">56</div>
+                    <div className="proof__n">52</div>
                     <p className="proof__l">
                       <code>pub unsafe fn</code>
                     </p>
@@ -259,9 +259,9 @@ export default function HomePage() {
                   {'\n'}
                   <span className="g">just test</span>
                   {'       '}
-                  <span className="c"># 3,500+ tests under QEMU</span>
+                  <span className="c"># 3,100+ tests under QEMU</span>
                   {'\n\n'}
-                  <span className="p">root@sloptopia</span>:/#
+                  <span className="p">user@sloptopia</span>:/home/user$
                 </pre>
               </Reveal>
 
@@ -299,7 +299,7 @@ export default function HomePage() {
                 <p>
                   Clients hand the compositor their buffers over memfd and
                   SCM_RIGHTS, the way Wayland does it. It tracks damage, culls
-                  what you cannot see, and runs five applications.
+                  what you cannot see, and draws every app from one theme.
                 </p>
               </Reveal>
             </div>
@@ -309,7 +309,7 @@ export default function HomePage() {
           <div className="wrap wheel">
             <Reveal>
               <h2 className="section__title">
-                The bootloader gambles with your session.
+                The boot gambles with your session.
               </h2>
               <p className="section__lead">
                 Before the desktop starts, SlopOS spins the Wheel of Fate and
@@ -458,7 +458,7 @@ const DOCS = [
   {
     icon: Books,
     title: 'Reference',
-    body: 'System calls, boot options, SlopRing and the window protocol',
+    body: 'System calls, boot options, privd actions and the window protocol',
     href: `${docsRoute}/abi/syscalls`,
   },
   {
@@ -470,7 +470,7 @@ const DOCS = [
   {
     icon: Wrench,
     title: 'Guides',
-    body: 'Add a syscall or driver, write tests, debug a wedged kernel',
+    body: 'Add a syscall or driver, write an app, write tests, debug a wedged kernel',
     href: `${docsRoute}/development/adding-a-syscall`,
   },
   {

@@ -147,6 +147,8 @@ An installed system keeps two kernels in two boot slots, so a new kernel that
 fails to boot falls back to the one that worked, and two bases, so a new base
 can be rolled back. A new base runs at once, without a reboot, when the
 running kernel serves it ([Updating SlopOS](/docs/self-hosting/updating)).
+Works with limits: unlike a kernel, a new base gets no trial boot before it
+becomes the one every slot boots.
 
 ## Building itself
 
@@ -204,7 +206,7 @@ machine-checked proofs cover selected parts of it
 | Desktop | Compositor, terminal, editor, file manager, image viewer, System Monitor | Works | [Desktop](/docs/architecture/desktop) |
 | Software | Base replaced live, `/usr/local` and `~/.local` trees, extensions | Works | [Installed software](/docs/architecture/software) |
 | Installing | Install medium, installer window and command, rescue shell | Works with limits | [Installing SlopOS](/docs/self-hosting/installing) |
-| Updates | A/B kernel slots with fallback, current and previous bases | Works | [Updating SlopOS](/docs/self-hosting/updating) |
+| Updates | A/B kernel slots with fallback, current and previous bases | Works with limits | [Updating SlopOS](/docs/self-hosting/updating) |
 | Self-hosting | Builds and installs itself, in QEMU and on the laptop | Works with limits | [Development machine](/docs/self-hosting/development-machine) |
 | Remote control | A paired machine driven from the host | Works | [Remote control](/docs/self-hosting/remote-control) |
 | Testing | At least 3,100 QEMU tests, host unit tests, long checks | Works | [Write tests](/docs/development/adding-tests) |

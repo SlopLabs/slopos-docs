@@ -13,8 +13,9 @@ brings the login screen in front, and the person who logs in there gets their
 own desktop back, or a new one.
 
 A computer with one person works as it always has: it starts straight into
-that person's desktop, with no password. The login screen appears once there
-is more than one person, or when automatic login is turned off.
+that person's desktop, with no password. The login screen appears when you
+switch user or log out, and at boot once automatic login is off, as adding a
+second person makes it unless told otherwise.
 
 What belongs to a session:
 
@@ -47,11 +48,10 @@ users, sessions and seats are separate things, many sessions may share a seat
 and one of them is active; [pam_systemd(8)](https://www.freedesktop.org/software/systemd/man/latest/pam_systemd.html)
 gives sessions classes such as `user`, `greeter` and `background`, and creates
 each user's runtime directory, `/run/user/$UID`, at their first login and
-removes it at their last logout. SlopOS has the same parts with the same
-names. Its differences: init keeps the table rather than a separate daemon,
-a session's processes are found by a login tag the kernel keeps rather than
-by a control group, and a session in front moves the seat through one system
-call that only init may make.
+removes it at their last logout. SlopOS has these parts and uses those class
+names, with a `console` class of its own for text logins. Its differences: init keeps the table rather than a separate daemon,
+a session's processes are found by a login tag the kernel keeps, and the seat
+moves to the session in front through one system call that only init makes.
 
 Ctrl+Alt+Delete as the key that always reaches the system is the idea of a
 [trusted path](https://en.wikipedia.org/wiki/Trusted_path). Linux has a
@@ -65,8 +65,8 @@ With one desktop and one person, "the person at the machine" is a single
 thing: the screen, the keyboard, the clipboard and every permission question
 belong to them. With a second person that breaks in several ways at once.
 Without sessions they would log in to the first person's desktop. A key typed
-by one could reach the other's window. A password typed into a dialog could
-be answered for the wrong person. A paste could leak what the other copied.
+by one could reach the other's window. A permission question could be
+answered by the wrong person. A paste could leak what the other copied.
 And one person's runaway program could take every process the machine has.
 
 So each login needs an identity of its own that every process it starts
@@ -84,31 +84,31 @@ to, a *class*, and whether it is in front and whether it is locked:
 | `user` | A person's desktop | Their compositor, running as them |
 | `greeter` | The login screen | The compositor run with `--greeter`, as the `greeter` user (uid 50) |
 | `console` | A person's shell on a terminal, from a console login | `/bin/shell`, running as them |
-| `background` | `remoted`, the paired agent of [Remote control](/docs/self-hosting/remote-control) | `remoted`, running as the person the accounts record names for it |
+| `background` | `remoted`, the paired agent of [Remote control](/docs/self-hosting/remote-control) | `remoted`, running as the person the accounts record names for it, the first administrator unless set |
 
-The *leader* is the process init started for the session. A desktop's
-compositor that exits is started again, within init's restart budget (see
-[Init and services](/docs/architecture/init)); a console session ends when its
-shell does.
+The *leader* is the process init started for the session. A compositor that
+exits, a desktop's or the login screen's, is started again within init's
+restart budget (see [Init and services](/docs/architecture/init)); a console
+session ends when its shell does.
 
 Init writes the table to `/run/sessions`, one file per session named by its
 login tag, through a temporary file and a rename so a reader never sees half
 of one:
 
 ```text
-$ cat /run/sessions/1048577
+$ cat /run/sessions/1048576
 UID=1000
 USER=user
 CLASS=user
 ACTIVE=1
 LOCKED=0
 LEADER=42
-TTY=/dev/pts/3
 ```
 
-`ACTIVE` means in front. Anyone may read these files, and `session status`
-lists them. They are for information only: nothing decides anything from
-them. privd learns the table from init itself, over a socket pair init made
+`ACTIVE` means in front, and `LEADER` is the leader's pid while it runs. A
+console session's file also names its terminal, as `TTY=/dev/pts/2`. Anyone
+may read these files, and `session status` lists them. They are for
+information only: nothing decides anything from them. privd learns the table from init itself, over a socket pair init made
 for it, whenever it changes.
 
 ## Login tags
@@ -137,10 +137,10 @@ as uid 0 does not.
 
 The screen and the stream of input events are *seats*: each has one holder,
 and only the holder can draw on the screen or read input (see
-[Capabilities](/docs/architecture/authority#seats-for-the-screen-and-input)).
-Every compositor init starts may hold both seats, but none takes them itself.
-Init hands them over with `seat_switch`, a system call only init may make (it
-needs `SeatSwitch`, which nothing else holds). The kernel then makes that
+[Capabilities](/docs/architecture/authority)). Every compositor init starts
+may hold both seats, but none takes them itself. Init hands them over with
+`seat_switch`, a system call only init makes (it takes the `SeatSwitch`
+capability, which init hands to nothing it starts). The kernel then makes that
 compositor the holder of both seats, routes every input event to it, and
 drops events still queued for the one before, which would otherwise read
 them as typed the moment it came back. The kernel's own console outranks
@@ -211,8 +211,11 @@ wrong ones as a login does. A person without a password unlocks by pressing
 *Unlock* with the field empty. Only a desktop's own compositor can tell init
 that it locked or unlocked, and init refuses *unlocked* from a desktop that is
 behind. A desktop that went behind is locked from that moment, as far as init
-is concerned. If any process other than the compositor asks init to restart
-the desktop, it comes back locked.
+is concerned, and a compositor that tells init it locked keeps telling it
+every second, for up to a minute, until init has heard. Init remembers the lock across a restart:
+a compositor that crashes comes back locked if init last heard it was locked,
+and unlocked if it was not. If any process other than the compositor asks init
+to restart the desktop, it comes back locked.
 
 ## Logging in on the text console
 
@@ -241,7 +244,9 @@ nothing there; see [Where the person is asked](/docs/architecture/privd#where-th
 ## Logging out and ending a session
 
 *Log out…* in the system menu, or `session end`, asks init to end your
-session. Init ends a session as systemd ends a service: it sends `SIGTERM` to
+session. Init ends a session as systemd ends a service (see
+[systemd.kill(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)):
+it sends `SIGTERM` to
 every process carrying the session's login tag, again to each one forked since,
 and `SIGCONT` to each one stopped so that it acts on the signal; after five
 seconds it sends `SIGKILL` to whatever is left, and after ten it gives up and
@@ -251,8 +256,9 @@ that carry other tags are not touched: what `remoted` runs for them and what
 privd runs as uid 0 survive. Ending the first person's desktop also ends the
 session services extensions run beside it.
 
-With nothing left in front, init shows the login screen. *Restart desktop…*
-in the system menu, or `session restart`, ends the session and starts it again.
+With nothing left in front, init shows the login screen. `session restart`
+ends the session and starts it again; the system menu offers it as
+*Restart desktop…* once a new base has changed the desktop's programs.
 
 ## Automatic login
 
@@ -262,7 +268,8 @@ login screen. A fresh install names its first person, so a one-person computer
 starts straight into the desktop. `users autologin <name>` and
 `users autologin --off` change it, and adding a person turns it off unless
 `users add` is given `--keep-autologin`. Automatic login applies only to the
-boot's first session: after you log out, the login screen appears.
+first session the screen shows in a boot, and again after uid 0 restarts every
+session: after you log out, the login screen appears.
 
 On a live boot from the install medium, the desktop the boot opens shows the
 installer's welcome window instead of a terminal (see
@@ -283,8 +290,10 @@ starts no session at all until a test asks for one.
 - **A share of the machine.** Each person's processes are counted against an
   account of their own, which may hold a quarter of the machine's processes
   and a quarter of its threads. One person's fork bomb stops there and leaves
-  the other people's sessions running. Memory stays the machine's, under one
-  limit (see [Resource limits](/docs/architecture/resource-accounting)).
+  the other people's sessions running. The first sixteen people to run
+  anything in a boot get such an account; a later one shares the system's.
+  Memory stays the machine's, under one limit (see
+  [Resource limits](/docs/architecture/resource-accounting)).
 
 ## What it means in practice
 
@@ -310,9 +319,8 @@ For programs:
   not depend on being seen.
 - `getlogin` names the person of the caller's session. To decide anything,
   use the process's uid instead; `/run/sessions` is information.
-- A long-running job a person wants to outlive their session must be started
-  outside it, by a service, not by forking away from the shell: everything
-  carrying the tag ends at log out.
+- Nothing a session starts outlives it. A job forked away from the shell
+  still carries the session's tag and ends at log out.
 
 ## How we know it works
 
@@ -360,7 +368,8 @@ receives and where it asks.
 - [ext-session-lock-v1](https://wayland.app/protocols/ext-session-lock-v1).
   The Wayland protocol for lock screens, which asks the compositor to stop
   input to every other client and to stay locked if the locking program
-  crashes; SlopOS's compositor draws its own lock screen for the same reason.
+  crashes. On SlopOS the compositor draws the lock screen itself, and init
+  remembers the lock if the compositor crashes.
 
 ## In the source
 

@@ -11,9 +11,8 @@ stick and it becomes a disk, `sda`, that you can mount. Plug in a USB Ethernet
 adapter and it becomes a network interface, `eth1`, with an address from
 DHCP. Pull any of them out and the system lets go: the keys it held come up,
 its disk or interface disappears, and nothing waits for it to answer.
-Programs never talk to USB
-devices directly: a device shows up only as the input, disk or network
-interface its kind gives it. What you don't get is everything else USB
+Programs never talk to USB devices directly: a device shows up only as the
+input, disk or network interface its kind gives it. What you don't get is everything else USB
 carries, from audio and cameras to Bluetooth and printers; the
 [list is below](#what-usb-devices-slopos-doesnt-support).
 
@@ -76,8 +75,8 @@ run its own code when the controller does something (*SMIs*), because some
 firmware reports a clean handover and leaves them armed.
 
 After that the controller is halted, stopped from reaching memory, reset,
-given its rings and started. As a last check SlopOS sends it a command that does
-nothing and waits for the answer: a controller whose rings or interrupt
+given its rings and started. As a last check SlopOS sends it a command that
+does nothing and waits for the answer: a controller whose rings or interrupt
 don't work shows up here, at boot, rather than later as a device that never
 appears. The log says which way it went:
 
@@ -90,8 +89,7 @@ A controller SlopOS can't drive is left to the firmware, untouched apart from
 its power state. That is one without message-based interrupts (MSI-X or MSI),
 one that can only reach the first 4 GiB of memory, one that asks for more
 than 512 pages of scratch memory or can't use 4 KiB pages, and any past the
-eighth.
-The `usb=` [boot option](/docs/abi/boot-options) takes three values: `on`,
+eighth. The `usb=` [boot option](/docs/abi/boot-options) takes three values: `on`,
 the default; `off`, which leaves every controller to the firmware; and
 `report`, which logs each controller's capabilities and ports and then leaves
 it to the firmware, a safe first look at an unfamiliar machine.
@@ -137,8 +135,7 @@ disk takes the lowest free `sd` letter either way.
 When a device offers several configurations, SlopOS picks the first one in
 which a driver it has matches something, or else the first one. QEMU's USB
 network adapter, for example, lists a configuration for the RNDIS protocol
-first, which SlopOS doesn't speak, and a standard Ethernet one
-second.
+first, which SlopOS doesn't speak, and a standard Ethernet one second.
 
 ## How a device reaches a driver
 
@@ -217,8 +214,8 @@ it too.
 
 ## USB sticks
 
-A stick speaks *SCSI*, the command set first written for server disks: "read 240 blocks
-from block 2048", "how big are you?". Over USB those commands travel in the
+A stick speaks *SCSI*, the command set first written for server disks:
+"read 240 blocks from block 2048", "how big are you?". Over USB those commands travel in the
 *Bulk-Only Transport*: the kernel sends a 31-byte command wrapper on the bulk
 out endpoint, the data moves on one of the two bulk endpoints, and the stick
 answers with a 13-byte status wrapper on the bulk in endpoint.
@@ -258,8 +255,8 @@ When it does, its disk is unregistered and every request still waiting fails
 at once instead of timing out. The filesystem on it turns read-only, as ext4
 does on a disk that fails: it refuses every change with `EROFS`, fails every
 read that would need the stick, and stays mounted until you unmount it.
-Nothing unmounts it by force. What a program saved with
-`fsync` before the pull is on the stick, as [Crash recovery](/docs/architecture/crash-recovery)
+Nothing unmounts it by force. What a program saved with `fsync` before the
+pull is on the stick, as [Crash recovery](/docs/architecture/crash-recovery)
 promises for any crash. The log records the departure:
 
 ```text
@@ -338,7 +335,8 @@ boots one.
 - **Unmount before you pull.** Pulling a mounted stick loses what nobody
   synced and leaves the mount read-only until you unmount it.
 - **To see the bus**, run `kconsole u`. It lists every controller, port,
-  device, function, driver and endpoint queue, in lines like these:
+  device, function, driver and endpoint queue, in lines like these (the
+  slot numbers vary):
 
   ```text
   usb:   1-4 slot 2 0409:55aa full speed, hub
@@ -347,8 +345,9 @@ boots one.
   usb:     ep 0x81 dci 3 queued 0
   ```
 
-  `kconsole` runs through privd, and an administrator is not asked. The same
-  listing is the diagnostic console's `u` key.
+  `kconsole` asks privd for the `SysInspect` capability it needs, which
+  privd grants an administrator without asking. The same listing is the
+  diagnostic console's `u` key.
 - **On a machine you don't know yet**, boot once with `usb=report` to see
   its controllers without taking them from the firmware.
 
@@ -389,8 +388,9 @@ enumeration and recovery logic runs on the host against a simulated
 controller with simulated hubs, keyboards and sticks. That simulation is
 there because QEMU's controller lacks things real ones have: QEMU never
 makes the firmware hand a controller over, has only a full-speed hub, and
-its sticks don't track the data toggles that make a recovery go wrong in
-subtle ways.
+its sticks keep no *data toggles* (an alternating bit each end keeps to spot
+a lost or repeated packet), which a recovery that resets only one end gets
+wrong.
 
 `just test` attaches one QEMU controller with a scratch stick, `sda`. `just
 test-usb` boots a kernel with both of QEMU's controller models, one on MSI-X

@@ -48,7 +48,7 @@ explains what privd is for and how it works.
 
 `bootctl --boot <partition> …` fits none of these shapes, so privd runs it
 for nobody; only a requester that already holds the capabilities, such as
-the rescue shell, runs it. `bootctl collect` has no action: init runs it
+the rescue shell, runs it itself. `bootctl collect` has no action: init runs it
 directly, handing it `RawBlock` and `Power`.
 
 ## Extensions
@@ -61,6 +61,9 @@ directly, handing it `RawBlock` and `Power`.
 | `org.slopos.extension.manage` | `/bin/extctl enable *`, `disable *`, `remove *`, `rollback *` | `ExtensionUpdate`, `Seal` | `exclusive extensions` | `root`, `admin confirm`, `paired` |
 | `org.slopos.extension.config` | `/bin/extctl config install *` | `Seal` | `cwd`, `exclusive extensions` | `root`, `admin confirm`, `paired` |
 | `org.slopos.extension.config-signed` | `/bin/extctl config apply *` | `Seal` | `cwd`, `exclusive extensions` | `root`, `admin`, `paired` |
+
+`extctl --root <dir> …` likewise fits no shape, and `extctl activate-all` has
+no action: init runs it at boot, handing it `ExtensionUpdate` and `Seal`.
 
 ## Software and accounts
 
