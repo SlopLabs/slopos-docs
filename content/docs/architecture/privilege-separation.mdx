@@ -152,8 +152,8 @@ it in the way a fault would have and copies again. It keeps doing so while
 filling in succeeds, up to a fixed number of rounds, because another
 thread's `fork` can make a page shared again between the fill and the copy.
 If a fault interrupts the copy halfway, the routine stops and reports how far
-it got, and the same loop retries it. A buffer that still can't be copied makes the system call
-fail with `EFAULT`; it never crashes the kernel. A copy made where the kernel
+it got, and the same loop retries it. A buffer that still can't be copied
+makes the system call fail with `EFAULT`; it never crashes the kernel. A copy made where the kernel
 can't wait (with interrupts off, or with preemption held off) doesn't wait for
 a file page to be read in; it fails with `EFAULT` instead.
 
@@ -175,8 +175,8 @@ doesn't have to empty the cache. Each CPU keeps 16 tags for programs (plus
 one for the kernel alone) and remembers which address space last held each
 one, so switching back to a recently run program reuses its cached
 translations. The kernel's own mappings are marked *global*, which keeps them
-in the cache across every switch. The scheme follows Linux's
-(`arch/x86/mm/tlb.c`). On CPUs without PCIDs, or with a known erratum that
+in the cache across every switch. The scheme follows the one Linux uses on
+x86-64. On CPUs without PCIDs, or with a known erratum that
 disables them, every switch empties the program part of the cache, which is
 slower but correct.
 
@@ -196,8 +196,8 @@ lists this.
 Tests check the boundary from both sides. Kernel tests check the CPU's
 descriptor tables and the system call registers after boot, that a deep chain
 of traps from user mode can't overwrite the frames the kernel returns into,
-and that a user copy which faults partway through is retried. Host tests of the trusted
-core check that the copy routine refuses addresses outside the program's
+and that a user copy which faults partway through is retried. Host tests of
+the trusted core check that the copy routine refuses addresses outside the program's
 half, pages the program can't access and read-only pages. The invariant that
 user mappings can't reach kernel memory is one of the properties proved with
 Verus (see [Proofs](/docs/verification/verus-status)).

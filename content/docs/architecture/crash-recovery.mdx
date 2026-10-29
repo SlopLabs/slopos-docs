@@ -113,16 +113,18 @@ right away.
 ## What happens at the next boot
 
 The filesystem's header has a flag that says whether the disk is in use.
-SlopOS sets it before the first change and clears it again once everything is
-in its final location and the journal is empty, which happens a few seconds
-after the disk last had anything to write. If the flag is clear when the
-disk is mounted, there is nothing to recover.
+SlopOS sets it when it mounts the disk for writing, and again before the
+first change after the disk was last marked clean. It clears the flag once
+everything is in its final location and the journal is empty, which happens a
+few seconds after the disk last had anything to write. If the flag is clear
+when the disk is mounted, there is nothing to recover.
 
 If the flag is set, the machine stopped while the disk was in use, and the kernel *replays* the
 journal before anything else reads the filesystem. It looks for journal
 entries that have a commit record, checks every copied block against the
-checksum stored with it, and then writes each copy to its final location,
-oldest entry first. Entries without a commit record are ignored.
+checksum stored with it (every disk SlopOS builds has journal checksums), and
+then writes each copy to its final location, oldest entry first. Entries
+without a commit record are ignored.
 
 <JournalDisk
   state="crash"

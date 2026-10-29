@@ -110,9 +110,10 @@ virtio-blk, whose requests complete in milliseconds, and as long as a
 Bulk-Only command and its recovery can take for a stick, which keeps one
 command on the wire and one queued.
 
-The engine is also fair: one caller keeps at most half of a queue's slots
-busy with writes at once, so a program writing a large file can't starve
-everyone else who shares the disk.
+The engine also tells a writer how many writes it may keep in flight at once:
+half of the disk's slots. The filesystem's write-back, which is the one
+writer that keeps many requests going, holds to that, so writing out a large
+file can't starve everyone else who shares the disk.
 
 ## Disk and partition names
 

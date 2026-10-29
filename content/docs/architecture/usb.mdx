@@ -134,7 +134,8 @@ is, not what it is: the same stick in another port has another name, and its
 disk takes the lowest free `sd` letter either way.
 
 When a device offers several configurations, SlopOS picks the first one in
-which a driver it has matches something, or else the first one. QEMU's USB
+which a driver it has matches something and whose power the port can supply,
+or else the first one the port can power. QEMU's USB
 network adapter, for example, lists a configuration for the RNDIS protocol
 first, which SlopOS doesn't speak, and a standard Ethernet one second.
 
@@ -234,7 +235,8 @@ it is read-only.
 
 Each stick keeps one command on the wire and one queued behind it, and every
 read or write is cut into pieces of at most 120 KiB. That is the limit Linux
-keeps for USB disks, because some devices fail on anything larger. Sticks
+keeps for USB disks slower than SuperSpeed, because some devices fail on
+anything larger; SlopOS keeps it at every speed. Sticks
 also fail in ways a built-in disk doesn't, so every command has a deadline
 and a ladder of recovery behind it, each rung heavier than the last:
 
@@ -376,7 +378,7 @@ boots one.
 |---|---|---|
 | What a driver binds to | An interface | A function: an interface, or the interfaces declared to belong together |
 | Access from programs | `usbfs` at `/dev/bus/usb/`, and user-space drivers on libusb | None. A device is reachable only as its disk, interface or input |
-| Largest request to a stick | 120 KB by default, with a quirk list for devices that need less | 120 KiB, with no quirk list yet |
+| Largest request to a stick | 120 KiB, or 1 MiB at SuperSpeed, with a quirk list for devices that need less | 120 KiB at every speed, with no quirk list yet |
 | Network adapters | ECM, NCM and RNDIS | ECM and NCM |
 | Keyboards and mice | Each device separate for programs; merged for the text console | Merged once, in the kernel, for every consumer |
 
@@ -405,8 +407,9 @@ SysRq runs a command; every mouse and the tablet move the one cursor; a
 stick pulled under a program that keeps calling `fsync` turns its mount
 read-only and comes back holding what was synced; the network adapter takes
 a lease and carries TCP; a shell typed at on the USB keyboard runs what was
-typed; and each controller is reset at the end. The laptop's two controllers
-have also been run on real hardware, with a USB mouse and keyboard.
+typed; and each controller is reset at the end. On real hardware, only the
+tested laptop's two controllers, with a USB mouse and keyboard, have been
+tried ([Hardware requirements](/docs/status/hardware-requirements#the-tested-laptop)).
 
 ## For contributors
 

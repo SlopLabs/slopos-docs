@@ -259,8 +259,9 @@ every Unix program reads:
 
 All three are sealed. The C library's `getpwnam`, `getgrnam`, `getgrouplist`
 and `initgroups` believe one of them only while it is a sealed regular file,
-and otherwise answer from four rows built into the library: root, `greeter`,
-`user` and `nobody`. So a program that managed to write `/etc/passwd` without
+and otherwise answer from rows built into the library: the users root,
+`greeter`, `user` and `nobody`, each with a group of its own, and `admin`
+listing `user`. So a program that managed to write `/etc/passwd` without
 `Seal` changes no name and no group. Init runs `users sync` at every boot,
 which writes the database from the record (and writes the one-person record on
 a root without one). A root in memory, such as a live boot from the install
@@ -303,7 +304,8 @@ screen and privd slow down repeated wrong passwords is on
 | `users remote <name>`, `users remote --default` | Sets whom `remoted` runs as |
 
 Changing your own password is privd's `org.slopos.accounts.password` action,
-which any person may ask for with a click. Everything else is
+which any person may ask for, with a click at their own desktop. Everything
+else is
 `org.slopos.accounts.manage`: an administrator confirms with a click, and a
 person who isn't one needs an administrator to type their password
 ([privd actions](/docs/abi/privd-actions)). A few rules hold whoever asks:
@@ -313,9 +315,9 @@ person who isn't one needs an administrator to type their password
   `greeter`) or an extension's user holds.
 - The last administrator stays one, and the first person can't be removed,
   because they hold the workspace at `/src`.
-- An administrator without a password must set one before adding someone, and
-  adding someone turns automatic login off unless `--keep-autologin` says
-  otherwise. A shared machine shouldn't open anyone's desktop to whoever sits
+- An administrator without a password is asked to set one when they add
+  someone, and adding someone turns automatic login off unless
+  `--keep-autologin` says otherwise. A shared machine shouldn't open anyone's desktop to whoever sits
   down.
 - Adding the second person hands `/usr/local` to uid 0, and adds nobody if
   that fails.

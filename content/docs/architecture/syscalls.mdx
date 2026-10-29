@@ -96,9 +96,9 @@ handler can't forget it. Some powers are finer than a whole call, and the
 handler checks those itself against the same mask: any caller may call
 `setuid`, but taking a user id it doesn't already hold needs `SetId`;
 `setpriority` needs `SchedHigh` only to lower a nice value below zero; and
-any owner may change a file's flags, but moving its seal needs `Seal`. And a call that names a
-file by its path also checks the file's owner and permission bits against
-the caller's user and group ids, as Unix always has.
+any owner may change a file's flags, but moving its seal needs `Seal`. And a
+call that names a file by its path also checks the file's owner and
+permission bits against the caller's user and group ids, as Unix always has.
 [Capabilities](/docs/architecture/authority) explains the capabilities and
 how a program gets one, and [Users and file permissions](/docs/architecture/users)
 the permission bits.
@@ -233,8 +233,8 @@ holds the private calls and their structures, as the compiler's own
 documentation output describes them, to the digest recorded for the current
 base interface number. Kernel tests that check whether a call is reachable go
 through the table entry, the same way a program does, because calling a
-handler directly skips the capability check. And the kernel and userland test suites make real system calls on
-every run of `just test`.
+handler directly skips the capability check. And the kernel and userland
+test suites make real system calls on every run of `just test`.
 
 ## For contributors
 

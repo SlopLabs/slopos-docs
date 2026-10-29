@@ -117,12 +117,12 @@ and runs these actions without asking anyone:
 | Diagnostics and settings | `org.slopos.cpufreq.set`, `org.slopos.kconsole`, `org.slopos.prof`, `org.slopos.console.keymap` |
 
 privd refuses the agent every other action of the base's policy, and it never
-puts a question on the computer's screen on the agent's behalf. (An
-extension's declaration may also name the paired agent among those who may
-ask for the extension's own actions, which its owner grants when it is
-installed; see [Extensions](/docs/architecture/extensions).) A program the agent runs that
-isn't a mechanism gets no privd connection, so it can't pass one on to
-something from outside the base.
+puts a question on the computer's screen on the agent's behalf. A program the
+agent runs that isn't one of the base's mechanisms gets no privd connection,
+so it can't pass one on to something from outside the base. That includes an
+[extension](/docs/architecture/extensions)'s programs: an extension may name
+the paired agent among those who may ask for its own actions, but none of its
+programs is handed the agent's connection.
 [Privileged actions](/docs/architecture/privd) explains principals and
 levels, and [privd actions](/docs/abi/privd-actions) lists every action.
 

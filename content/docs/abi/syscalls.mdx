@@ -146,7 +146,7 @@ does not promise every flag of the Linux call.
 | 59 | `execve` | `NoneSelf` | The new program keeps only the universal capabilities |
 | 60 | `exit` | `NoneSelf` | |
 | 61 | `wait4` | `NoneRelation` | A process-group wait (`pid` 0 or below -1) is `ESRCH` |
-| 62 | `kill` | `NoneRelation` | The sender must hold every capability the target holds, and its real or effective uid must be the target's real or saved uid. `ProcSignal` waives both; `SIGCONT` to the sender's own session needs neither |
+| 62 | `kill` | `NoneRelation` | The sender must hold every capability the target holds, and its real or effective uid must be the target's real or saved uid. `ProcSignal` waives both; `SIGCONT` to the sender's own session needs neither. Init can never be signalled |
 | 63 | `uname` | `NoneSelf` | |
 | 72 | `fcntl` | `NoneFd` | |
 | 73 | `flock` | `NoneFd` | |
@@ -173,20 +173,20 @@ does not promise every flag of the Linux call.
 | 99 | `sysinfo` | `NoneSelf` | |
 | 102 | `getuid` | `NoneSelf` | |
 | 104 | `getgid` | `NoneSelf` | |
-| 105 | `setuid` | `NoneSelf` | Without `SetId`, only among the caller's real, effective and saved ids |
-| 106 | `setgid` | `NoneSelf` | As `setuid` |
+| 105 | `setuid` | `NoneSelf` | Without `SetId`, only the effective id moves, to the real or saved id; with it, all three take the new id |
+| 106 | `setgid` | `NoneSelf` | As `setuid`, for the group ids |
 | 107 | `geteuid` | `NoneSelf` | |
 | 108 | `getegid` | `NoneSelf` | |
 | 109 | `setpgid` | `NoneRelation` | |
 | 110 | `getppid` | `NoneSelf` | |
 | 112 | `setsid` | `NoneSelf` | |
-| 113 | `setreuid` | `NoneSelf` | As `setuid` |
-| 114 | `setregid` | `NoneSelf` | As `setuid` |
+| 113 | `setreuid` | `NoneSelf` | Without `SetId`, Linux's unprivileged rules |
+| 114 | `setregid` | `NoneSelf` | As `setreuid` |
 | 115 | `getgroups` | `NoneSelf` | |
 | 116 | `setgroups` | `NoneSelf` | Takes `SetId` |
-| 117 | `setresuid` | `NoneSelf` | As `setuid` |
+| 117 | `setresuid` | `NoneSelf` | Without `SetId`, each new id must be one of the caller's real, effective and saved ids |
 | 118 | `getresuid` | `NoneSelf` | |
-| 119 | `setresgid` | `NoneSelf` | As `setuid` |
+| 119 | `setresgid` | `NoneSelf` | As `setresuid` |
 | 120 | `getresgid` | `NoneSelf` | |
 | 121 | `getpgid` | `NoneRelation` | |
 | 124 | `getsid` | `NoneRelation` | |
@@ -199,11 +199,11 @@ does not promise every flag of the Linux call.
 | 137 | `statfs` | `NoneFd` | `EOPNOTSUPP` from a filesystem that keeps no counters. The base and the install medium report `BASEFS_MAGIC`, an extension's activation `EXTENSION_MAGIC` |
 | 138 | `fstatfs` | `NoneFd` | As `statfs` |
 | 140 | `getpriority` | `NoneRelation` | |
-| 141 | `setpriority` | `NoneRelation` | A nice value below both 0 and the task's current one takes `SchedHigh` (`EACCES` otherwise) |
+| 141 | `setpriority` | `NoneRelation` | Only for tasks the caller may signal (`EPERM` otherwise). A nice value below both 0 and the task's current one takes `SchedHigh` (`EACCES` otherwise) |
 | 153 | `vhangup` | `ConsoleConfig` | |
 | 158 | `arch_prctl` | `NoneSelf` | `ARCH_SET_FS` and `ARCH_GET_FS` |
 | 162 | `sync` | `NoneSelf` | |
-| 165 | `mount` | `Mount` | `fstype` `ext2`, `ext3`, `ext4`, `ramfs` or `devfs` (else `ENODEV`); a non-null `data` is `EINVAL`. `EBUSY` at `/`; `EPERM` at or beneath a pinned mount (the base's, the install medium's) and at, above or beneath a directory the kernel keeps (`KEPT_DIRS`: `/etc`, `/var/lib/slopos` and the stores in it) |
+| 165 | `mount` | `Mount` | `fstype` `ext2`, `ext3`, `ext4`, `ramfs` or `devfs` (else `ENODEV`); a non-null `data` is `EINVAL`. `EBUSY` at `/` and at a path something is already mounted on; `EPERM` at or beneath a pinned mount (a base directory, the install medium, its payload, an extension's activation) and at, above or beneath a directory the kernel keeps (`KEPT_DIRS`: `/etc`, `/var/lib/slopos` and the stores in it) |
 | 166 | `umount2` | `Mount` | `EBUSY` at `/`, and while a descriptor is open on the mount unless `MNT_DETACH`; `EPERM` for a pinned mount and at, above or beneath a kept directory |
 | 169 | `reboot` | `Power` | `LINUX_REBOOT_CMD_RESTART`, `_POWER_OFF` and `_HALT` |
 | 186 | `gettid` | `NoneSelf` | |
@@ -239,7 +239,7 @@ does not promise every flag of the Linux call.
 | 309 | `getcpu` | `NoneSelf` | `node` is always 0 |
 | 318 | `getrandom` | `NoneSelf` | `GRND_NONBLOCK` and `GRND_RANDOM` are accepted and change nothing; any other flag is `EINVAL` |
 | 319 | `memfd_create` | `NoneSelf` | `MFD_CLOEXEC` is the only flag |
-| 434 | `pidfd_open` | `NoneSelf` | Any live process, by its leader's id; `flags` must be 0. The descriptor is close-on-exec and never readable |
+| 434 | `pidfd_open` | `NoneSelf` | Any live process, by its leader's id; `flags` must be 0. The descriptor is close-on-exec and polls readable once the process exits; `read` on it is `EINVAL` |
 | 439 | `faccessat2` | `NoneFd` | |
 | 452 | `fchmodat2` | `NoneFd` | |
 
@@ -254,7 +254,7 @@ The signature is the one the call's doc comment in `numbers.rs` states.
 | 1026 | `process_list` | `NoneSelf` | `process_list(out: *mut UserTaskEntry, max) -> entries written`: every task, with its process id, state, login tag and effective uid |
 | 1027 | `cpu_info` | `NoneSelf` | `cpu_info(out: *mut UserCpuInfo)`: vendor, brand string, CPU count, family, model, stepping and feature bits |
 | 1028 | `percpu_stats` | `NoneSelf` | `percpu_stats(out: *mut UserPerCpuStats, max) -> entries written`: each CPU's switches, ticks, idle ticks and ready tasks |
-| 1029 | `spawn_path` | `NoneSelf` | `spawn_path(path, path_len, argv, argc, attrs: *const SpawnAttrs) -> task id`: starts a program in one call. `attrs` lists the descriptors the child gets, its environment and directory, the capabilities it is delegated (a subset of the caller's, else `EPERM`), and ids and a login tag (`SetId` for any the caller does not hold) |
+| 1029 | `spawn_path` | `NoneSelf` | `spawn_path(path, path_len, argv, argc, attrs: *const SpawnAttrs) -> task id`: starts a program in one call. `attrs` lists the descriptors the child gets, its environment and directory, the capabilities it is delegated (a subset of the caller's, else `EPERM`), its priority (`High` takes `SchedHigh`), and its ids, groups and login tag (a uid or gid the caller does not hold, a group list or a login tag takes `SetId`) |
 | 1030 | `sigdefault` | `NoneSelf` | `sigdefault(mask)`: resets every signal in `mask` to `SIG_DFL` |
 | 1031 | `resolve` | `NoneSelf` | `resolve(host, host_len, out: *mut [u8; 4])`: an IPv4 address from the kernel's DNS client; `host` at most 253 bytes |
 | 1032 | `net_query` | `NoneSelf` | `net_query(what, ifindex, buf, len) -> bytes written`: interfaces, addresses, routes, neighbours, sockets, the resolver, global settings or the DHCP clients (`NET_Q_*`), as a header and fixed-size records. A socket's owner is named only to its owner or a `NetAdmin` holder |
