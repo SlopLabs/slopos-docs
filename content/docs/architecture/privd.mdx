@@ -72,9 +72,10 @@ can start the program use the power, with whatever environment, arguments and
 open files they choose. What is needed is something that already holds the
 powers, decides one request at a time against a fixed policy, knows for
 certain who is asking, and can ask the person when a request is not routine.
-That is privd. Init starts it as uid 0, holding every capability an action may
-name plus `SetId` (to start a mechanism as another user), and waits until it
-listens on `/run/privd` before it starts anything else.
+That is privd. Init starts it at boot as uid 0, holding every capability an
+action may name plus `SetId` (to start a mechanism as another user), and
+starts it again if it exits. It listens on `/run/privd`, which anyone may
+connect to; the policy decides what they get.
 
 ## Actions and the policy
 
@@ -279,10 +280,10 @@ The dialog is built so that nothing but a deliberate answer allows a request:
   or does nothing. The allowing button takes a click, or Tab or Right and
   then Enter. In a destructive action's password field, Enter moves to the
   button rather than pressing it.
-- Input is ignored for 750 ms after the dialog appears, after focus moves and
-  after the dialog changes size, since a key or click in that window was meant
-  for what was there before. A click counts only if the press itself came
-  after that.
+- Input is ignored for 750 ms after the dialog appears, after focus moves,
+  after the details are shown or hidden and after the screen changes size,
+  since a key or click in that window was meant for what was there before. A
+  click counts only if the press itself came after that.
 - While a question is up, no key, press or pointer motion reaches any app.
   After a password question goes away, keys keep going nowhere until 1.5
   seconds pass without one, so the rest of a password being typed never lands
@@ -349,7 +350,7 @@ The requester exits with the mechanism's status, with 126 when the person
 refused or did not answer, as `pkexec` does, and with 127 when privd refused
 for any other reason. It prints privd's reason, a sentence meant for the
 person, after its own name; privd writes the detail a developer needs to its
-log on the system console.
+own log.
 
 ## Running a command with `priv`
 
@@ -364,8 +365,8 @@ priv -s
 `priv <command>` asks for `org.slopos.priv` and `priv -s` for a shell,
 `org.slopos.priv.shell`. Both allow uid 0 and an administrator who confirms,
 and both run *as the requester*: privd starts `/bin/priv` again as the person
-who asked, in their own groups and session, on a terminal of its own, holding
-the requester ceiling: `Mount`, `NetAdmin`, `ConsoleConfig`, `SysInspect`,
+who asked, in their own groups and session, on a terminal of its own when
+started from one, holding the requester ceiling: `Mount`, `NetAdmin`, `ConsoleConfig`, `SysInspect`,
 `Clock` and `DacOverride`. That copy runs the command holding the same, with
 an environment of its own (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
 `LANG`, `SLOPOS_PRIV` and, on a terminal, `TERM`), and exits as it exits. A
@@ -385,8 +386,9 @@ directory above it, reached through links that each sit in such a directory,
 and so is the interpreter a script names. `/usr/local/bin` counts only on a
 boot that began with `/usr/local` belonging to uid 0 (see
 [Installed software](/docs/architecture/software)). `priv` refuses to run
-itself, and refuses a shell told to read its commands from its input, which is
-`priv -s`. The command line privd shows and keeps an answer for is the path
+itself. `priv shell` with nothing after it is `priv -s`, and a shell given
+arguments must be given a command string or a script, not told to read its
+input. The command line privd shows and keeps an answer for is the path
 `priv` found, so `priv mount …` appears as `/bin/priv /bin/mount …`. The
 first form keeps its answer for five minutes; `priv -s` asks every time, since
 a shell runs whatever it is given.

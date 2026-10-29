@@ -101,9 +101,9 @@ as its exit status. Other faults end the program at once, even if it has a
 handler: an invalid instruction with `SIGILL`, a general-protection fault
 with `SIGSEGV`. Only the page-fault path is built to pause and to build the
 frame a handler runs on; the other fault handlers run with rescheduling held
-off, so SlopOS doesn't hand those faults to a handler. Either way, the rest of the system is unaffected.
-[Processes and signals](/docs/architecture/processes) explains signals and
-how a program ends.
+off, so SlopOS doesn't hand those faults to a handler. Either way, the rest
+of the system is unaffected. [Processes and signals](/docs/architecture/processes)
+explains signals and how a program ends.
 
 ## How SlopOS crosses the boundary
 
@@ -150,9 +150,9 @@ page isn't filled in yet, because the program allocated memory but hasn't
 touched it, or is still shared with a parent after `fork`, the kernel fills
 it in the way a fault would have and copies again. It keeps doing so while
 filling in succeeds, up to a fixed number of rounds, because another
-thread's `fork` can make a page shared again between the fill and the copy. If a fault interrupts
-the copy halfway, the routine stops and reports how far it got, and the same
-loop retries it. A buffer that still can't be copied makes the system call
+thread's `fork` can make a page shared again between the fill and the copy.
+If a fault interrupts the copy halfway, the routine stops and reports how far
+it got, and the same loop retries it. A buffer that still can't be copied makes the system call
 fail with `EFAULT`; it never crashes the kernel. A copy made where the kernel
 can't wait (with interrupts off, or with preemption held off) doesn't wait for
 a file page to be read in; it fails with `EFAULT` instead.

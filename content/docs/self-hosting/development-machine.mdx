@@ -266,7 +266,8 @@ kernel is the default because a compiler makes a great many system calls and
 page faults, and the debug kernel spends about ten times as long on each. The
 memory is sized for linking the kernel with its test suite: SlopOS lets one
 process keep at most an eighth of memory pinned for the files it maps, and
-that link maps more than an eighth of 4G. A few environment variables change this:
+that link maps more than an eighth of 4G. A few environment variables change
+this:
 
 | Variable | Effect |
 |----------|--------|
@@ -289,7 +290,7 @@ that link maps more than an eighth of 4G. A few environment variables change thi
 - **Installs last one QEMU session.** The boot disk is rebuilt from the host's
   build at every `just boot`, so a kernel or base the guest installed is gone
   next time. Commit and push the change instead, and build it on the host.
-- **Approvals need the desktop.** Every boot or base install asks you to
+- **Approvals need the desktop.** Every kernel or base install asks you to
   allow it, and only the desktop can ask a person who has no password.
 - **Speed.** With KVM a full system build in the guest takes minutes. Without
   it (QEMU emulating every instruction) it runs about 25 times slower.

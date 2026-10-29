@@ -354,7 +354,8 @@ warning and is waited for; nothing declares a stalled grace period complete.
 | `slopos-ostd/src/task/state.rs` | The task state word |
 | `slopos-ostd/src/sync/wait_queue.rs`, `mutex.rs`, `poll_waiter.rs` | Waiting, sleeping locks, the `poll` marker |
 | `slopos-ostd/src/sync/bh.rs`, `rcu.rs` | Deferred work and RCU |
-| `sched/src/futex.rs` | Futexes |
+| `sched/src/futex.rs`, `sched/src/sleep.rs` | Futexes, and sleeping for a time |
+| `sched/src/cpufreq.rs` | The placement scores of a hybrid processor's CPUs |
 
 [Task lifetimes](/docs/architecture/task-ownership) covers how run queues and
 wait queues own the tasks they hold.

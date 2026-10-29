@@ -32,9 +32,9 @@ This page explains what they do, what can go wrong, and how to go back.
 Keeping two copies of the system, running from one and updating the other,
 is the *A/B update* that Android and ChromeOS use: the boot loader falls back
 to the old slot if the new one fails. Booting a new kernel once and falling
-back unless told otherwise is what FreeBSD's `nextboot` does, and systemd-boot's
-*automatic boot assessment* is a more general version that counts boot
-attempts. SlopOS tells its boot loader what to boot through the UEFI variables
+back unless told otherwise is what FreeBSD's `nextboot` does, and
+systemd-boot's *automatic boot assessment* is a more general version that
+counts boot attempts. SlopOS tells its boot loader what to boot through the UEFI variables
 systemd defined for that, the *Boot Loader Interface*. The rule for which old
 base to keep comes from FreeBSD's kernel install, as
 [Base system](/docs/architecture/base#where-it-comes-from) explains.
@@ -54,10 +54,11 @@ So a kernel update needs three things:
 - Trying the new kernel doesn't commit you to it.
 - Writing it can't leave a half-written file behind.
 
-A base is easier, because the kernel keeps running underneath it: a broken
-base still leaves a kernel that can boot the previous one, and a running
-system from which to roll back. That is why a base is switched at once and a
-kernel is tried first.
+A base is easier to undo. The kernel keeps running underneath it, the
+previous base stays on the disk, and one command switches back to it, without
+a reboot. That is why a base is switched at once and a kernel is tried first,
+though it also means a base gets no trial boot
+([below](#what-a-base-update-doesnt-protect-against)).
 
 ## What gets updated where
 

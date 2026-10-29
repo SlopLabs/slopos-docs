@@ -18,7 +18,7 @@ harness (`tests.run`, `tests.verbosity` and the rest) are listed in
 | Phase | Tests registered with | Run by |
 |---|---|---|
 | 1, kernel | `stest!` | The kernel during boot |
-| 2, userland | `utest!`, one userland program per test | init, which asks the kernel to run them |
+| 2, userland | `utest!`, one userland program per test, and `stest!(..., kind = Userland)` | A copy of init (`/sbin/init --run-tests`) that asks the kernel to run them, so init keeps serving meanwhile |
 
 Each phase prints its own header. The runner names phases by order: the first
 `TAP version 14` header is the kernel phase, the second the userland phase.
@@ -37,7 +37,9 @@ KTAP	1..N
 ```
 
 `N` is the number of tests in the phase after `tests.run` and `tests.skip`
-are applied. A filter that matches nothing gives `1..0`.
+are applied. A test registered as explicit (`FLAG_EXPLICIT`, `utest!(...,
+explicit)`) counts only when a `tests.run` pattern is its full name. A filter
+that matches nothing gives `1..0`.
 
 ## Result lines
 
@@ -58,7 +60,8 @@ The name is `module::test`. The text after `#` holds:
 | `EXPECTED_PANIC` | The test was registered as expecting a panic, and panicked |
 | `SKIP <reason>` | Skipped; KTAP writes a skip as `ok` |
 
-With `tests.verbosity=quiet` the harness prints only failing results.
+With `tests.verbosity=quiet` the harness prints only failing results, and
+of the subtest lines below only the failing ones.
 
 ## Diagnostic block
 
@@ -82,10 +85,12 @@ KTAP	  ...
 | `log` | Kernel log captured while the test ran: the harness CPU first, then a `--- cpuN ---` section for each other CPU that logged |
 
 When the capture was cut short, the log contains `[head trimmed: N bytes]`
-(the test logged more than the per-test limit) or
-`[cpuN tail trimmed: N bytes lost to ring overflow]` (a CPU's log buffer
-wrapped). With `tests.verbosity=verbose` a passing test may print a block with
-only `log`.
+(a CPU logged more than the 4096 bytes the block prints for each) or
+`[cpu0 tail trimmed: N bytes lost to ring overflow]` (the harness CPU's
+capture buffer wrapped; the text says `cpu0` whichever CPU that is). With
+`tests.verbosity=verbose` a passing test may print a block with only `log`.
+A test registered with `FLAG_UNCAPTURED` has no captured log, so its block has
+no `log` key.
 
 ## Subtests
 
@@ -106,6 +111,7 @@ KTAP	ok 5 - slopos_core::utests::utest_heap_allocator # time_ms=234
 - On a passing case, text after `#` is a note; only `SKIP` changes the
   outcome. On a failing case it is the failure message.
 - Notes and messages are cut to their first line.
+- A skipped case is `ok N - name # SKIP`, with no reason.
 - Subtest lines go straight to the console rather than through the per-test
   log capture, so a long test that overflows the capture cannot lose them.
 
@@ -118,8 +124,12 @@ KTAP	# elapsed_ms=14238 pass=2391 fail=1 skip=0 over_time=14
 - Each phase ends with a footer holding its time and counters.
 - If a test whose name starts with `bootstrap_` fails, the harness prints
   `KTAP	Bail out! <reason>` and runs no more tests in that phase.
-- A kernel panic prints a `=== KERNEL ABORT ===` banner, which the runner
-  records as a kernel abort.
+- The format-free abort a lockup or a broken unwind takes prints
+  `=== KERNEL ABORT ===` and a reason line, which the runner records as a
+  kernel abort. The other CPUs may go on producing results, so the runner
+  keeps reading. A fatal panic prints `=== KERNEL PANIC ===` and halts; the
+  phase then never prints its footer, and the runner reports the output as
+  cut short.
 - With `tests.shutdown=on`, the kernel then writes `0` (all passed) or `1`
   (something failed) to QEMU's `isa-debug-exit` device. QEMU exits with
   `(value << 1) | 1`, so the runner does not rely on that status alone: it also
@@ -139,12 +149,18 @@ KTAP	# elapsed_ms=14238 pass=2391 fail=1 skip=0 over_time=14
 | `just test-json PATH` | `--json PATH` | Appends one JSON event per line to `PATH` |
 | | `--timeout-secs N` | Stops the whole run after `N` seconds; default `900`, `0` disables |
 | | `--silence-secs N` | Stops the run if QEMU prints nothing for `N` seconds; default `120`, `0` disables |
+| | `--color auto\|always`, `--no-color` | Colour of the rendered output; `NO_COLOR` in the environment also turns it off unless `--color always` |
+| | `--iso PATH`, `--fs-image PATH` | Boot this ISO and test image instead of `builddir/slop-tests.iso` and `fs/assets/ext4-tests.img` |
+| | `--no-build` | Boots the existing ISO without running `just _iso-tests` first |
 | | `--dry-run` | Prints the command line it would use and exits |
 
-`--verbose`, `--quiet` and `--raw` exclude each other. `--raw` still parses the
-stream to decide the exit code. The runner starts from the command line
-`tests=on tests.shutdown=on tests.verbosity=summary boot.debug=on roulette=skip mount=LABEL=slopos-media:/media`
-and adds the options its flags select.
+`--verbose`, `--quiet` and `--raw` exclude each other, and so do
+`--rerun-failed` and `--filter`. `--raw` still parses the stream to decide the
+exit code. The runner reads its starting command line from the justfile
+(`just --evaluate test_cmdline`), currently
+`tests=on tests.shutdown=on tests.verbosity=summary boot.debug=on roulette=skip root=auto mount=LABEL=slopos-media:/media`,
+adds the options its flags select, and hands the result to `just _iso-tests`
+as `TEST_CMDLINE`.
 
 ### Exit codes
 

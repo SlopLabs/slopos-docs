@@ -1,48 +1,98 @@
 ---
 title: "Userland"
-description: "What a program running on SlopOS has to work with: the C library, Rust's standard library, the shell, the tools and the desktop apps."
+description: "What a program running on SlopOS has to work with: the C library and its one stable interface, Rust's standard library, the shell, the tools in the base and the apps outside it."
 ---
 
 If you want to write a program for SlopOS or port one, you are writing for a
 Unix that looks a lot like Linux from the inside. There is a C library with
 the usual POSIX functions, a standard Rust target so ordinary crates build
 unchanged, a POSIX shell, the familiar command-line tools, and dynamic
-linking with `dlopen`. Programs can be linked statically or dynamically. What
+linking with `dlopen`. One rule matters more than any other: a program that
+is not part of the system itself reaches SlopOS only through `libc.so`, the
+shared C library, whose interface is only ever added to. Build against it
+and your program keeps working as the system underneath it is updated. What
 you can't count on is Linux itself: SlopOS is not built to run binaries
 compiled for Linux, and some less common calls are missing.
 
-All of it is written in this project, in Rust. No glibc, musl or BusyBox code
-is used, though their designs are credited where we followed them below.
+Almost all of it is written in this project, in Rust. No glibc or BusyBox
+code is used, though their designs are credited where we followed them
+below. The few third-party crates the C library builds in, such as its math
+library (`libm`, which derives in part from musl and FreeBSD) and its stack
+unwinder, are permissively licensed and listed in `slibc/NOTICE`.
 
 ## The C library: slibc
 
 slibc is a C library written in Rust. It provides what a POSIX program
 expects: files and directories, processes, threads (pthreads), signals,
-sockets, time, `malloc`, the string functions, and thread-local storage.
-Rust's standard library on SlopOS is built on top of it, as it is on other
-Unix systems, so git, cargo and a build system all find the POSIX layer they
-expect. Its header files come from a fork of the Rust `libc` crate's
-definitions, so the C view and the Rust view of every type agree.
+sockets, time, `malloc`, the string functions, thread-local storage, users
+and groups. Rust's standard library on SlopOS is built on top of it, as it
+is on other Unix systems, so git, cargo and a build system all find the
+POSIX layer they expect. Its header files come from a fork of the Rust
+`libc` crate's definitions, so the C view and the Rust view of every type
+agree.
 
 <Callout type="info">
 SlopOS as a whole is licensed GPL-3.0-or-later, but slibc is licensed
 `MIT OR Apache-2.0`. Every program on the system links against it, including
 programs under licences that can't be combined with GPL-3.0, such as git's
-GPL-2.0-only. A permissive C library is what lets those programs be shipped.
-A CI script checks that nothing slibc depends on is copyleft.
+GPL-2.0-only. A permissive C library is what lets those programs be shipped,
+so a check holds every crate the library is built from to a licence MIT
+alone satisfies.
 </Callout>
 
-### Static and dynamic linking
+The library comes in the forms a compiler expects: `libc.so` to link
+against dynamically, `libc.a` for a static link, `crt0.o`, the code that
+runs before `main`, and `libbuiltins.a`, the helper routines a compiler calls
+for operations the processor has no instruction for, such as 128-bit
+division. SlopOS has no libgcc, so those helpers come from LLVM's
+compiler-rt, built here.
 
-You can link a program either way, the same choice you have on Linux:
+### Programs in the base and outside it
 
-- **Statically**, against `libc.a`. The C library is copied into your
-  executable and nothing else is needed at run time. The programs that ship
-  with SlopOS work this way.
-- **Dynamically**, against `libc.so`. Your executable names the libraries it
-  needs, and a *loader* finds them, puts them in memory and connects your
-  calls to their functions when the program starts. Shared libraries,
-  `dlopen` and `dlsym` work as they do on Linux.
+SlopOS keeps its own programs in the [base](/docs/architecture/base), a
+read-only image that is installed and replaced together with the kernel's
+interface. Those programs are linked statically: each carries its own copy
+of slibc and may make SlopOS's private system calls directly, because the
+base and the kernel agree on a numbered *base interface* and change
+together.
+
+Everything else is linked dynamically against `libc.so`. That includes the
+apps that ship outside the base (the editor, the file manager, the image
+viewer and the widget gallery), the toolchain, and anything you build. The
+executable names the libraries it needs, and a *loader* finds them, maps
+them into memory and connects your calls to their functions when the program
+starts. Shared libraries, `dlopen` and `dlsym` work as they do on Linux.
+[Installed software](/docs/architecture/software) covers where such programs
+live.
+
+### Programs outside the base
+
+A program outside the base changes on its own schedule, and the base and the
+kernel on theirs, so the program needs one interface that never takes
+anything away. That interface is `libc.so`. Its exports only grow:
+`check_libc_exports.sh` holds every function and variable it exports to a
+recorded list, and the size, alignment and field offsets of every structure
+its headers define to another, and fails when anything recorded is removed or
+changes. An addition is recorded by a reviewed change to those lists; a
+removal can only land as a hand edit someone has to approve. The private
+system calls behind the library can then change freely, as long as the
+library keeps its promises.
+
+So a program built outside the base should not make system calls itself.
+The apps are held to that: a check after every build fails one that is
+statically linked, does not list `libc.so` among the libraries it needs, or
+contains a `syscall` instruction of its own. The desktop toolkit the apps use
+reaches the system through `slopos-cabi`, a thin layer of safe Rust over
+functions `libc.so` exports, so the same toolkit code links into a static
+base program against slibc's Rust library and into an app against
+`libc.so`.
+
+A statically linked program of your own will still run, but it carries its
+own copy of the C library and the system calls compiled into it, so a new
+base whose private calls changed can break it. Only the dynamic link is
+promised.
+
+### The loader
 
 On SlopOS the C library and the loader are the same file:
 `/lib/ld-slopos.so.1` is a link to `libc.so`. musl does the same; glibc ships
@@ -50,10 +100,16 @@ them separately. Having one file means a process always has exactly one copy
 of the C library, however many shared libraries it loads, so there is only
 one `malloc` and one `errno` to get confused about.
 
-The loader searches the usual places: directories in `LD_LIBRARY_PATH`,
-paths recorded in the executable (`RPATH`/`RUNPATH`, including `$ORIGIN`),
-then the system defaults. Two debugging switches help when a library doesn't
-load as you expect:
+The loader looks for a library in `LD_LIBRARY_PATH`, then in the paths
+recorded in the executable or library that needs it (`RUNPATH` or `RPATH`,
+including `$ORIGIN`), then in `/lib` and `/usr/lib`. After those it searches
+an extension's own `lib` directory for that extension's programs, and
+`~/.local/lib` and `/usr/local/lib`, but only for a process that is neither
+running as uid 0 nor marked `AT_SECURE` by the kernel, so a library a person
+can write never reaches a program holding more power than they do.
+[Installed software](/docs/architecture/software#how-programs-and-libraries-are-found)
+explains the order and the reason for it. Two debugging switches help when a
+library doesn't load as you expect:
 
 ```bash
 LD_DEBUG=libs ./myprog         # where each library was loaded
@@ -62,21 +118,30 @@ LD_DEBUG=statistics ./myprog   # how long startup relocation took
 
 ### C++ and unwinding
 
-SlopOS has no libgcc, so slibc carries the pieces of it compilers expect:
-helper routines for 128-bit arithmetic and the stack unwinder that C++
-exceptions and Rust panics use. Because the unwinder is in the C library,
-every program can unwind without a separate `libgcc_s` or `libunwind`. A C++
-standard library (libc++ built on slibc) exists and is tested, though no
-program in the base system is written in C++.
+C++ exceptions and Rust panics need a stack unwinder: code that walks back
+up the call stack using tables the compiler leaves in each program. On Linux
+that comes from `libgcc_s` or `libunwind`. On SlopOS it is in the C library
+itself, in both `libc.so` and `libc.a`, so every dynamically linked program
+can unwind with nothing else installed. The base's own programs are built to
+abort on a panic instead, and carry no unwind tables, so they pay nothing for
+it.
+
+The C++ standard library is LLVM's libc++, built for SlopOS against slibc.
+No program in the base is written in C++, so the base carries no C++ runtime;
+the [toolchain](/docs/self-hosting/toolchain) brings it, for the programs you
+build, and the test image carries it to test it, including an exception
+thrown across a `dlopen` boundary.
 
 ## Rust on SlopOS
 
-SlopOS has its own Rust target, `x86_64-unknown-slopos`, in a fork of the
-Rust compiler. It belongs to the Unix family, and its standard library is
+SlopOS has its own Rust target, `x86_64-unknown-slopos`, built into a fork of
+the Rust compiler. It belongs to the Unix family, and its standard library is
 built on slibc the way Linux's is built on glibc. So code that uses
 `std::fs`, `std::process`, `std::thread` or `std::net` compiles for SlopOS
 without changes, and crates that only depend on Unix behaviour usually do
-too. Cargo and rustc themselves run on SlopOS through this target.
+too. A `cargo build` for the target links dynamically against `libc.so`
+through the C compiler, as on any Unix, and panics unwind. Cargo and rustc
+themselves run on SlopOS through this target.
 [Toolchain](/docs/self-hosting/toolchain) covers how to get the compiler and
 build for SlopOS.
 
@@ -91,24 +156,34 @@ side.
 
 ## The shell
 
-`/bin/shell` is a POSIX shell. If you have written `sh` scripts, they run:
-`if`, `while`, `for`, `case`, functions, pipelines, `$(...)`, here-documents,
-globbing, parameter expansion, arithmetic, `trap`, and job control with
-`jobs`, `fg` and `bg`. Scripts start with `#!` as usual, and a file without
-one is run as a shell script, as POSIX requires.
+`/bin/shell` (also `/bin/sh`) is a POSIX shell. If you have written `sh`
+scripts, they run: `if`, `while`, `for`, `case`, functions, pipelines,
+`$(...)`, here-documents, globbing, parameter expansion, arithmetic, `trap`,
+and job control with `jobs`, `fg` and `bg`. Scripts start with `#!` as usual,
+and a file without one is run as a shell script, as POSIX requires.
 
-The default search path is `/bin:/sbin:/usr/local/bin`. The system's
-directories come first, so a program you install in `/usr/local/bin` is found
-but can't replace a system tool by accident. Only exported variables reach
-the programs the shell starts.
+When nothing sets `PATH`, the search path is `/bin:/sbin:/usr/local/bin:/opt/bin`.
+The system's directories come first, so a program installed in
+`/usr/local/bin` is found but can't replace a system tool by accident, and
+the commands extensions provide come last. A person's session adds their own
+`~/.local/bin` after the system's directories (see
+[Installed software](/docs/architecture/software)). Only exported variables
+reach the programs the shell starts.
 
-Tab completes command names, and arguments for commands that have
-completion rules; rules ship for git, cargo, ninja and a few SlopOS tools.
+Tab completes command names, and arguments for commands that have completion
+rules; rules ship for git, cargo, ninja, `keymap`, `mkdir` and `rmdir`.
+
+The shell can also run holding power: `priv -s` starts one with the
+capabilities `priv` grants (see [Privileged actions](/docs/architecture/privd)),
+and on the install medium `shell --rescue` starts the rescue shell (see
+[Installing SlopOS](/docs/self-hosting/installing)). Since `exec` drops
+every gated capability, such a shell starts each program in a way that hands
+it what the shell holds, and says so in its prompt.
 
 ## The tools
 
-Every tool is a separate executable in `/bin`, so anything that starts a tool
-by name finds it.
+Every tool is a separate executable in `/bin` or `/sbin`, so anything that
+starts a tool by name finds it.
 
 The everyday utilities are one program, `/bin/coreutils`, installed under
 many names. Each name is a link to the same file, and the program looks at
@@ -120,29 +195,53 @@ same way.
 | Files | `ls` `cat` `cp` `mv` `rm` `mkdir` `rmdir` `ln` `touch` `stat` `install` `mktemp` `basename` `dirname` `which` |
 | Text | `grep` `sed` `find` `xargs` `sort` `uniq` `tr` `cut` `head` `tail` `wc` `tee` `cmp` `diff` `patch` `less` |
 | Shell helpers | `printf` `echo` `test` `[` `true` `false` `yes` `seq` `sleep` `env` |
-| System | `nproc` `uname` `whoami` `pwd` `date` `ps` `stty` `hexdump` |
+| System | `nproc` `uname` `whoami` `pwd` `date` `ps` `stty` `hexdump` `mount` `umount` |
 | Archives and hashes | `tar` `gzip` `gunzip` `zcat` `sha256sum` |
 
 The regular expressions, compression and hashing behind these are written in
-this project too.
+this project too. `mount` and `umount` take util-linux's spelling.
 
-**Network tools.** `ip` configures interfaces, addresses and routes; `ss`
-lists sockets; `ping` sends ICMP echo; `nc` opens or listens on a TCP or UDP
-connection; `nmap` finds the other machines on the local network; `curl`
-fetches a URL over HTTP or HTTPS, using SlopOS's own TLS client.
-[Networking](/docs/architecture/networking) covers the stack underneath and
-how certificates are checked.
+The base also carries SlopOS's own programs. Many of them do something only
+a capability allows; started without it, they ask privd to run them, which
+may ask you first (see [Privileged actions](/docs/architecture/privd)).
 
-**System tools.** `keymap` shows and changes the keyboard layout, `bootctl`
-manages which installed system boots (see
-[Installing a system](/docs/self-hosting/updating)), and `halt`
-powers the machine off.
+| Kind | Programs |
+|---|---|
+| People and sessions | `users` (the people on the machine, their passwords and who administers it), `session` (restart, end or lock your session, or show the login screen), `login` (the console's login prompt), `priv` (run a command with power over the machine's settings, as `sudo` does), `endtask` (end another person's program), `/sbin/authcheck` (checks a password) |
+| Booting, installing and updating | `bootctl` (kernel slots, bases and crash records), `installer` and `installer-ui`, `tree-install` (see [Installed software](/docs/architecture/software)), `extctl` (extensions), `halt` (power off or restart) |
+| Disks | `mke2fs`, `e2fsck`, `resize2fs`, `tune2fs`, `debugfs` and `dumpe2fs` in `/sbin`, from e2fsprogs |
+| Looking inside | `sysmon` (the System Monitor), `cpufreq`, `prof` (the kernel's profiler), `kconsole` (the diagnostic console's reports) |
+| Network | `ip` (interfaces, addresses and routes), `ss` (sockets), `ping`, `nc` (a TCP or UDP connection), `nmap` (the machines on the local network), `curl` (HTTP and HTTPS) |
+| Desktop | `compositor`, `terminal`, `keymap` (the keyboard layout), `roulette` (the Wheel of Fate) |
 
-**Desktop apps.** The terminal (`terminal`), the text editor Sloped
-(`editor`), a file manager (`file_manager`), an image viewer
-(`image_viewer`), a system monitor (`sysmon`) and `roulette`.
-[Desktop and windowing](/docs/architecture/userland-windowing) explains how
-they get on the screen and how to write one.
+`/sbin` also holds `init` (see [Init and services](/docs/architecture/init))
+and `privd`. The apps outside the base live in `/usr/local/bin`: the editor
+(`editor`), the file manager (`file_manager`), the image viewer
+(`image_viewer`) and `widget_gallery`, which shows every component of the
+desktop toolkit. [Windowing](/docs/architecture/userland-windowing) explains
+how they get on the screen and [Desktop](/docs/architecture/desktop) what
+they look like.
+
+## Cryptography
+
+The base's cryptography comes from one library, `tls-core`, written for
+SlopOS in safe Rust with every primitive under it implemented here. It
+serves three jobs:
+
+- **TLS 1.3 connections**, for `curl` and for `remoted` talking to its
+  broker, checked against the certificate bundle the base carries.
+  [Networking](/docs/architecture/networking#encryption-tls) covers it.
+- **Signatures**: Ed25519, verified strictly as RFC 8032 describes, and SSH
+  signatures in the format `ssh-keygen -Y sign` writes. `extctl` checks a
+  signed extension and its signed configuration this way (see
+  [Extensions](/docs/architecture/extensions)).
+- **Password hashes**: Argon2id, which uses BLAKE2b inside, as RFC 9106
+  specifies it. The accounts record stores each person's password this way
+  (see [Users and file permissions](/docs/architecture/users)).
+
+The library only checks signatures. The code that makes them exists for
+tests alone and is never built into what ships. The toolchain's git and
+cargo bring their own TLS libraries.
 
 ## Asynchronous I/O
 
@@ -160,25 +259,33 @@ there is nothing shared between threads to lock.
 
 ## What it means if you port a program
 
-- **Build from source** for `x86_64-unknown-slopos`, statically or
-  dynamically. Don't expect a binary built for Linux to run.
+- **Build from source** for `x86_64-unknown-slopos`, and link dynamically
+  against `libc.so`. Don't expect a binary built for Linux to run.
+- **Go through the C library, not around it.** A system call made in place
+  ties your program to one base.
 - **Expect POSIX, not every Linux extension.** Most of what portable Unix
-  code uses is there. Some calls are missing, for example `socketpair`, and
-  networking is IPv4 only. [Known limitations](/docs/status/known-limitations)
-  keeps the list.
+  code uses is there. Some calls are missing, for example `epoll` and
+  `inotify`, and networking is IPv4 only.
+  [Known limitations](/docs/status/known-limitations) keeps the list.
 - **Prefer `posix_spawn`** (or Rust's `Command`) to `fork` followed by
   `exec`. Both work, but spawning is the direct path.
 - **Use `fsync` and `rename`** to replace files safely, as on any Unix;
   [Crash recovery](/docs/architecture/crash-recovery) explains what the disk
   promises.
+- **Install it into `~/.local`** with `tree-install`, or for everyone into
+  `/usr/local` (see [Installed software](/docs/architecture/software)).
 
 ## How it is tested
 
 The parts of slibc and the shell that are pure logic (`slibc-core`,
-`shell-core`) are tested on the host with `just test-host`. The kernel test
-suite then runs real programs inside the guest: C test programs for libc,
-the loader (`dltest`) and C++ (`cxxtest`), shell scripts, and the self-hosting
-tests, which build software with cargo on SlopOS itself.
+`shell-core`) and the cryptography (`tls-core`, against the RFCs' test
+vectors and against OpenSSL and `ssh-keygen`) are tested on the host with
+`just test-host`. The kernel test suite then runs real programs inside the
+guest: C programs for libc, statically and dynamically linked, the loader's
+search order (`dl_test`), C++ exceptions and iostreams (`cxx_test`), the
+coreutils and shell scripts, and the self-hosting tests, which build software
+with cargo on SlopOS itself. On every commit CI also runs the checks on
+`libc.so`'s exports and layouts, its licence, and the apps' linking.
 
 ## For contributors
 
@@ -188,6 +295,11 @@ tests, which build software with cargo on SlopOS itself.
   its own flags ask for, so data is never executable. The loader applies
   `RELA` and packed `RELR` relocations and binds symbols the way glibc does:
   the first definition in lookup order wins.
+- **`libc.so` only grows.** Removing an export or changing a structure's
+  layout fails `check_libc_exports.sh`. Record an addition with
+  `check_libc_exports.sh --record`; the private calls behind the library are
+  numbered and checked separately (see
+  [System calls](/docs/architecture/syscalls)).
 - **`malloc` follows mimalloc.** Each thread owns a heap of size-class spans
   carved from large aligned segments, so a pointer finds its metadata by
   masking its address. Same-thread allocation and free take no lock; a free
@@ -196,11 +308,16 @@ tests, which build software with cargo on SlopOS itself.
 - **Threads and TLS.** pthreads are built on the kernel's futex. Thread-local
   storage uses the x86-64 variant II layout through `FS_BASE`, which `execve`
   resets for every new image.
-- **Licences are checked.** Nothing copyleft may enter `slibc/`,
-  `slibc-core/` or `abi/`; the licence check in CI enforces it. Third-party
-  notices ship in `/usr/share/licenses/slibc/`.
-- **The PATH constant is shared** by the shell, `execvp` and the tools that
-  search `PATH`. Change it in one place.
+- **The unwinder is a feature.** Only the `libc.so` and `libc.a` builds turn
+  on slibc's `unwinder` feature. The base's programs take slibc as a Rust
+  library without it, abort on panic and discard their unwind tables.
+- **Licences are checked.** `check_libc_license.sh` holds every crate
+  `libc.so`, `libc.a`, `crt0.o` and `libbuiltins.a` are built from to a
+  licence MIT alone satisfies, and their sources to files inside `slibc/`,
+  `slibc-core/` and `abi/`. A third-party crate needs an entry in
+  `slibc/NOTICE`, which ships in `/usr/share/licenses/slibc/`.
+- **The search path is stated once,** as `DEFAULT_PATH` in `slopos-abi`,
+  which the shell, `execvp` and the tools that search `PATH` share.
 - **`slopos-rt` depends only on `abi` and slibc,** so shared userland
   libraries can use it without a dependency cycle.
 
@@ -212,6 +329,9 @@ tests, which build software with cargo on SlopOS itself.
 - [*How To Write Shared Libraries*](https://akkadia.org/drepper/dsohowto.pdf)
   by Ulrich Drepper. What a dynamic loader does, in detail, from glibc's
   maintainer.
+- [*Libraries and APIs*](https://doc.redox-os.org/book/libraries-apis.html),
+  from the Redox book. Redox also keeps its stable interface in the C
+  library rather than in its system calls, the choice `libc.so` makes here.
 - [*A fork() in the road*](https://www.cs.bu.edu/~jappavoo/jappavoo.github.com/451/papers/fork-hotos19.pdf)
   by Baumann et al., HotOS 2019. The case for creating processes directly
   instead of copying the parent, the approach slibc's `posix_spawn` takes.
@@ -228,11 +348,15 @@ tests, which build software with cargo on SlopOS itself.
 | Path | What is there |
 |---|---|
 | `slibc/`, `slibc-core/` | The C library and loader, and its host-tested logic |
+| `slibc/src/ld_so/` | The loader |
 | `abi/` | Constants and layouts shared by the kernel and slibc |
 | `toolchain/libc/` | The headers' upstream fork |
+| `scripts/check_libc_exports.sh`, `scripts/gates/libc/` | `libc.so`'s recorded exports and layouts |
+| `cabi/` | How the desktop toolkit reaches `libc.so` |
 | `shell-core/`, `userland/src/apps/shell/` | The shell's parser and the shell program |
 | `userland/src/apps/coreutils/` | The multicall utilities |
-| `tls-core/`, `http-core/` | TLS and HTTP for `curl` |
+| `scripts/lib/base.sh` | Which programs the base carries |
+| `tls-core/`, `http-core/` | TLS, signatures and password hashing; HTTP for `curl` |
 | `slopos-rt/` | The async runtime over SlopRing |
 
 The [System call ABI](/docs/abi/syscalls) lists the calls slibc builds on.

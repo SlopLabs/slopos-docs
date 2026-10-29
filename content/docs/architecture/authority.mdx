@@ -14,9 +14,9 @@ for every process and checks before the system call runs. A process gets
 capabilities only from the process that started it, which must hold them
 itself, and it loses every one of them when it `exec`s another program.
 
-So a person who wants to power off asks privd, the privilege broker init
-starts at boot. privd checks its policy and starts a fresh copy of the program
-holding exactly the capabilities that action names
+So when a person powers the machine off, the program they ran asks privd, the
+privilege broker init starts at boot. privd checks its policy and starts a
+fresh copy of the program holding exactly the capabilities that action names
 ([Privileged actions](/docs/architecture/privd) explains how it decides). The
 rest of this page lists the capabilities and who holds them, and explains how
 they pass from one process to another and how they shrink.
@@ -32,10 +32,9 @@ own, loses the capabilities it held (unless it set some aside as *ambient*,
 which SlopOS has no equivalent of). What SlopOS leaves out is the shortcut that
 makes Linux's root powerful again. On Linux a process with uid 0 regains its
 capabilities when it runs a program, unless a securebit (`SECBIT_NOROOT`) says
-otherwise.
-On SlopOS a uid is only an identity
-([Users and file permissions](/docs/architecture/users)), and no program gains a
-capability by being run, whatever its path, owner or mode bits.
+otherwise. On SlopOS a uid is only an identity
+([Users and file permissions](/docs/architecture/users)), and no program gains
+a capability by being run, whatever its path, owner or mode bits.
 
 seL4 and Capsicum use the word for something else: an unforgeable handle to one
 object, such as a descriptor that carries its own rights. SlopOS keeps Linux's
@@ -113,8 +112,8 @@ An extension's services may also hold `Power`, `Mount`, `RawBlock`,
 `SchedHigh`, and its actions any of those but `SchedHigh`, if the machine's
 owner granted them when installing it. That list is the base's ceiling for
 extensions, and no grant can name anything outside it
-([Extensions](/docs/architecture/extensions)). The rescue shell that
-an install medium offers holds everything privd can give.
+([Extensions](/docs/architecture/extensions)). The rescue shell that an
+install medium offers holds everything privd can give.
 
 ## How a process gets its capabilities
 
@@ -163,9 +162,9 @@ An action may name any gated capability but the seat capabilities,
 `SeatSwitch`, `SchedHigh`, `SetId` and `TestHarness`, so nothing privd starts
 holds those. privd holds `SetId` only to start a mechanism as someone other
 than uid 0: an extension's own user, or the person who asked.
-[Init and services](/docs/architecture/init) covers what init does
-with these programs, and [Sessions and login](/docs/architecture/sessions) who
-"the person" is when several people are logged in.
+[Init and services](/docs/architecture/init) covers what init does with these
+programs, and [Sessions and login](/docs/architecture/sessions) who "the
+person" is when several people are logged in.
 
 ### Example: powering off from a terminal
 
@@ -173,9 +172,9 @@ with these programs, and [Sessions and login](/docs/architecture/sessions) who
 
 When you type `halt` in a terminal, your shell starts `/bin/halt` as you,
 holding nothing gated, so `halt` can't call `reboot` itself. Like the base's
-other mechanisms, it notices that and asks privd instead: it
-connects to `/run/privd` and sends its own arguments, which privd matches to the
-action `org.slopos.power.poweroff`. The policy lets a person run that one
+other mechanisms, it notices that and asks privd instead: it connects to
+`/run/privd` and sends its own arguments, which privd matches to the action
+`org.slopos.power.poweroff`. The policy lets a person run that one
 unasked while nobody else is logged in. privd then starts a second `/bin/halt`
 as its own child, as uid 0 holding `Power` and nothing else, and that one
 powers the machine off. The first `halt` waits for it and exits with its
@@ -325,9 +324,9 @@ re-executing itself keeps its mask, that a spawn can't hand over a capability
 its spawner lacks, that `caps_drop` reaches every thread of a process, and that
 `BootEntry` alone reaches no firmware variable. A userland test checks the same
 between real processes, including that no base program gains a capability by
-its path and that a person's session holds nothing gated. A machine-checked proof covers the arithmetic: no step widens a mask,
-`exec` leaves only the universal capabilities, a spawn is bounded by its
-spawner, and a drop is total. A build-time check over the linked kernel makes
+its path and that a person's session holds nothing gated. A machine-checked
+proof covers the arithmetic: no step widens a mask, `exec` leaves only the
+universal capabilities, a spawn is bounded by its spawner, and a drop is total. A build-time check over the linked kernel makes
 sure no system call can reach the power-off code without holding `Power`.
 
 ## For contributors
