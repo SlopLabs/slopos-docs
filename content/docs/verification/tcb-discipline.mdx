@@ -73,7 +73,7 @@ at zero. Count the first two with
 | `check_wait_predicate_purity.sh` | A wait-queue predicate does anything other than observe state |
 | `check_wait_result_handling.sh` | A wait result is silenced (`let _ =`, `.ok()`, `.unwrap_or*()`) in a way that can drop `Killed` |
 | `check_task_ownership.sh` | A raw task pointer appears outside the sanctioned OSTD primitives ([Task lifetimes](/docs/architecture/task-ownership)) |
-| `check_frame_ownership.sh` | A function takes a bare physical address, creates the owning frame from it, and can then fail, or a fault or map path frees a page by address |
+| `check_frame_ownership.sh` | A function takes a bare physical address, creates the owning frame from it, and can then fail; a fault or map path frees a page by address; or a constructor decides at run time whether it claims a fresh page or aliases a live one |
 | `check_process_designator.sh` | A process-keyed table entry point takes a bare `u32` process id instead of a generation-checked `ProcessId` |
 | `check_charge_linearity.sh` | A resource `Charge` can be separated from the object it accounts for: `mem::forget`, `ManuallyDrop` or `.leak()` on it, an `Option<Charge<_>>` field, `.take()` on a charge field, a non-minting function returning one by value, or `Clone`/`Copy` derived on a struct holding one |
 | `check_kernel_pml4_writer.sh` | Anything outside OSTD other than `mm/src/kernel_mappings.rs` takes a mutating cursor on the kernel's master page tables, names the master space where it isn't defined or installed, or writes a page-table word it reached through OSTD's atomic page helper. Runs with the image gates on every build |
@@ -110,11 +110,13 @@ and dependencies. They run after every kernel build, for every variant
 | `check_bootstrap_stack_rewind.sh` | Anything other than its one writer changes the boot CPU's bootstrap data-stack pointer |
 | `check_authority_reachability.sh` | A syscall handler can reach a power primitive (reboot, shutdown) in the call graph without being classified `Power` or listed with a reason in `scripts/gates/authority/<variant>.txt`. Indirect calls are not followed. Run by `check-framekernel-gates` on the dev kernel and by CI on the release and tests kernels, not on every build |
 
-## Boot-log ratchets
+## Gates on a test boot
 
-These boot the test image (or read a captured log with `--log`) and compare
-what the kernel reports with tracked limits. CI runs the first three on the
-log of its full test run.
+These grade what a test boot leaves behind. The ratchets read the boot's log,
+booting the test image themselves or reading a captured log with `--log`,
+and compare what the kernel reports with tracked limits; the two filesystem
+gates read the disk image the boot wrote. CI runs the first three on the log
+of its full test run, and the two filesystem gates after it.
 
 | Gate | Recipe | Fails when |
 |---|---|---|
@@ -144,8 +146,11 @@ log of its full test run.
 
 The rustc-target, LLVM-port, clang-driver and bootstrap gates report
 `skipped` when the source tree they check hasn't been fetched, and the C++
-runtime and C library gates when nothing has been built; `--require` turns
-that into a failure, and CI passes it in the toolchain job, which has both.
+runtime and C library gates when nothing has been built. `--require` turns a
+skip into a failure in every one of them but the C++ runtime gate. CI's
+toolchain job fetches the sources and builds the tests userland first, so
+there they all run for real, and it passes `--require` to each gate that
+takes it.
 [The toolchain](/docs/self-hosting/toolchain) explains what these pieces are.
 
 ## Proofs and Miri

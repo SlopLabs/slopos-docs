@@ -5,19 +5,18 @@ description: "The plans we are working on, what each is for, how far along it is
 
 As of 2026-10-29, SlopOS commit `fa0f8f79`.
 
-This page lists the work that is planned next and the plans that have landed
-since the project started. Today one plan is open, about CI; the rest of the
+This page lists the work that is planned next and the larger plans that have
+landed since August 2026. Today one plan is open, about CI; the rest of the
 open work is defects, listed on [Known
 limitations](/docs/status/known-limitations).
 
-## How plans relate to these docs
+## How the source tree keeps its plans
 
 The source repository keeps its plans in `plans/`, and a plan only ever
 describes what is still to do. When part of it lands, that part is removed
-from the plan, and the docs page for the subsystem is updated to describe how
-it works. When nothing is left, the plan is deleted; git history keeps the
-record. So if a feature appears in these docs it exists, and if it appears
-only in a plan it does not.
+from the plan, and the page for the subsystem is updated to describe how it
+works. When nothing is left, the plan is deleted; git history keeps the
+record. So a feature that appears only in a plan does not exist yet.
 
 `plans/` now holds two files: `ci-latency.md`, the one open plan, and
 `KNOWN_ISSUES.md`, working notes on open defects. Plans can mention file
@@ -61,7 +60,9 @@ Nothing in the tree plans these, so they are not coming soon:
 
 ## Plans that have landed
 
-These plans are finished and deleted. What they built is described here:
+These plans are finished and deleted (`git log --diff-filter=D -- plans/`
+lists them, with smaller ones not shown here). What they built is described
+here:
 
 | Former plan | Retired | Where to read about it |
 |-------------|---------|------------------------|

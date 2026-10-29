@@ -427,12 +427,13 @@ most one of the commands that change what boots at a time.
 | `status`, `spare` | Any person, without being asked |
 | `install`, `clone`, `base install`, `base rollback`, `set-default` | An administrator, after allowing it in a dialog |
 | `oneshot`, `commit` | An administrator, without being asked |
-| `reboot` | An administrator; any person while nobody else is logged in |
+| `reboot` | An administrator; any person, or the login screen, while nobody else is logged in |
 
 A person who isn't an administrator can still ask for the actions an
 administrator may run, and privd then asks for an administrator's password.
-uid 0 running a base program, and a [remote host paired](/docs/self-hosting/remote-control)
-with the machine, run all of them without being asked.
+uid 0 running a base program, and the paired agent of
+[remote control](/docs/self-hosting/remote-control), run all of them without
+being asked.
 [privd actions](/docs/abi/privd-actions) lists each one exactly.
 
 Even with `Power`, the kernel only lets a program reach the Boot Loader
@@ -488,9 +489,10 @@ shut down ([Development machine](/docs/self-hosting/development-machine)).
 - `just test-remote` installs a base that runs at once and then a kernel into
   the spare slot, boots and commits it, all through privd as the paired
   remote host.
-- `just test-installer` installs SlopOS onto three kinds of disk from the
-  install medium, then boots each one and takes the same install, try and
-  commit loop there.
+- `just test-installer` installs SlopOS from the install medium onto a blank
+  disk, beside another system and onto a reused partition, and once more from
+  a CD drive, then boots each disk and takes the same install, try and commit
+  loop there (copying slot `a` into `b` where no toolchain was installed).
 
 ## What isn't done
 

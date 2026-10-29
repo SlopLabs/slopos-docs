@@ -104,8 +104,9 @@ case it takes the directory's group.
 any file, searching any directory, running any file that has an execute bit
 for someone, and changing the owner of any file. It doesn't override one rule:
 in a sticky directory that everyone may write, a symbolic link is followed only
-for the link's owner or the directory's owner. Otherwise a person could plant
-a link in `/tmp` for a privileged program to follow somewhere it shouldn't.
+by the link's owner, or when the link belongs to the directory's owner.
+Otherwise a person could plant a link in `/tmp` for a privileged program to
+follow somewhere it shouldn't.
 
 ### Example: a file in `/etc`
 

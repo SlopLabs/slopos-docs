@@ -201,10 +201,11 @@ does with both.
 point happens through system calls. It first saves any crash record a
 previous boot left (see
 [Diagnosing the kernel](/docs/development/diagnostics#the-kernel-panicked)),
-then starts [privd](/docs/architecture/privd) and the other services, runs
-the Wheel of Fate (next section), and puts a session on the screen: the
-desktop of the person the accounts record logs in automatically, or the
-login screen. On a live boot from the install medium, that desktop opens the
+then starts [privd](/docs/architecture/privd) (and `remoted` on a machine
+paired for [remote control](/docs/self-hosting/remote-control)), runs the
+Wheel of Fate (next section), and only then starts the extensions' services
+and puts a session on the screen: the desktop of the person the accounts
+record logs in automatically, or the login screen. On a live boot from the install medium, that desktop opens the
 installer's welcome in place of a terminal. A test boot (`tests=on`) runs no
 wheel and starts no session. [Init and services](/docs/architecture/init)
 describes what init starts, in what order and how it keeps it running, and
@@ -353,8 +354,9 @@ disk, installs a kernel into the other slot, boots it once, commits it,
 checks that slots which panic or lock up roll back and leave a crash record,
 and replaces and rolls back the base, including one the kernel doesn't serve.
 `just test-installer` boots the install medium from a USB stick and installs
-from it, and `just test-usb` holds the USB part of the device phase to
-settling.
+from it, and `just test-usb` boots with both of QEMU's USB controller models,
+fails unless the USB bus has settled by the end of the device phase, then
+unplugs and plugs devices while the system runs.
 
 ## For contributors
 

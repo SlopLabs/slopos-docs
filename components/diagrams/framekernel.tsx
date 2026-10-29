@@ -13,7 +13,7 @@ const LAYERS = [
   },
   {
     name: 'Trusted core (OSTD)',
-    detail: 'Every line of the kernel’s unsafe code, wrapped in safe functions and types.',
+    detail: 'Every line of SlopOS’s own unsafe kernel code, wrapped in safe functions and types.',
     rule: 'May use unsafe',
     trusted: true,
   },
@@ -26,7 +26,7 @@ const LAYERS = [
 ] as const;
 
 const SUMMARY =
-  'The layers of SlopOS, top to bottom: programs in user mode; kernel services, written in safe Rust only; the trusted core, the one crate that may use unsafe code; and the hardware. The kernel services reach the hardware only through the trusted core.';
+  'The layers of SlopOS, top to bottom: programs in user mode; kernel services, written in safe Rust only; the trusted core, the one SlopOS crate that may use unsafe code; and the hardware. The kernel services reach the hardware only through the trusted core.';
 
 export function FramekernelLayers() {
   return (

@@ -61,7 +61,7 @@ the whole machine, [described below](#why-slopos-refuses-memory-up-front).
 On a machine several people use, a per-program budget isn't enough: one
 person running many programs, or a program that spawns rather than forks, can
 still fill the process and thread tables everyone shares. So the kernel keeps
-an account for each person (each uid in the people's range, from 1000 up; see
+an account for each person (each uid in the people's range, 1000 to 59999; see
 [Users and file permissions](/docs/architecture/users)). Every process started
 to run as that person debits through it, and so does everything those
 processes fork, each new thread included. The account allows a quarter of the
@@ -146,19 +146,20 @@ killer). It chooses a victim like this:
    against its owner, so mapping someone else's doesn't make you look bigger.
 3. It ends that process with `SIGKILL`, waits for its memory to be freed, and
    retries the write. Nobody picks another victim while one is dying, and if
-   the victim still holds its memory a few seconds later, the kernel stops
-   waiting for it.
+   the victim still holds its memory five seconds after the kill, it stops
+   holding back the choice of the next one.
 
-If nobody is eligible, the writer itself dies with `SIGKILL`, and the kernel
-records the reason as running out of memory, so its parent can tell this from
-a crash. Only init may take any process, because the machine can't run
-without it.
+If nobody is eligible, the writer itself dies with `SIGKILL` (not the
+`SIGSEGV` of a crash), and the kernel log says it ran out of memory with
+nothing left for the OOM killer to take. Only init's write may take any
+process, because the machine can't run without init.
 
 ## How a program sees its limits
 
-Programs read their limits with `getrlimit`, `prlimit` or the shell's
-`ulimit`, which all use the `prlimit64` system call. Four of the standard
-limits are supported:
+Programs read their limits with `getrlimit` or `prlimit`, which both use the
+`prlimit64` system call, as does `ulimit` in bash (which comes with the
+toolchain; the base's own shell has no `ulimit`). These standard limits are
+supported:
 
 | Limit | What it controls |
 |---|---|
@@ -169,8 +170,8 @@ limits are supported:
 
 Any other limit fails with `EINVAL`, so a program can tell "not supported"
 from "unlimited". The soft and hard limits are always equal. A program may
-lower its own limits but can't raise them or change another process's
-(`EPERM`).
+lower its own limits, naming itself as pid 0 the way `getrlimit` and
+`setrlimit` do, but can't raise them or change another process's (`EPERM`).
 
 A build driver deciding how many jobs to run can call `sys_info` for the
 commit ceiling, how much of it is promised, and the OOM killer's count of

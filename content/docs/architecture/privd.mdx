@@ -221,10 +221,10 @@ in meets the same question, through `user alone`. If no administrator has a
 password, the request is refused with
 `This needs an administrator's password, and no administrator has one.`
 
-On a fresh install the only person is an administrator without a password, so
-at their desktop every action an administrator may run either runs unasked or
-takes one click.
-The levels matter once there are several people. The full rules, including
+On a computer whose only person is an administrator without a password (the
+developer images, and an install made from the installer's window), every
+action an administrator may run either runs unasked at their desktop or takes
+one click. The levels matter once there are several people. The full rules, including
 what happens with no password, are on
 [privd actions](/docs/abi/privd-actions#how-a-request-is-judged).
 
@@ -248,8 +248,8 @@ tag its process carries (see [Sessions and login](/docs/architecture/sessions)):
   ```
 
   So a person without a password can allow nothing from a console login,
-  not even a `confirm` action: the first person of a fresh install, who has
-  none, gets `This needs your password, and you haven't set one.` from
+  not even a `confirm` action: a first person who has none gets
+  `This needs your password, and you haven't set one.` from
   `bootctl install` there, and from `users passwd` too. Actions that run
   unasked still run. Running `users passwd` in a terminal on the desktop,
   where a click answers, sets one.
@@ -299,7 +299,8 @@ The dialog is built so that nothing but a deliberate answer allows a request:
   since a key or click in that window was meant for what was there before. A
   click counts only if the press itself came after that.
 - While a question is up, no key, press or pointer motion reaches any app.
-  After a password question goes away, keys keep going nowhere until 1.5
+  When a password question is taken off the screen before it is answered (it
+  expired, or its request was withdrawn), keys keep going nowhere until 1.5
   seconds pass without one, so the rest of a password being typed never lands
   in a window.
 - A question unanswered for 120 seconds is refused. Refusing one also refuses
@@ -327,9 +328,10 @@ record and the hashes.
 An action with `keep <seconds>` remembers an answer: the same request again
 within that time runs unasked. The only such action in the base is
 `org.slopos.priv`, with five minutes. "The same request" is narrow: same uid,
-same session, started by the same live process (so an answer given to one
-shell covers that shell and what it starts, and nothing else in the session),
-same action, same command line and same directory. An answer an
+same session, started by the same live process (so an answer given to a
+command one shell started covers the next commands that shell starts, and
+nothing else in the session), same action, same command line and same
+directory. An answer an
 administrator's password gave stands only while that administrator could
 still give it. sudo, by comparison, keeps an answer per terminal by default,
 and polkit per action and requester whatever the other details.
@@ -447,8 +449,8 @@ base's privd when the old one exits, or beside it after five seconds. The new
 privd refuses requests for `exclusive` actions while a mechanism its predecessor started
 still runs, since it cannot know which groups that one holds. A requester
 waits up to two seconds for a privd that is restarting, and programs whose
-requests may span a base switch (the paired agent's commands, the
-self-hosting script) wait up to a minute.
+requests may span a base switch (the paired agent's commands, and the tests
+that run the self-hosting script) wait up to a minute.
 
 When the extensions change, init sends privd `SIGHUP`, and privd reads their
 actions again and forgets every kept answer.

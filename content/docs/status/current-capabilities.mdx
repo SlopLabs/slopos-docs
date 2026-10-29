@@ -41,8 +41,11 @@ through system calls ([User mode and kernel mode](/docs/architecture/privilege-s
 The kernel answers 146 system calls by Linux's numbers and calling convention,
 so ported C and Rust code finds the calls it expects, and a call it lacks
 fails with `ENOSYS`; 53 more are SlopOS's own, numbered as the *base
-interface* the kernel serves (interfaces 10 to 12 at this commit)
-([System calls](/docs/architecture/syscalls)).
+interface* the kernel serves, interfaces 10 to 12 at this commit
+([System calls](/docs/architecture/syscalls)). The counts are the handlers in
+the kernel's two dispatch tables (`core/src/syscall/handlers.rs`), and the
+interfaces are `BASE_INTERFACE_MIN` and `BASE_INTERFACE` in
+`abi/src/base_interface.rs`.
 
 Processes work the way a Unix programmer expects: `fork`, `exec`, shell
 scripts with `#!`, process groups, job control and the full set of signals
@@ -64,18 +67,23 @@ on the boot disk for the next boot to collect
 
 A machine has people, each with an account, a home directory and an optional
 password, and some of them are administrators. The desktop logs the first
-person in by itself until they turn that off; after that a login screen lists
+person in by itself until automatic login is turned off, which adding a second
+person does unless asked not to; after that a login screen lists
 the people, several can be logged in at once, and each switches to their own
 desktop, which locks behind them. A text console has a login prompt too
 ([Users and file permissions](/docs/architecture/users),
 [Sessions and login](/docs/architecture/sessions)).
 
-What a program may do is a set of named capabilities (22 of them) it was
-handed when it started, never something its path or its user id earns
-([Capabilities](/docs/architecture/authority)). A person's programs hold none
-of the powerful ones. When one needs to (to install a kernel, add a person or
+What a program may do is a set of named capabilities it was handed when it
+started, never something its path or its user id earns
+([Capabilities](/docs/architecture/authority)); there are 22 of them, the bits
+`abi/src/caps.rs` defines. A person's programs hold none that change the
+system: the most any of them holds is their compositor's hold on the screen
+and the input. When one needs more (to install a kernel, add a person or
 power the machine off), it asks a broker, privd, which carries out one of 34
-named actions after asking the person in a dialog when the action says so;
+named actions (the `action` lines of the base's policy,
+`assets/privd/actions`) after asking the person in a dialog when the action
+says so;
 `priv` runs a command with more power the same way, as `sudo` would
 ([Privileged actions](/docs/architecture/privd)).
 
@@ -106,8 +114,8 @@ audio device, serial adapter or printer does nothing.
 ## Network
 
 The network stack speaks IPv4, TCP, UDP, DHCP and DNS over QEMU's virtio card,
-the Realtek RTL8168h wired card and USB Ethernet adapters, each configured by
-DHCP when it appears, and Unix sockets connect local programs. An in-tree TLS
+Realtek's RTL8168h and RTL8168M wired cards and USB Ethernet adapters, each
+configured by DHCP when it appears, and Unix sockets connect local programs. An in-tree TLS
 1.3 client lets `curl` fetch pages over HTTPS, and on the development machine
 `git` clones over HTTPS and ssh ([Networking](/docs/architecture/networking)).
 Works with limits: IPv4 only.
@@ -115,7 +123,7 @@ Works with limits: IPv4 only.
 ## Programs and the desktop
 
 SlopOS has its own C library, whose list of exported symbols (929 at this
-commit) only ever grows, a dynamic loader, a POSIX shell and a multi-call
+commit, the entries of `scripts/gates/libc/exports.txt`) only ever grows, a dynamic loader, a POSIX shell and a multi-call
 `coreutils` with the everyday tools (`ls`, `grep`, `sed`, `find`, `tar` and
 the rest) ([Userland](/docs/architecture/userland)). The system's own
 programs form one read-only *base* that can be replaced while the system runs
@@ -158,8 +166,11 @@ it, SlopOS pulls new commits over git, builds its kernel, programs and base,
 installs the base and runs it at once, installs the kernel into the spare
 boot slot, boots into it and pushes commits back
 ([Development machine](/docs/self-hosting/development-machine)). The laptop
-ran the same loop on its own disk. Works with limits: the compilers
-themselves are built on the host ([Toolchain](/docs/self-hosting/toolchain)).
+has built itself and installed a kernel into its spare slot on its own disk,
+without the network half of the loop
+([Hardware](/docs/status/hardware-requirements)). Works with limits: the
+compilers themselves are built on the host
+([Toolchain](/docs/self-hosting/toolchain)).
 
 A machine on your network can be paired with your development host and
 driven from it: commands, files, the kernel log, and new kernels and bases
@@ -174,9 +185,11 @@ userland phases. Host-side unit tests run beside it, and longer checks boot
 their own machines to cover USB hotplug, installs, updates, remote control and
 self-hosting ([Write tests](/docs/development/adding-tests)).
 
-All `unsafe` Rust in the kernel sits in one crate, `slopos-ostd`, which build
-gates enforce ([The framekernel](/docs/verification/framekernel)), and
-machine-checked proofs cover selected parts of it
+All of the kernel's own `unsafe` Rust sits in one crate, `slopos-ostd`, which
+build gates enforce; the two pinned third-party libraries it links, the
+unwinder and the DWARF reader, carry the rest
+([The framekernel](/docs/verification/framekernel)). Machine-checked proofs
+cover selected parts of its logic and of SlopRing's and TCP's
 ([Proofs](/docs/verification/verus-status)). At this commit:
 
 | Measure | Value | Measured with |

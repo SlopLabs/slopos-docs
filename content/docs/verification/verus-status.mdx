@@ -128,7 +128,7 @@ build Verus from the pinned commit and point `VERUS_BIN` at it.
   fixed or the bump is reverted, never weakened. If Verus stops being
   maintained, the fallback is bounded model checking with Kani, which checks
   inputs up to a size limit and is a weaker guarantee.
-- **Adding a proof.** One file per trusted-core module, named after it, in
+- **Adding a proof.** One file per module it models, named after it, in
   `verification/proofs/`. Files whose names start with `_` are shared helpers
   and aren't run on their own. When a proof lands, record it in
   `verification/STATUS.md`, including what the model leaves out.

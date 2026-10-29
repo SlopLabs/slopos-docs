@@ -102,15 +102,17 @@ unknown program until its next `exec`.
 
 To share memory that isn't a file, a program calls `memfd_create`, which
 returns a file descriptor for an anonymous block of memory. It sizes the block
-with `ftruncate`, maps it, and passes the descriptor to another process over a
-Unix socket, which maps the same frames. The desktop works this way: every
+with `ftruncate`, maps it (a memfd is reached only through `mmap`, not with
+`read` or `write`), and passes the descriptor to another process over a Unix
+socket, which maps the same frames. The desktop works this way: every
 window's pixels live in a memfd that the application draws into and the
 compositor reads (see [Windowing](/docs/architecture/userland-windowing)).
 
-A memfd can be sized only once, and its frames are allocated at that moment.
-They count against the limits of the process that sized it. If that process
-exits while another still holds the descriptor, the memory lives on and is
-counted against the system as a whole.
+A memfd can be sized only once, to at most 64 MiB, and its frames are
+allocated at that moment. They count against the limits of the process that
+sized it. If that process exits while another still holds the descriptor, the
+memory lives on and is counted against the system as a whole. At most 64
+memfds exist at once in the whole system.
 
 ### When RAM runs low
 
@@ -148,9 +150,11 @@ call fails with `EFAULT`.
 - **New memory reads as zero.** Every frame a program receives was cleared.
 - **`fork` takes the same time whatever the parent's size.** Only page tables
   are copied.
-- **Addresses differ between runs.** The stack and heap start at a random
-  offset each time a program starts, which makes memory-corruption bugs harder
-  to exploit.
+- **Some addresses differ between runs.** The stack and heap start at a
+  random offset each time a program starts, which makes memory-corruption
+  bugs harder to exploit. The program itself and the area `mmap` places
+  memory in (where shared libraries go) start at the same addresses every
+  time.
 
 ## Differences from Linux
 
@@ -159,7 +163,8 @@ call fails with `EFAULT`.
 | Asking for more memory than can be backed | Usually allowed; a process is killed later if memory runs out | Refused with `ENOMEM` at `mmap`, `brk` or `exec` |
 | Swap | Optional | None |
 | Huge pages | Available | Not supported; every page is 4 KiB |
-| memfd | Can be resized and sealed | Sized once; no sealing |
+| memfd | Can be resized, sealed, read and written | Sized once, at most 64 MiB, and at most 64 in the whole system at once; no sealing; reached only through `mmap` (`read` and `write` fail with `EINVAL`) |
+| Address randomisation | Program, libraries, `mmap` area, stack and heap | Stack and heap only |
 
 ## How it is tested
 

@@ -5,8 +5,8 @@ description: "Why all of the kernel's unsafe Rust lives in one crate, and what t
 
 import { FramekernelLayers } from '@/components/diagrams/framekernel';
 
-SlopOS is written in Rust, and all of the kernel's `unsafe` code lives in one
-crate, the *trusted core*. The scheduler, the memory manager, the filesystem,
+SlopOS is written in Rust, and all of the kernel's own `unsafe` code lives in
+one crate, the *trusted core*. The scheduler, the memory manager, the filesystem,
 the network stack and every driver are written in safe Rust, and the compiler
 refuses `unsafe` in them. So if you are reading a driver and wondering whether
 a bug in it could corrupt the kernel's memory, the answer is no, provided the
@@ -96,8 +96,10 @@ shapes OSTD uses for the same trick.
 People forget rules, and a kernel gains new crates over time, so the build
 checks this one.
 
-**Every other kernel crate forbids `unsafe`.** Each crate the kernel links
-starts with `#![forbid(unsafe_code)]`, which makes any `unsafe` in it a
+**Every other kernel crate forbids `unsafe`.** Each crate the kernel links,
+apart from OSTD, the kernel binary's own crate and the two vendored libraries
+described [below](#what-it-doesnt-promise), starts with
+`#![forbid(unsafe_code)]`, which makes any `unsafe` in it a
 compile error that can't be switched off further down. A check script also
 reads the kernel's list of dependencies and fails if any crate on it lacks the
 attribute, so a newly added crate is covered from its first build.

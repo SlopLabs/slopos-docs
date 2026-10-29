@@ -35,8 +35,8 @@ them alone.
 things from it (see [Boot](/docs/architecture/boot)): the kernel, the base it
 runs, and the *install medium*, an archive the kernel serves read-only at
 `/media/install`. The medium holds what an install copies
-beyond the kernel and base: Limine for the boot partition with its licence
-and notices, the apps that live outside the base (editor, files, image
+beyond the kernel and base: Limine for the EFI system partition, with its
+licence and notices, the apps that live outside the base (editor, files, image
 viewer, widget gallery), and the source code of the third-party programs
 the base carries.
 
@@ -123,15 +123,15 @@ what the engine reports and sends it your answers. The pages are:
    (`20 GB`). With the payload, *Source code address* is where `/src/slopos`
    will fetch from and push to. *Put SlopOS first in the startup order*
    decides whether the computer starts SlopOS by default.
-3. **Ready to install.** The disk now and after the install, and a list of
+3. **Ready to install**. The disk now and after the install, and a list of
    what happens to each partition, tagged *Erased*, *New*, *Formatted*,
    *Shared* or *Kept*. The install button names what it does (*Erase disk
    and install*, *Install beside* the other system) and stays off until you
    tick a box whose words follow the damage, such as *I understand that
    everything on this disk will be deleted*.
-4. **Installing SlopOS.** The steps as they run, with the engine's full log
+4. **Installing SlopOS**. The steps as they run, with the engine's full log
    under *Show details*. The window refuses to close until the install ends.
-5. **SlopOS is installed.** Remove the stick, then *Restart*.
+5. **SlopOS is installed**. Remove the stick, then *Restart*.
 
 *Back* keeps every answer you gave. If the install fails, the page says at
 which step, or that nothing was written, and *Try again* starts the
@@ -283,7 +283,8 @@ for a rescue shell (the action `org.slopos.rescue`): a shell running as uid 0
 that holds every capability privd can give, on a terminal of its own. It
 exists only on a boot from the install medium, which only the kernel can say
 (no command-line word claims it), and like the installer it is allowed with a
-click by an administrator at the computer and never for a remote host.
+click by an administrator at the computer and never for the paired agent of
+[remote control](/docs/self-hosting/remote-control).
 
 The banner says `Rescue shell: what runs here holds everything privd can
 give.` and the prompt starts with `rescue`. Every program the rescue shell

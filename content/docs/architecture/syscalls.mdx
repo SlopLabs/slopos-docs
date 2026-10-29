@@ -208,8 +208,10 @@ registers and returns to user mode with the `IRETQ` instruction.
   `ENOSYS`, so an older base still boots without what that call did.
 - **A crash in a handler usually costs only the caller.** If a handler
   panics, the kernel catches the panic at the dispatcher, logs it and ends
-  the calling task, and the rest of the system keeps running. There is a
-  limit on how many such panics one boot tolerates before the kernel stops.
+  the calling task, and the rest of the system keeps running. A boot
+  tolerates such panics up to a limit, a hundred by default
+  (`panic.oops_limit=` changes it), and the one that reaches it stops the
+  kernel.
   A test boot (`tests=on`) and `panic.on_oops=on` turn every handler panic
   into a kernel panic instead, so a bug can't hide. See
   [Diagnosing the kernel](/docs/development/diagnostics).

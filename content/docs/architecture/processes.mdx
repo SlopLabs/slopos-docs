@@ -42,8 +42,8 @@ Every process carries a set of user and group ids, its *credentials*: a
 real, an effective and a saved user id, the same three for its group, and up
 to 32 supplementary groups, as POSIX defines them. All of a process's threads
 share them, so a `setuid` in one thread changes the whole process, as POSIX
-requires. Your shell and the programs it starts run as you; the system's
-services run as users of their own. The ids decide which files a process may
+requires. Your shell and the programs it starts run as you; the system's own
+services run as root or as users of their own. The ids decide which files a process may
 open and which processes it may signal.
 
 They don't decide what a process may do to the machine. On SlopOS uid 0 is
@@ -98,8 +98,8 @@ run three kinds of file:
   path, following the rules in Linux's `execve(2)`: the line is read from the
   first 256 bytes of the file, it may carry one extra argument after the
   interpreter's name, and an interpreter may itself be a script, up to five
-  levels deep, before `exec` fails with `ELOOP`. A `#!` line cut off by the
-  256-byte limit fails with `ENOEXEC`. A path that is a loop of symbolic links
+  levels deep, before `exec` fails with `ELOOP`. A `#!` line whose interpreter
+  name is cut off by the 256-byte limit fails with `ENOEXEC`. A path that is a loop of symbolic links
   fails with `ELOOP`, not `ENOEXEC`, so a shell searching `PATH` doesn't try to
   run the loop as a shell script.
 
@@ -157,8 +157,8 @@ never give a child a file its parent couldn't open.
 Powers work the same way. The child gets the universal capabilities, plus
 whichever of the caller's own gated capabilities the caller names; naming one
 the caller doesn't hold fails with `EPERM`. The child runs as the caller
-unless the caller asks for user or group ids it doesn't hold itself, other
-supplementary groups or a login tag, all of which take `SetId`. A child that
+unless the caller asks for user or group ids it doesn't hold itself, a list
+of supplementary groups or a login tag, all of which take `SetId`. A child that
 holds a gated capability, or runs with ids other than its spawner's real
 ones, starts with `AT_SECURE` set. This is how init starts each service with exactly what
 its service table names, and how privd starts a program it has been asked to
@@ -313,14 +313,16 @@ must hold:
 
 - **The user ids match**, as POSIX and Linux require: the sender's real or
   effective user id is the target's real or saved user id. So you can signal
-  your own programs but not another person's.
+  your own programs but not another person's. Unlike Linux, root gets no
+  exception here: a process running as uid 0 passes this half only for
+  targets whose real or saved user id is 0.
 - **The sender holds every capability the target holds.** A program can't
   stop or kill one more powerful than itself, even one running as the same
   user. So a program you start can't kill the compositor of your own
   session, which holds powers over the screen that your program doesn't.
 
 Two exceptions waive both halves. A holder of the `ProcSignal` capability may
-signal anything; privd's task-ending action uses it, which is how the System
+signal any process but init; privd's task-ending action uses it, which is how the System
 Monitor ends another person's program once an administrator allows it
 ([Privileged actions](/docs/architecture/privd)). And `SIGCONT` to a process
 in the sender's own terminal session needs neither, so a shell can always
@@ -331,8 +333,8 @@ starts, and kernel threads aren't processes and can't be signalled at all.
 A signal sent to a whole group skips the members the sender may not signal,
 and fails with `EPERM` only if it reached none of them. The nice-value calls
 (`setpriority`) use the same rule to decide whose priority you may change,
-and setting a nice value below zero, below the task's current one, takes the
-`SchedHigh` capability. When memory runs out, the kernel's
+and setting a nice value below both zero and the task's current value takes
+the `SchedHigh` capability. When memory runs out, the kernel's
 [out-of-memory killer](/docs/architecture/resource-accounting) uses the
 capability half of the rule to decide which process it may end.
 
@@ -380,11 +382,12 @@ fix that, and SlopOS has both.
 | What uid 0 may do | Nearly anything, through the capabilities root holds | Nothing special; powers are capabilities, held whatever the uid |
 | Set-user-ID and set-group-ID files | Run with the file owner's ids | The bits are ignored; only a spawner holding `SetId` starts a program as someone else |
 | Powers across `exec` | Kept by root, and added by file capabilities | Only the universal capabilities survive |
-| Who may signal whom | Depends on user ids | User ids, and the sender must hold every capability the target holds; init can't be signalled |
+| Who may signal whom | User ids, or `CAP_KILL`, which root holds | User ids, and the sender must hold every capability the target holds; `ProcSignal`, or `SIGCONT` within the terminal session, waives both; init can't be signalled |
 | First realtime signal (`SIGRTMIN`) | Usually 34 (glibc keeps two) | 32 |
 | `vfork` | Supported | Not provided; use spawn or `posix_spawn` |
 | Spawn file actions | `posix_spawn` may open files for the child | The child only gets descriptors the parent already holds |
 | `pidfd_open` flags | Accepts `PIDFD_NONBLOCK` and `PIDFD_THREAD` | No flags |
+| `signalfd` on an existing descriptor | Replaces its signal mask | Refused with `EINVAL`; each call makes a new descriptor |
 
 ## How it is tested
 
@@ -468,8 +471,8 @@ last member is reaped the reference upgrades to nothing.
   chapters 4 and 5 of *Operating Systems: Three Easy Pieces* by Remzi and
   Andrea Arpaci-Dusseau. Start here. What a process is, and `fork`, `exec`
   and `wait` with small C programs you can run.
-- [*Job Control*](https://www.gnu.org/software/libc/manual/html_node/Job-Control.html)
-  and [*Implementing a Shell*](https://www.gnu.org/software/libc/manual/html_node/Implementing-a-Shell.html)
+- [*Job Control*](https://sourceware.org/glibc/manual/latest/html_node/Job-Control.html)
+  and [*Implementing a Shell*](https://sourceware.org/glibc/manual/latest/html_node/Implementing-a-Shell.html)
   in the GNU C Library manual. Process groups, sessions and the foreground
   from the shell's side, with the code a shell needs.
 - [*A fork() in the road*](https://www.microsoft.com/en-us/research/uploads/prod/2019/04/fork-hotos19.pdf)

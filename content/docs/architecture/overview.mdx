@@ -28,9 +28,9 @@ Linux's, down to the numbering.
 
 The shell, the terminal, the desktop, `ls` and `cat` are all ordinary user
 programs, under the same rules as the programs you write. Each runs as some
-user, as on Linux: your programs as you, the system's services as users of
-their own. Unlike Linux, being root gives a program no power over the
-machine. Powers such as taking over the screen, writing a raw disk or
+user, as on Linux: your programs as you, the system's own services as root
+or as users of their own. Unlike Linux, being root gives a program no power
+over the machine. Powers such as taking over the screen, writing a raw disk or
 rebooting are *capabilities*, named bits a process holds, and a program can
 only be handed them by the program that starts it. When you ask for
 something that needs one, such as installing a new kernel, your request goes
@@ -193,15 +193,15 @@ output, and a similar trip happens through the terminal instead of the disk.
 
 ## How the parts are checked
 
-The design only helps if its rules hold, so the build checks them rather than
-trusting people to remember:
+The design only helps if its rules hold, so the compiler and the checks CI
+runs on every change enforce them rather than trusting people to remember:
 
-- A source check fails the build if `unsafe` appears in any kernel crate other
-  than the trusted core, and another expands every macro first, so `unsafe`
-  can't hide inside one.
-- Another check fails the build if any kernel code uses `async`. The kernel
-  blocks a task while it waits; asynchronous code is a userland feature, built
-  on SlopRing.
+- Every kernel crate but the trusted core tells the compiler to refuse
+  `unsafe` code. A source check fails CI if `unsafe` appears in one anyway,
+  and another expands every macro first, so `unsafe` can't hide inside one.
+- Another check fails CI if any kernel code uses `async`. The kernel blocks a
+  task while it waits; asynchronous code is a userland feature, built on
+  SlopRing.
 - Every system call states, where it is defined, which capability it needs
   (or that it needs none, and why), and the build fails if any entry in the
   table lacks one.
@@ -218,11 +218,12 @@ trusting people to remember:
 ## For contributors
 
 The source tree is a Cargo workspace with one crate per subsystem, and
-`Cargo.toml` lists every one. Crate names are directory names. These are the
+`Cargo.toml` lists every one. Most crates live in a directory named after
+them without the `slopos-` prefix (`mm/` holds `slopos-mm`). These are the
 ones you will open most often:
 
-| Crate | Responsibility |
-|-------|----------------|
+| Directory | Responsibility |
+|-----------|----------------|
 | `slopos-ostd` | The trusted core, and the only kernel crate allowed `unsafe` |
 | `kernel`, `boot` | The kernel's entry point and the boot sequence |
 | `abi` | Everything shared with userland: syscall numbers, errno values, flags, structs, capability bits |

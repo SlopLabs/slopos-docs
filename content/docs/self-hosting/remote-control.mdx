@@ -14,8 +14,8 @@ computer runs a small agent, `remoted`, that connects out to a *broker* on
 your Linux machine; nothing on SlopOS listens for connections.
 
 What the broker can make the computer do is bounded. Commands run as a person
-holding no special powers. On top of that, the policy of privd, SlopOS's
-privilege broker, lets the agent change
+holding no special powers. On top of that, the policy of privd, the program
+that runs SlopOS's privileged actions, lets the agent change
 the boot slots and the bases, install extensions and software, change CPU
 frequency settings, read the kernel's diagnostics, change the keyboard layout
 and restart or power off, without asking anyone at the machine. It can't
@@ -40,11 +40,10 @@ host is a certificate authority and a token built into its read-only base.
 ## Why the computer dials out
 
 We built the remote control to measure and test SlopOS on a laptop without
-sitting at it. The obvious tool would be an SSH server on the laptop, but
-OpenSSH's server needs a password or key database and a privilege separation
-scheme that SlopOS doesn't provide, and a server listening on the network
-would be the machine's whole attack surface. So the SlopOS computer runs no
-server at all. Your Linux machine runs the broker on one TCP port (7330 by
+sitting at it. The obvious tool would be an SSH server on the laptop, but a
+server listening on the network answers anyone who can reach its port, and
+every login it accepts is a way in. So the SlopOS computer runs no server at
+all. Your Linux machine runs the broker on one TCP port (7330 by
 default), and the only change it needs is one firewall rule.
 
 That raises a second problem. Whoever the agent connects to gets everything
@@ -117,8 +116,11 @@ and runs these actions without asking anyone:
 | Software in `/usr/local` | `org.slopos.software.install` |
 | Diagnostics and settings | `org.slopos.cpufreq.set`, `org.slopos.kconsole`, `org.slopos.prof`, `org.slopos.console.keymap` |
 
-Everything else privd refuses to the agent, and it never puts a question on
-the computer's screen on the agent's behalf. A program the agent runs that
+privd refuses the agent every other action of the base's policy, and it never
+puts a question on the computer's screen on the agent's behalf. (An
+extension's declaration may also name the paired agent among those who may
+ask for the extension's own actions, which its owner grants when it is
+installed; see [Extensions](/docs/architecture/extensions).) A program the agent runs that
 isn't a mechanism gets no privd connection, so it can't pass one on to
 something from outside the base.
 [Privileged actions](/docs/architecture/privd) explains principals and
@@ -235,7 +237,7 @@ builds and installs your current tree on the paired computer:
 3. It pushes the base and installs it with `bootctl base install`. When the
    running kernel serves the new base, the computer switches to it at once,
    and the recipe waits for `remoted` to report the new base's tag:
-   `remote: the base runs now, without a reboot`.
+   `remote: the base runs now, without a reboot: boot <boot id>, base tag <tag>`.
 4. A changed kernel is pushed into the slot that isn't the default, armed for
    one boot, and booted. The recipe waits for the computer to come back with
    the new tag. If it comes back with another, the new kernel didn't boot

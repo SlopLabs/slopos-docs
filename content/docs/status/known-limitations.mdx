@@ -20,23 +20,25 @@ one is about CI.
 ## Hardware
 
 - **Only one real machine has been tried.** Other PCs may boot, but nothing
-  outside QEMU and the tested laptop has been run, and the laptop has not been
-  rerun since 2026-10-11. See [Hardware](/docs/status/hardware-requirements).
+  outside QEMU and the tested laptop has been run, and the tree records no
+  results from the laptop after 2026-10-11, so what changed since then is
+  tested in QEMU only. See [Hardware](/docs/status/hardware-requirements).
   No plan.
 - **Few device drivers.** SlopOS drives NVMe disks, USB sticks, the Realtek
   RTL8168h and RTL8168M wired cards, USB Ethernet adapters, Intel integrated
   graphics of the Tiger Lake, Alder Lake and Raptor Lake families, and USB,
-  PS/2 and I²C-HID input. There is no
-  driver for SATA disks, Wi-Fi, Bluetooth or audio, no GPU acceleration and no
-  suspend. No plan.
+  PS/2 and I²C-HID input. There is no driver for SATA disks, Wi-Fi, Bluetooth
+  or audio, no GPU acceleration and no suspend. No plan.
 - **USB through xHCI only, and three kinds of device.** Older USB controllers
   have no driver, and only keyboards and pointers, Bulk-Only storage and
   CDC Ethernet adapters bind; anything else is enumerated and left alone
   ([USB](/docs/architecture/usb)). No plan.
-- **USB rough edges.** An unresponsive xHCI controller holds the boot for up
-  to 11 seconds; a device that keeps reconnecting logs every attach and
-  detach; and a keyboard pulled out while another still holds Shift reports
-  Shift released. Open defect.
+- **USB and keyboard rough edges.** An unresponsive xHCI controller holds the
+  boot for up to 11 seconds; a device that keeps reconnecting logs every
+  attach and detach; a keyboard pulled out while another still holds Shift
+  reports Shift released; and on a machine with no xHCI controller, a
+  keyboard-light update the PS/2 controller leaves unanswered is sent again
+  only at the next key or lock change. Open defect.
 - **PCI devices are found once, at boot.** A USB device can come and go, but a
   PCI card is probed only while the kernel boots, and drivers cannot be
   unloaded ([Drivers](/docs/architecture/drivers)). No plan.
@@ -56,6 +58,7 @@ one is about CI.
 - **Proofs cover part of the trusted core.** Machine-checked proofs cover
   selected logic; some lock-free code in SlopRing and the TCP zero-copy path is
   reviewed by hand instead ([Proofs](/docs/verification/verus-status)).
+  Proving the whole core is not a goal.
 - **No kernel page-table isolation.** The kernel stays mapped (but
   inaccessible) while programs run, and relies on the processor's protection
   bits rather than unmapping itself, which is the defence Linux added against
@@ -90,10 +93,13 @@ one is about CI.
 
 ## Storage
 
-- **ext4 as SlopOS makes it.** SlopOS formats every volume with one set of ext4
-  features. It also reads ext2 and ext3, but an ext4 volume made by another
-  system with other features is not supported, and a volume past 16 TiB is
-  refused ([Filesystem](/docs/architecture/filesystem)). No plan.
+- **Only the ext4 features SlopOS knows.** SlopOS formats every volume with
+  one set of ext4 features, and also mounts ext2, ext3 and ext4 volumes other
+  systems made. But a volume using a feature it does not implement, such as
+  inline data, encryption or case-insensitive names, is refused; one using a
+  feature it can read but not write, such as `bigalloc`, mounts read-only;
+  and a volume past 16 TiB at 4 KiB blocks is refused
+  ([Filesystem](/docs/architecture/filesystem)). No plan.
 - **No other filesystems.** A FAT or exFAT stick, btrfs, XFS or NTFS does not
   mount. The boot partition is FAT32, but only SlopOS's own tools write it,
   through the raw disk. No plan.
@@ -106,7 +112,8 @@ one is about CI.
 - **IPv4 only.** There is no IPv6. No plan.
 - **Not hardened for the open Internet.** The stack carries real TCP, UDP, DNS
   and TLS 1.3 traffic, but it is a small stack and has not been through what an
-  Internet-facing one has ([Networking](/docs/architecture/networking)).
+  Internet-facing one has ([Networking](/docs/architecture/networking)). No
+  plan.
 - **No incoming remote login.** OpenSSH's `ssh` comes with the toolchain, but
   nothing runs its server. A machine is driven remotely only through the
   paired agent, which dials out to your host
@@ -115,9 +122,9 @@ one is about CI.
 ## Installing and updating
 
 - **An install from a 512 MiB live system fails.** Booted as `just boot-live`
-  boots it, with 512 MiB of memory, the installer writes both kernel slots and
-  the base and then dies (`SIGABRT`, after the kernel logs
-  `process_vm_mmap: Failed to insert VMA`). Whether more memory avoids it is
+  boots it, with 512 MiB of memory, the installer reaches the step that writes
+  both kernel slots and the base and dies there (`SIGABRT`, right after the
+  kernel logs `process_vm_mmap: Failed to insert VMA`). Whether more memory avoids it is
   not known; `just ui-shots` and `just test-installer` install at 2 GB and
   6 GB ([Installing SlopOS](/docs/self-hosting/installing)). Open defect.
 - **A new base gets no trial boot.** A kernel goes into the spare slot and is
@@ -130,7 +137,9 @@ one is about CI.
   a firmware variable every loader on the machine can write. Another system's
   loader that deletes it makes Limine boot its first entry, and one that sets
   it to a name Limine does not offer makes `bootctl install` refuse until
-  `bootctl set-default` names a slot. Open defect.
+  `bootctl set-default` names a slot. Registering SlopOS's firmware entry can
+  also add a second one when the first sits outside the firmware's boot order.
+  Open defect.
 - **Installing for everyone through privd is bounded.** A tree installed into
   `/usr/local` for everyone is copied before it is installed, both counting
   against one disk quota, so it can be at most half of that quota; and it must
@@ -160,7 +169,21 @@ one is about CI.
 ## Where the full list lives
 
 `plans/KNOWN_ISSUES.md` in the source tree holds every open defect, with the
-files involved, including the low-severity ones this page leaves out (rough
-edges in USB and extension handling, privd's handling of signals and input,
-and peer identities that outlive what they describe). It is working notes:
-check what it says against the code before relying on it.
+files involved, including the low-severity ones this page leaves out:
+
+- extension handling: what an activation costs in memory, a service that
+  cannot listen because an extension init cannot read holds its port, and a
+  trusted key whose ceilings are too long for the session to add;
+- privd's requesters: a request read as privd begins to drain, signals
+  passed on twice, input and signals that reach a mechanism out of order, and
+  a remote command that outlives its timeout;
+- a base switch that lands while init re-executes itself and goes unacted on;
+- one lock taken on every lookup of a base file;
+- a compositor client whose message wakes nothing until it sends again;
+- `recvmsg` on a Unix socket taking every queued descriptor at once;
+- peer identities that outlive what they describe;
+- a short window at kernel thread start in which a test could tear the thread
+  down.
+
+It is working notes: check what it says against the code before relying on
+it.

@@ -12,8 +12,8 @@ others wait *behind*, locked, with their apps still running. Switching user
 brings the login screen in front, and the person who logs in there gets their
 own desktop back, or a new one.
 
-A computer with one person works as it always has: it starts straight into
-that person's desktop, with no password. The login screen appears when you
+A computer with one person starts straight into that person's desktop,
+without asking for a password. The login screen appears when you
 switch user or log out, and at boot once automatic login is off, as adding a
 second person makes it unless told otherwise.
 
@@ -129,9 +129,10 @@ carry tags of their own. `process_list` reports each task's tag, and the
 reads the caller's session file, `/run/sessions/<tag>`, for the name, and
 fails with `ENXIO` for a process in no session.
 
-Because the tag outlives an `exec` and a change of uid, a command run with
-`priv` stays in the session that asked for it, while a mechanism privd runs
-as uid 0 does not.
+privd starts the mechanism of an action that runs as its requester, such as
+`priv`, with the requester's tag, so a command run with `priv` stays in the
+session that asked for it. A mechanism privd runs as uid 0 carries privd's
+own tag instead, so it is no part of the session and outlives it.
 
 ## How the seat moves between sessions
 
@@ -237,8 +238,8 @@ terminal, which hangs up anything the session left behind on it, so nothing
 can pose as the next `slopos login:` prompt.
 
 A console session has no dialog, so privd asks its person at the terminal:
-`priv /bin/true` prints what it wants to do and `Password for carol:`, and
-runs once the password is typed. A person without a password can allow
+if carol administers the computer, `priv /bin/true` prints what it wants to
+do and `Password for carol:`, and runs once her password is typed. A person without a password can allow
 nothing there; see [Where the person is asked](/docs/architecture/privd#where-the-person-is-asked).
 
 ## Logging out and ending a session
