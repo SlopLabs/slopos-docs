@@ -16,9 +16,9 @@ it comes back at most five times a minute instead of spinning; and logging
 out ends every program the session started, however it was started.
 
 What init does not do is read configuration. There are no unit files: the
-services are written into init itself, beside the services that extensions
-declare, so changing what the system runs means installing a new base. This
-page walks through what init starts and in what order, how it keeps those
+system's own services are written into init itself, so changing them means
+installing a new base, and the only other services are those that installed
+extensions declare. This page walks through what init starts and in what order, how it keeps those
 programs running, how other programs ask it for things, and how it ends
 sessions and replaces itself.
 
@@ -102,8 +102,9 @@ so the table below is the whole of what it hands out
 Init is one thread waiting in one `poll`: on its socket, on a *pidfd* for
 each child (a descriptor that becomes readable when that process exits), on
 the readiness pipes of programs that are starting, and on the kernel's base
-monitor. It never blocks on a single child once the boot jobs are done, so a
-service that hangs holds up nothing but itself.
+monitor. Once privd is listening and the Wheel of Fate has finished, it never
+blocks on a single child again, so a service that hangs holds up nothing but
+itself.
 
 When privd, remoted, the login prompt or a session's compositor exits, init
 starts it again. It counts each service's starts over the last minute, and
@@ -114,8 +115,9 @@ minute old. Init says so when it happens:
 init: /sbin/privd exited (Signalled(9)), its 5th in a minute; it starts again in 56 s
 ```
 
-A program that crashes on startup therefore costs five quick attempts and
-then one a minute or so, rather than a busy loop, and it never gives up for
+A program that crashes on startup therefore costs at most five attempts in
+any minute (a quick burst of five, then a pause until the minute is up, then
+another burst) rather than a busy loop, and init never gives up on it for
 good: when whatever broke it is fixed, it comes back on its own. systemd
 handles the same case by no longer restarting the unit automatically, leaving
 it to an administrator to start again. A SlopOS machine usually has nobody
