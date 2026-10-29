@@ -130,7 +130,10 @@ modes said, so a tree built under a lax umask never leaves a directory that
 others may write. A manifest is only believed if uid 0 or the person
 installing wrote it; one that anyone else wrote, or that does not parse, is
 treated as an unfinished install of the new tree, so a forged manifest cannot
-steer an install into removing files it never put there.
+steer an install into removing files it never put there. A person's install
+goes further and refuses outright to replace a tree whose manifest someone
+else owns. And because the manifest records where the tree went, installing
+a tree of the same name somewhere else is refused too.
 
 ## Who may write `/usr/local`
 

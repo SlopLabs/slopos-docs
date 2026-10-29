@@ -199,7 +199,7 @@ does not promise every flag of the Linux call.
 | 137 | `statfs` | `NoneFd` | `EOPNOTSUPP` from a filesystem that keeps no counters. The base and the install medium report `BASEFS_MAGIC`, an extension's activation `EXTENSION_MAGIC` |
 | 138 | `fstatfs` | `NoneFd` | As `statfs` |
 | 140 | `getpriority` | `NoneRelation` | |
-| 141 | `setpriority` | `NoneRelation` | Only for tasks the caller may signal (`EPERM` otherwise). A nice value below both 0 and the task's current one takes `SchedHigh` (`EACCES` otherwise) |
+| 141 | `setpriority` | `NoneRelation` | Only for the caller's own process and tasks it may signal (`EPERM` otherwise). A nice value below both 0 and the task's current one takes `SchedHigh` (`EACCES` otherwise) |
 | 153 | `vhangup` | `ConsoleConfig` | |
 | 158 | `arch_prctl` | `NoneSelf` | `ARCH_SET_FS` and `ARCH_GET_FS` |
 | 162 | `sync` | `NoneSelf` | |

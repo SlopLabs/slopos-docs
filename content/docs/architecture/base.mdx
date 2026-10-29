@@ -227,9 +227,10 @@ how it chooses):
 Everything else under `/` is the root disk's: `/etc` (apart from
 `/etc/ssl`), `/var`, `/home`, `/src` and `/usr/local` hold what the machine
 wrote and survive base updates untouched. When there is no disk and the root
-lives in memory, the kernel first unpacks a copy of the archive into it,
-which gives the empty root its skeleton of directories, and then mounts the
-base directories from the module as it would over a disk.
+lives in memory, the kernel first copies into it what the archive holds
+outside the six base directories (the skeleton of directories such as `/etc`,
+`/var` and `/home`, and the few files there), and then mounts the base
+directories from the module as it would over a disk.
 
 ## How a base is checked before it is used
 

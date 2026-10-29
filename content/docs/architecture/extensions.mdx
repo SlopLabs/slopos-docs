@@ -168,8 +168,8 @@ with `extctl key add`, giving it two limits: a *ceiling* of capabilities its
 extensions may hold, and a `user` ceiling for what their unasked actions may
 hold (below). An image packed with a *sidecar*, a three-line file naming the
 extension, its version and its root, and signed with that key goes in with
-`extctl install-signed` without asking anyone, as long as it fits both
-ceilings and the base's. Updates signed by the key that installed an
+`extctl install-signed` with no question to an administrator who runs it, as
+long as it fits both ceilings and the base's. Updates signed by the key that installed an
 extension go in the same way. Any other update is a first install: the
 person approves it, and from then on the record names no key. A signed
 update does not turn back on an extension the person turned off, and does
