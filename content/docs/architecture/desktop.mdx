@@ -46,8 +46,10 @@ laying every screen out off screen and measuring it.
 
 ## The theme
 
-`theme-core` holds every design value the desktop uses, and both appkit and
-the compositor read them through it. Nothing else defines a colour.
+`theme-core` holds the desktop's design values, and both appkit and the
+compositor read them through it. No app built on appkit defines a colour of
+its own, except where colours are its content, such as the editor's syntax
+palette.
 
 - **Colours are roles.** A surface (`Base` for a window's content, `Raised`
   for cards, popovers and dialogs, `Sunken` for fields and lists, `Chrome`
@@ -127,9 +129,8 @@ What makes them worth using is what comes with every one of them:
 - **Refusals say why.** When the computer refuses to open or change a file,
   appkit works out the reason from what the kernel says about the file and
   the filesystem it is on (`statfs` and the file's flags, never its path):
-  the system's own file, an
-  extension's, one locked against changes, a disk that can't be written, or
-  permissions. The app says which.
+  the system's own file, an extension's, one locked against changes, a disk
+  that can't be written, or permissions. The app says which.
 
 The widget gallery (`widget_gallery`, or `widget_gallery --page <name>` for
 one of its pages) shows every component in each of its states.
@@ -233,11 +234,10 @@ The compositor draws everything on screen that isn't an app's content.
   screen, the people as rows, five at a time), a password field and *Unlock*
   or *Log in*.
 - **Questions**, the consent dialog among them, are drawn over everything:
-  a card centred over the window of the app that asks when it has one, its
-  headline
-  `<App> wants to <do something>.`, the app's icon, what follows from
-  allowing it, *Cancel* and a button naming what it allows, filled with the
-  danger tone when the action destroys something.
+  a card centred over the window of the app that asks when it has one, with
+  the headline `<App> wants to <do something>.`, the app's icon, what
+  follows from allowing it, *Cancel*, and a button naming what it allows,
+  filled with the danger tone when the action destroys something.
   [Privileged actions](/docs/architecture/privd) explains how it guards what
   you type and click.
 

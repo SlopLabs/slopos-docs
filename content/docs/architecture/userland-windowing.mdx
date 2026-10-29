@@ -82,17 +82,16 @@ compositor might be reading. It draws a frame into one and *commits* it
 ("show this now"); it draws the next frame into the other. When the second is
 committed, the compositor hands the first one back. The windowing library
 also tracks how old each buffer's contents are, so a program that redraws
-only what changed knows what a recycled buffer has missed. (Graphics drivers
-call this the *buffer age*.)
+only what changed knows what a recycled buffer has missed (its *age*: how
+many frames ago it was last shown).
 
 ### Redrawing only what changed
 
 Every commit carries *damage*: the rectangles the program changed. The
 compositor gathers the damage from every window, works out from the topmost
 window down which parts of each are visible (a window hidden behind another
-needs no painting), and repaints only those. Moving,
-raising or closing a window counts as damage too, because it uncovers what
-was underneath.
+needs no painting), and repaints only those. Moving, raising or closing a
+window counts as damage too, because it uncovers what was underneath.
 
 The compositor runs a pass about every 16 ms and paints only when something
 changed. It draws into a buffer of its own and hands the kernel the damaged
@@ -191,10 +190,10 @@ The kernel hands out the screen and the raw input queue as two *seats*. A
 program must hold the display seat to put a frame on the screen and the input
 seat to read input, and taking either needs a capability (`DisplaySeat`,
 `InputSeat`) that init delegates to the compositors it starts, and the display
-one also to `/bin/roulette` ([Capabilities](/docs/architecture/authority)). A seat is held through a
-descriptor that can't be duplicated or passed on, and the kernel takes it back
-when its holder exits, so a crashed compositor doesn't leave the screen
-locked.
+one also to `/bin/roulette` ([Capabilities](/docs/architecture/authority)). A
+seat is held through a descriptor that can't be duplicated or passed on, and
+the kernel takes it back when its holder exits, so a crashed compositor
+doesn't leave the screen locked.
 
 Several people can be logged in at once, each with a desktop, but only one
 desktop is *in front*. Init moves the seats from one compositor to another

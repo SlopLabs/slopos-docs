@@ -1,0 +1,455 @@
+---
+title: "Write an app"
+description: "Write a small app with appkit, ship it with SlopOS at /usr/local with a dock entry and an icon, and check it the way the shipped apps are checked."
+---
+
+By the end of this page you will have written a stopwatch app, built it with
+the system, started it from the dock, held it to the same tests and layout
+audit as the apps SlopOS ships, and looked at a screenshot of it.
+
+The app lives in `apps/`, the crate that holds the apps installed outside the
+base at `/usr/local` (the editor, Files, the image viewer and the widget
+gallery). [Desktop](/docs/architecture/desktop) explains the theme and the
+components you'll use, and [Windowing](/docs/architecture/userland-windowing)
+what happens underneath.
+
+## What you need first
+
+- A working build: `just build` should succeed
+  ([Quickstart](/docs/getting-started/quickstart)).
+- A read of `appkit/GUIDE.md` in the source tree. It is short, and it says
+  which component to use for what and the rules every app keeps.
+
+## 1. Write the app
+
+An app is a type that implements appkit's `App` trait. `view` turns the app's
+state into a tree of components, `update` applies a message from one of them,
+and `run_app` opens the window. Create `apps/src/stopwatch.rs`:
+
+```rust
+//! Stopwatch: how long something took, to a tenth of a second.
+
+use std::time::{Duration, Instant};
+
+use slopos_appkit::{Action, App, Button, ButtonRow, Node, Page, Text, TextRole, WindowSpec};
+
+pub const NAME: &str = "Stopwatch";
+
+#[derive(Clone)]
+pub enum Msg {
+    Start,
+    Stop,
+    Reset,
+}
+
+pub struct Stopwatch {
+    /// What the runs before this one add up to.
+    banked: Duration,
+    /// When this run began, while one is running.
+    since: Option<Instant>,
+}
+
+impl Stopwatch {
+    pub fn new() -> Self {
+        Self {
+            banked: Duration::ZERO,
+            since: None,
+        }
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.banked + self.since.map_or(Duration::ZERO, |since| since.elapsed())
+    }
+}
+
+/// `1:05.3`: minutes, seconds and tenths.
+fn shown(elapsed: Duration) -> String {
+    let tenths = elapsed.as_millis() / 100;
+    format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
+}
+
+impl App for Stopwatch {
+    type Message = Msg;
+
+    fn view(&self) -> Node<Msg> {
+        let running = self.since.is_some();
+        let toggle = match running {
+            true => Button::new("Stop").on_press(Msg::Stop),
+            false => Button::new("Start").on_press(Msg::Start),
+        };
+        let reset = Button::new("Reset")
+            .on_press(Msg::Reset)
+            .enabled(!running && !self.banked.is_zero());
+        Page::new(NAME)
+            .subtitle("Press Start, and Stop when you're done.")
+            .content(Text::new(shown(self.elapsed())).role(TextRole::Display))
+            .footer(ButtonRow::new().aside(reset).confirm(toggle))
+            .into()
+    }
+
+    fn update(&mut self, msg: Msg) -> Action {
+        match msg {
+            Msg::Start => self.since = Some(Instant::now()),
+            Msg::Stop => {
+                self.banked = self.elapsed();
+                self.since = None;
+            }
+            Msg::Reset => self.banked = Duration::ZERO,
+        }
+        Action::Rebuild
+    }
+
+    fn tick_interval_ms(&self) -> Option<u64> {
+        self.since.map(|_| 100)
+    }
+
+    fn tick(&mut self) -> Action {
+        Action::Rebuild
+    }
+
+    fn title(&self) -> String {
+        NAME.into()
+    }
+
+    fn app_id(&self) -> &str {
+        "org.slopos.stopwatch"
+    }
+
+    fn window(&self) -> WindowSpec {
+        WindowSpec::new(400, 280).min_size(280, 220)
+    }
+}
+
+pub fn stopwatch_main() -> ! {
+    slopos_appkit::run_app(Stopwatch::new())
+}
+```
+
+What each part does for you:
+
+- **The view names what things are, not how they look.** A `Page` brings
+  its title, its subtitle, its margins and a separator above the buttons;
+  `TextRole::Display` is the role for a page that is one number. There is no
+  colour, font size or spacing in the file, and there mustn't be: the build
+  fails an app that constructs a colour or gives a spacing or an inset a
+  number (`scripts/check_ui_literals.sh`).
+- **The footer is a `ButtonRow`.** `.confirm()` puts the button that finishes
+  last on the right and filled with the accent, and makes Enter press it, so
+  Enter starts and stops the stopwatch. `.aside()` puts *Reset* on the left.
+  A disabled button shows that it is disabled; you never draw a state.
+- **The app keeps all the state.** After every message that returns
+  `Action::Rebuild`, appkit calls `view` again and replaces the tree. While the
+  stopwatch runs, `tick_interval_ms` asks for a tick every 100 ms, and each
+  tick rebuilds the view with the new time; stopped, it asks for none, and
+  the app sleeps until something happens.
+- **One name everywhere.** `title` is the window's title, read again after
+  every rebuild, and it must be the name the app's dock entry gives (step 3);
+  a window showing a document would use `document_title(document, NAME)`
+  instead. `app_id` is how the dock matches the window to its entry.
+- **`window` states the size.** The window opens at 400 × 280, and the
+  compositor won't let it be made smaller than 280 × 220.
+
+## 2. Make it a program
+
+Four small edits register the app with the build. Declare the module in
+`apps/src/lib.rs`:
+
+```rust
+pub mod stopwatch;
+```
+
+Give it an entry point, `apps/src/bin/stopwatch.rs`:
+
+```rust
+fn main() {
+    slopos_apps::stopwatch::stopwatch_main();
+}
+```
+
+Add the binary to `apps/Cargo.toml`, beside the others:
+
+```toml
+[[bin]]
+name = "stopwatch"
+path = "src/bin/stopwatch.rs"
+```
+
+And add it to the list of apps in `scripts/lib/base.sh`, which the host build
+and the guest build both read:
+
+```sh
+APPS="editor file_manager image_viewer widget_gallery stopwatch"
+```
+
+The app may depend on `slopos-appkit`, `slopos-editor-core` and
+`slopos-image` and nothing else; `scripts/check_app_deps.sh` fails any other
+dependency, so an app never reaches past the toolkit into the kernel's
+interface.
+
+## 3. Give it a dock entry and an icon
+
+The dock shows an app because an *app entry* names it. Create
+`apps/share/slopos/apps/org.slopos.stopwatch.app`; its file name is the app id:
+
+```
+id=org.slopos.stopwatch
+name=Stopwatch
+exec=/usr/local/bin/stopwatch
+icon=org.slopos.stopwatch.png
+```
+
+Every app the system installs ships its icon at 64 and 128 px, drawn by code
+rather than by hand, so every icon follows the same rules: white shapes on a
+tile in one of the theme's hues. The artwork lives in `tools/icons/src/art.rs`.
+Add a variant to `Art`, pick its tile, and draw it from the shapes the file
+already uses:
+
+```rust
+pub enum Art {
+    // ...
+    Sysmon,
+    Stopwatch,
+}
+```
+
+```rust
+// in Art::tile
+Art::Stopwatch => AppTile::Pink,
+```
+
+```rust
+// in Art::layers: the button on top behind at 60%, a face with its hand cut out
+Art::Stopwatch => vec![
+    Layer(rrect(28.5, 15.0, 35.5, 20.0, ROUND), BEHIND),
+    Layer(
+        circle(32.0, 35.0, 14.0).minus(capsule((32.0, 35.0), (37.5, 29.5), WEIGHT)),
+        1.0,
+    ),
+],
+```
+
+The tests at the bottom of the same file need to know the new art: add
+`Art::Stopwatch` to `ALL` (which becomes `[Art; 7]`) and give it a keyline,
+the box its glyph must fill and stay inside. A round glyph takes the square
+one:
+
+```rust
+Art::Installer | Art::Stopwatch => SQUARE,
+```
+
+Then list the icon in `tools/icons/src/main.rs`, whose `ICONS` becomes
+`[Shipped; 7]`:
+
+```rust
+Shipped {
+    dir: "apps/share/slopos/icons",
+    id: "org.slopos.stopwatch",
+    art: Art::Stopwatch,
+},
+```
+
+Render it:
+
+```bash
+just icons
+```
+
+It prints nothing, and writes `org.slopos.stopwatch.png` and
+`org.slopos.stopwatch@2x.png` into `apps/share/slopos/icons/`: a white
+stopwatch face on a pink tile. `just test-host` runs the icons' tests, which
+fail if a shipped PNG isn't what the code draws, or if a glyph strays outside
+its keyline or fills too little of it.
+
+## 4. Build it
+
+```bash
+just build
+```
+
+The userland build compiles the apps against SlopOS's C library and stages
+them as one tree. Near the end you should see:
+
+```
+Apps built: builddir/apps
+check_loose_programs: OK (5 program(s) reach the system through libc.so alone)
+```
+
+The second line is a check on every app outside the base: it must load
+through `/lib/ld-slopos.so.1`, link `libc.so`, and make no system call of its
+own, because apps are updated on their own schedule and the C library is the
+one interface that only grows. `builddir/apps` now holds `bin/stopwatch`, the
+entry and both icons.
+
+## 5. Run it
+
+```bash
+just boot
+```
+
+This boots the [development machine](/docs/self-hosting/development-machine),
+after installing `builddir/apps` at `/usr/local` on the root it boots. The
+desktop reads the app entries when it starts, so *Stopwatch* is in the dock:
+click it. A window titled *Stopwatch* opens, centred, with the menu bar naming it,
+`0:00.0` in large type, *Reset* greyed out on the left and *Start* filled on
+the right. Press Enter and the time runs; press it again and it stops, and
+*Reset* comes alive. You can also start it by typing `stopwatch` in the
+terminal, since `/usr/local/bin` is on everyone's `PATH`.
+
+## 6. Hold it to the tests
+
+Two userland tests list the apps the system installs, and both must learn
+about the new one.
+
+`dock_test` checks that the dock pins exactly the installed apps, each
+launching a program and showing its icon at both sizes. Add the app to
+`INSTALLED` in `userland/src/bin/tests/dock_test.rs`, keeping the list sorted:
+
+```rust
+    ("org.slopos.image-viewer", "/usr/local/bin/image_viewer"),
+    ("org.slopos.stopwatch", "/usr/local/bin/stopwatch"),
+    ("org.slopos.sysmon", "/bin/sysmon"),
+```
+
+`apps_test` starts each app against a stand-in compositor and checks that it
+names its window as its entry does, and that a program in `/usr/local` names
+SlopOS's loader, `/lib/ld-slopos.so.1`, as its interpreter. Add a row to
+`APPS` in `userland/src/bin/tests/apps_test.rs`:
+
+```rust
+    ("/usr/local/bin/stopwatch", "org.slopos.stopwatch"),
+```
+
+and two cases: one that runs it, and one that holds its page to appkit's
+layout audit, which lays the view out off screen at a phone's, a laptop's and
+a monitor's width and reports text cut off, overlapping parts, controls too
+small to hit, focus that doesn't show and text under its contrast floor:
+
+```rust
+fn the_stopwatch_runs() -> bool {
+    run(APPS[5].0, APPS[5].1)
+}
+
+/// The stopwatch's page reads whole at a phone's, a laptop's and a monitor's
+/// width.
+fn the_stopwatch_reads_whole() -> bool {
+    use slopos_appkit::App;
+    let view = slopos_apps::stopwatch::Stopwatch::new().view();
+    let found = slopos_appkit::audit::audit_node(&view, &[360, 640, 960], 720);
+    found.is_empty() || fail(found.join("\n"))
+}
+```
+
+`APPS[5]` is the row you just added, the sixth. List both cases in `CASES`,
+after the terminal's:
+
+```rust
+    ("the_stopwatch_runs", the_stopwatch_runs),
+    ("the_stopwatch_reads_whole", the_stopwatch_reads_whole),
+```
+
+The test binaries are built with the `testbins` feature, which brings in the
+`slopos-apps` crate, so `apps_test` can build the stopwatch's view directly.
+Run the two tests, with the test that mounts the root first:
+
+```bash
+just test '*ext4_aaa*,*utest_apps,*utest_dock'
+```
+
+The default view shows progress and failures only. To see each case, run the
+same filter raw, and the new ones appear among the cases of
+`slopos_core::utests::utest_apps`:
+
+```bash
+builddir/run_tests --raw --filter '*ext4_aaa*,*utest_apps,*utest_dock'
+```
+
+```
+  ok 6 - the_stopwatch_runs
+  ok 7 - the_stopwatch_reads_whole
+```
+
+A failing audit names each finding with the width it was found at. Squeezed
+into 200 × 140, for example, this page reports
+`at 200 px: Clipped at 38x18+45+130: "Reset" runs past its clip at the bottom`,
+which is why its window states a least size of 280 × 220. Finally run the
+gates CI runs on the source, which include the colour and dependency checks:
+
+```bash
+just check-framekernel-gates
+```
+
+## 7. Look at it
+
+The audit catches what can be measured; a screenshot shows the rest. Add the
+app to `APPS` in `scripts/ui_shots.py`, which names the shot, the command and
+the app id the compositor announces when the window appears:
+
+```python
+    ("stopwatch", "stopwatch", "org.slopos.stopwatch"),
+```
+
+```bash
+just ui-shots apps
+```
+
+This builds the live ISO, boots it under QEMU, starts each app in turn from
+the serial console, waits for `COMPOSITOR: shown org.slopos.stopwatch` and
+for the screen to hold still, and saves `builddir/ui-shots/stopwatch.png`.
+Nothing compares it with anything: look at it, and look again after you
+change something.
+
+## Check the result as a whole
+
+Before you commit, run `cargo fmt --all` and the full sequence in
+`AGENTS.md`'s *Pre-commit* section, which includes `just test-host` (the
+icons), `just check-framekernel-gates` (the UI literals and app dependencies)
+and the full `just test`.
+
+## Install it for yourself alone
+
+`just boot` installs every app in `apps/` for everyone. To try a build as one
+person on a running SlopOS instead, install it as a *tree* of your own in
+`~/.local`, which is on your `PATH`, searched by the loader and read by the
+dock ([Installed software](/docs/architecture/software) explains trees).
+On the development machine, with your change committed on the host:
+
+```sh
+cd /src/slopos
+git pull
+scripts/selfhost.sh build
+mkdir -p $HOME/stopwatch/bin $HOME/stopwatch/share/slopos/apps $HOME/stopwatch/share/slopos/icons
+cp builddir/apps/bin/stopwatch $HOME/stopwatch/bin/
+cp builddir/apps/share/slopos/icons/org.slopos.stopwatch.png builddir/apps/share/slopos/icons/org.slopos.stopwatch@2x.png $HOME/stopwatch/share/slopos/icons/
+printf 'id=org.slopos.stopwatch\nname=Stopwatch\nexec=%s/.local/bin/stopwatch\nicon=org.slopos.stopwatch.png\n' $HOME > $HOME/stopwatch/share/slopos/apps/org.slopos.stopwatch.app
+tree-install stopwatch $HOME/stopwatch $HOME/.local
+```
+
+The entry's `exec` must be an absolute path, here inside your home. An entry
+in `~/.local/share` replaces one with the same id from `/usr/local/share`,
+and the dock picks it up the next time your desktop starts (*Log out…* and
+log in again). Installing the same tree again replaces what its last install
+put down and keeps anything else.
+
+## What usually goes wrong
+
+- **`dock_test` fails on its list of entries** because `INSTALLED` doesn't
+  name the new app, or isn't sorted; or on the icon sizes, because
+  `just icons` wasn't run after adding the art.
+- **`apps_test` says the app "named its window …, not …"**: the window's
+  title isn't the entry's `name`. Use one constant for both, as `NAME` does
+  here.
+- **`check_ui_literals` fails** on a `Color32`, an `EdgeInsets` with numbers,
+  or a `spacing:` that isn't a `space` step. Name a `Tone`, a `Surface`, a
+  `TextRole` or a `theme::space` step instead.
+- **The app isn't in the dock.** Entries are read when the desktop starts,
+  so log out and in after installing; an entry also makes no dock item when
+  its `id` differs from its file name, when `exec` isn't absolute, when a key
+  appears twice, or when `icon` contains a `/`.
+- **The app exits at once with "the compositor speaks another protocol
+  version: rebuild this program"**: the base it runs on speaks a newer window
+  protocol than the app was built against. Rebuild the apps with the base.
+
+Read next: [Desktop](/docs/architecture/desktop) for the components, the
+theme and the words an app's screens use, and
+[Write tests](/docs/development/adding-tests) for filters and the test
+harness.
