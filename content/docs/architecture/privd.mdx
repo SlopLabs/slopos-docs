@@ -404,8 +404,9 @@ a shell runs whatever it is given.
 Some of what `priv` gives is not narrow. `DacOverride` passes every file
 permission check, so an administrator who allows a standard user's `priv`
 lets them read every person's files and `/etc/shadow`'s hashes. What it
-creates belongs to the person, even in a directory of uid 0's, until
-`priv chown` changes that. And like run0's `--empower`, which runs a command
+creates belongs to the person, even in a directory of uid 0's, and the base
+has no `chown` command to hand it to uid 0 afterwards. And like run0's
+`--empower`, which runs a command
 as the caller with added power, the command runs as the person: their other
 processes cannot signal it, since it holds capabilities they lack, but they
 can still rename the directory it runs in, and a kept answer repeats a

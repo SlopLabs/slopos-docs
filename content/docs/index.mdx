@@ -7,9 +7,9 @@ SlopOS is an operating system for x86-64 PCs, written from scratch in Rust.
 It has its own kernel, drivers, filesystem, network stack, C library, shell,
 desktop and installer. Several people can have accounts on one machine, each
 with their own desktop, and a program gets power over the machine only when
-it was handed it or the person at the machine allowed it. SlopOS installs from
-a USB stick onto a real laptop, and there, as in QEMU, it can compile a new
-version of itself, install it beside the running one, and boot into it.
+it was handed it or the person at the machine allowed it. SlopOS runs
+installed on the disk of a real laptop, and there, as in QEMU, it can compile
+a new version of itself, install it beside the running one, and boot into it.
 
 Most of the code was written by AI agents. We named the project after what
 that usually produces, and then arranged things so that it wouldn't matter.
@@ -31,8 +31,7 @@ by reading the hardware description the firmware provides (its ACPI tables).
 None of the hard ideas in SlopOS are new. The split between one trusted crate
 and everything else comes from Asterinas. The system call interface, the
 signals, the terminal handling and the journal format come from Linux. The
-way a program asks for permission follows polkit, and the way the system
-replaces its own programs while it runs follows NixOS. The source README
+source README
 [credits every project we learned from](https://github.com/SlopLabs/slopos#the-wizards-invented-none-of-this)
 and says what we took from each.
 
