@@ -35,7 +35,7 @@ mount) are not listed.
 | Extension | Software installed as a signed or approved image, shown read-only at `/opt/<name>`, whose services run as users of its own and whose powers are its grant | A systemd system extension | [Extensions](/docs/architecture/extensions) |
 | First person | The person with uid 1000, named `user` unless the installer was told otherwise. They hold the workspace at `/src` and cannot be removed | The first user an installer creates | [Users and file permissions](/docs/architecture/users) |
 | Framekernel | A kernel in which one trusted crate holds every line of `unsafe` code and all others are forbidden it | (Asterinas's term) | [The framekernel](/docs/verification/framekernel) |
-| Gated capability | Any capability except the three universal ones; holding one makes a program start `AT_SECURE` | | [Capabilities](/docs/architecture/authority) |
+| Gated capability | Any capability except the three universal ones; holding one makes a program start in secure mode | | [Capabilities](/docs/architecture/authority) |
 | Generation | One base as served while the system runs. The base booted is generation 1; each live replacement is the next | | [Base system](/docs/architecture/base) |
 | Grant | What an extension may hold and do: capabilities, actions people reach unasked, users and commands. Approved at its first install | | [Extensions](/docs/architecture/extensions) |
 | Greeter | The login screen, run by the compositor as the base's `greeter` user (uid 50) | A display manager's greeter | [Sessions and login](/docs/architecture/sessions) |

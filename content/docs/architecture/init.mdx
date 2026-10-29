@@ -123,7 +123,7 @@ handles the same case by no longer restarting the unit automatically, leaving
 it to an administrator to start again. A SlopOS machine usually has nobody
 watching a console, so init waits instead.
 
-### Ready means the program said so
+### How init knows a program is ready
 
 A program that others connect to is not ready when it starts but when it
 listens. Init hands privd, each compositor and each extension service a pipe
@@ -172,7 +172,8 @@ $ session status
  1048576 user         user       in front
 ```
 
-The first column is the session's login tag, then its person and its class.
+The first column is the session's login tag, then the user it runs as (its
+person, or `greeter` for the login screen) and its class.
 Each uid may have four connections waiting to finish their line, which must
 arrive within two seconds, so one person cannot crowd out init's other
 callers.

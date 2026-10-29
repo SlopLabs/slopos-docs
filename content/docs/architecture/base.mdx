@@ -42,10 +42,10 @@ and most of its APEX module updates do. SlopOS switches a base while the
 machine runs, and then restarts only the services whose program changed,
 which is how NixOS
 applies a new configuration. The rule for which old base to keep comes from
-FreeBSD's kernel install. Its handbook warns that installing a kernel moves
-the old one to `kernel.old` even when that one never booted, and FreeBSD's
-build now moves it aside only when it is the kernel running; SlopOS keeps a
-base as *previous* on the same condition.
+FreeBSD's kernel install. Its handbook warns that every kernel install
+overwrites `kernel.old` with the last installed kernel, which may not be
+bootable, and FreeBSD's build now moves the old kernel aside only when it is
+the kernel running; SlopOS keeps a base as *previous* on the same condition.
 
 ## Why the system is kept apart from the disk
 
