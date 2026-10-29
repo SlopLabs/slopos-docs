@@ -4,14 +4,14 @@ description: "How SlopOS finds the hardware in a machine, picks a driver for eac
 ---
 
 SlopOS runs on the devices QEMU emulates and on one real machine, an Intel
-laptop: their disks, displays, keyboards, touchpad and (under QEMU) network
-card. At boot the kernel lists every device the machine reports and pairs
+laptop: their disks, displays, keyboards, touchpad, network cards and USB
+ports. At boot the kernel lists every device the machine reports and pairs
 each one with the part of the kernel that knows how to operate it (a
-*driver*). Once paired, a driver owns its device until shutdown. Drivers are
-written in safe Rust, so they can't touch memory or hardware except through
-the handles the [trusted core](/docs/verification/ostd-trusted-core) gives
-them. What SlopOS doesn't have yet is USB, so anything you'd plug into a USB
-port won't work.
+*driver*). A device built into the machine keeps its driver until shutdown; a
+USB device keeps it until someone pulls it out. Drivers are written in safe
+Rust, so they can't touch memory or hardware except through the handles the
+[trusted core](/docs/verification/ostd-trusted-core) gives them. What SlopOS
+doesn't have yet is a driver for SATA disks, sound or Wi-Fi.
 
 The model is the one Linux uses: buses enumerate devices, drivers declare
 which devices they match, and a generic matching step pairs them. Resource
@@ -20,51 +20,68 @@ cleanup on failure follows Linux's managed device resources (*devres*).
 ## How the kernel finds devices
 
 A program can't ask "what hardware is there?", and neither can the kernel
-without help. It learns about devices in two ways.
+without help. It learns about devices in three ways.
 
 **PCI Express** is the bus most devices in a PC sit on: disks, graphics,
-network cards. Every PCI device carries a small, standard header that says
-who made it (a *vendor ID*), which model it is (a *device ID*) and what kind
-of device it is (a *class*, such as "mass storage, NVMe"). The kernel reads
-these headers for every slot on the bus, so it gets a complete list of PCI
-devices with no guessing.
+network cards, USB controllers. Every PCI device carries a small, standard
+header that says who made it (a *vendor ID*), which model it is (a *device
+ID*) and what kind of device it is (a *class*, such as "mass storage, NVMe").
+The kernel reads these headers for every slot on the bus, so it gets a
+complete list of PCI devices with no guessing.
 
-**ACPI** covers everything else. Some devices, like the laptop's keyboard
-controller and touchpad, aren't on PCI and can't describe themselves. The
-firmware instead ships a description of the machine (the ACPI tables) that
-names each such device with a standard ID (`PNP0303` is "a PS/2 keyboard")
-and says which I/O ports and interrupt lines it uses. Part of that
-description is a small program the firmware expects the operating system to
-run. SlopOS runs only the parts it needs to find and configure its devices.
-If it can't make sense of a machine's description, it treats the device as
-absent and keeps booting.
+**ACPI** covers devices that aren't on PCI and can't describe themselves,
+like the laptop's keyboard controller and touchpad. The firmware ships a
+description of the machine (the ACPI tables) that names each such device with
+a standard ID (`PNP0303` is "a PS/2 keyboard") and says which I/O ports and
+interrupt lines it uses. Part of that description is a small program the
+firmware expects the operating system to run. SlopOS runs only the parts it
+needs to find and configure its devices. If it can't make sense of a
+machine's description, it treats the device as absent and keeps booting.
+
+**USB** devices sit behind a USB controller, which is itself a PCI device.
+Once the controller's driver has it running, the kernel asks each device on
+its ports what it is, in a conversation the USB specification defines, and
+each part of the device becomes a device on a third bus. Unlike the other
+two, USB devices come and go while the system runs. [USB](/docs/architecture/usb)
+explains how.
 
 ## How a driver is matched to a device
 
 Each driver declares, as data compiled into the kernel, what it can handle:
-"vendor 0x1af4, device 0x1042" (a virtio disk), or "any PCI device of class
-mass storage, subclass NVMe", or "ACPI ID `PNP0303`". The kernel collects
-these declarations from every driver at build time, so adding a driver
-doesn't mean editing a central list or the boot sequence.
+"vendor 0x1af4, device 0x1042" (a virtio disk), "any PCI device of class mass
+storage, subclass NVMe", "ACPI ID `PNP0303`", or "a USB interface of class
+mass storage that speaks the Bulk-Only protocol". The kernel collects these
+declarations from every driver at build time, so adding a driver doesn't mean
+editing a central list or the boot sequence.
 
-At boot, after the buses have been listed, a single matching step runs over
-each bus:
+When a device appears, a single matching step runs:
 
-1. For each device, it finds the drivers whose declaration matches, ordered
-   by priority. A driver for one specific model can outrank a generic
-   driver for the whole class.
+1. It finds the drivers whose declaration matches the device, ordered by
+   priority. A driver for one specific model can outrank a generic driver
+   for the whole class.
 2. It offers the device to the first candidate. The driver's *probe*
    function talks to the device and decides.
 3. If the driver accepts, it owns the device and no other driver sees it. If
    it declines or fails, the next candidate gets a turn.
-4. A driver that needs something that isn't ready yet can ask to be tried
-   again, once, after every other device has been offered.
+4. A PCI or ACPI driver that needs something that isn't ready yet can ask to
+   be tried again, once, after every other device has been offered. A USB
+   driver can't: for USB, asking to wait counts as declining.
 
-The same matching code serves both buses. Only the question "does this
-declaration match this device?" differs between PCI and ACPI.
+The same matching code serves all three buses. Only the question "does this
+declaration match this device?" differs between them.
 
-Once bound, a driver stays bound. SlopOS has no hot-plugging and no way to
-unbind a driver while running.
+The buses don't probe at the same moment. PCI devices, then ACPI devices, are
+matched once, on the boot processor, during the `pci` boot step. USB
+enumeration starts only after that, and USB devices are matched whenever one
+appears, on a kernel thread of their own. So the machine's own disks and
+network cards get the first names (`nvme0n1`, `eth0`) whatever is plugged
+into its USB ports.
+
+A PCI or ACPI device stays bound until shutdown: nothing unplugs a disk
+controller from a running laptop, and SlopOS has no way to unbind one. A USB
+device is different. When it leaves, its driver is told, every request it
+had in flight fails at once, and everything the driver took for it is
+released.
 
 ## What a driver may do
 
@@ -73,22 +90,34 @@ registers, memory the device can read and write directly (*DMA* memory), and
 an interrupt so the device can say it has finished. In SlopOS a driver gets
 each of these by asking for it through the device handle it was given during
 probe, and only for that device. It can't pick an arbitrary address and
-write to it, and it can't claim an I/O port another driver holds.
+write to it, and it can't claim an I/O port another driver holds. A USB
+driver asks the same handle for its device's endpoints, the channels it
+talks to the device through.
 
 Everything a driver acquires is recorded against the device. If the probe
 fails halfway, the kernel releases it all, in reverse order, so a driver
 doesn't need cleanup code for every way it can fail. If the probe succeeds,
-the resources stay with the device.
+the resources stay with the device until it is unbound, which for a built-in
+device means never.
+
+A device that must be told the power is going gets a *shutdown hook*. At
+poweroff and reboot the kernel first writes the filesystems out, then stops
+its I/O threads, then runs every registered hook, newest first, so a hook
+talks to its device by polling rather than waiting for a thread. NVMe uses
+its hook to tell the drive it is shutting down (a drive that isn't told
+records an unsafe shutdown and may lose what its cache held), the RTL8168
+stops its DMA, and each USB controller flushes its sticks and then resets
+itself.
 
 What drivers can't rely on:
 
 - **No protection from a misbehaving device.** DMA addresses are physical
   addresses; SlopOS doesn't program an IOMMU (the hardware that would limit
-  which memory a device can reach), so a buggy or hostile device could write
-  anywhere.
-- **No unbinding.** A bound driver keeps its device until shutdown. Drivers
-  that need it (NVMe does) register a hook that runs at poweroff and reboot,
-  after the filesystems have written everything out.
+  which memory a device can reach), so a buggy or hostile PCI device could
+  write anywhere. A USB device can't: it reaches memory only through the
+  controller, which the kernel tells what to read and write.
+- **No unbinding of built-in devices.** A PCI or ACPI driver keeps its device
+  until shutdown.
 
 Writing a driver step by step is covered in
 [Add a driver](/docs/development/adding-a-driver).
@@ -97,11 +126,16 @@ Writing a driver step by step is covered in
 
 | Device | What it is for | Where it runs |
 |--------|----------------|---------------|
-| NVMe | Disks. See [Disks](/docs/architecture/storage) | QEMU and laptop |
+| NVMe | Disks. See [Disks](/docs/architecture/storage). A kernel panic's record is written through it too | QEMU and laptop |
 | virtio-blk | Disks inside a virtual machine | QEMU |
-| virtio-net | Network. The only network driver | QEMU |
+| virtio-net | Network inside a virtual machine | QEMU |
+| Realtek RTL8168 | Wired network on the RTL8168h/8111h and the RTL8168M. See [Networking](/docs/architecture/networking) | Laptop |
 | virtio-gpu | Display: picture, cursor and changing resolution | QEMU |
 | Intel Xe display | Display on Intel Gen12 and Gen13 graphics (Tiger Lake, Alder Lake, Raptor Lake) | Laptop |
+| xHCI | USB controllers. See [USB](/docs/architecture/usb) | QEMU and laptop |
+| usb-hid | USB keyboards, mice and tablets | Wherever one is plugged in |
+| usb-storage | USB sticks and other USB disks, as `sda`, `sdb`, ... | Wherever one is plugged in |
+| usb-net | USB Ethernet adapters (CDC ECM and NCM), as `eth1` and up | Wherever one is plugged in |
 | i8042 | PS/2 keyboard, and a PS/2 mouse if one answers | QEMU and laptop |
 | DesignWare I2C | The low-speed bus the laptop's touchpad hangs off | Laptop |
 | I2C-HID touchpad | Touchpad, including gestures | Laptop |
@@ -109,16 +143,22 @@ Writing a driver step by step is covered in
 The Xe driver doesn't set the display mode itself. It takes over the mode the
 firmware already set and points the screen at the kernel's own picture. If
 the panel stops showing it, the driver falls back to the firmware's display
-on its own. All the virtio drivers use the current virtio standard and need
-message-based interrupts (MSI or MSI-X); a virtio device without them is not
-used.
+on its own. The RTL8168 driver brings up only the chip versions it knows,
+because each Realtek version needs a start-up sequence of its own; another
+version is declined and named in the log.
+
+All the virtio drivers use the current virtio standard and need
+message-based interrupts (MSI or MSI-X). A virtio disk or network card
+without them stops the boot; a virtio GPU without them is left alone, and the
+screen stays on the framebuffer the firmware set up. The xHCI and RTL8168
+drivers decline such a device instead, and leave it to the firmware.
 
 When more than one display driver could own the screen, a priority decides:
 a graphics driver outranks the plain framebuffer the firmware leaves behind.
 
 Most drivers have boot options to turn them off or debug them (for example
-`xe.modeset=off`, `tp.off`, `video=framebuffer`). They are all listed in
-[Boot options](/docs/abi/boot-options).
+`xe.modeset=off`, `tp.off`, `video=framebuffer`, `usb=off`). They are all
+listed in [Boot options](/docs/abi/boot-options).
 
 ### Devices every machine needs
 
@@ -130,41 +170,133 @@ the random number generator, seeded from the CPU's hardware random
 instructions. The terminal layer, with Linux-style line editing, sessions and
 job control, also lives in the drivers crate.
 
-### What is missing
+## Keyboards and pointers
 
-There is no USB support yet (a plan exists), so input is PS/2 and the I2C
-touchpad. There is no driver for the laptop's wired network card, so the
-laptop has no network. There is no SATA (AHCI) driver and no audio driver.
-[Known limitations](/docs/status/known-limitations) keeps the current list.
+A machine can have several keyboards at once: the laptop's own (an i8042,
+the PS/2 controller that every PC keyboard used to plug into) and any number
+of USB keyboards. SlopOS treats them as one keyboard. Every keyboard driver
+only reports which key went down or up, as a *usage* number from the USB HID
+usage tables (the i8042's driver translates its own scancodes into the same
+numbers). Everything else happens in one place, the machine's *keyboard
+state*:
+
+- **Modifiers are counted.** Shift is held while any keyboard holds it. If
+  you hold Shift on the laptop and press a key on a USB keyboard, the key
+  comes out shifted, and releasing or unplugging the USB keyboard doesn't
+  lift the Shift the laptop still holds.
+- **Locks and the layout are shared.** Caps Lock pressed on one keyboard
+  applies to all of them, and every keyboard's lights follow it.
+- **A repeat is marked.** A key held down produces repeated presses, and a
+  press of a key that is already held is delivered as a repeat and doesn't
+  toggle a lock. The i8042 repeats by itself; a USB keyboard doesn't, so the
+  kernel repeats its last key after 500 ms, about 30 times a second.
+- **A few keys belong to the machine.** Alt+PrintScreen arms the
+  [diagnostic console](/docs/development/diagnostics), Esc shows the boot log
+  while the boot splash is up, and Shift+PageUp and Shift+PageDown scroll the
+  console. A USB keyboard counts as the physical console as much as the
+  built-in one does.
+- **A keyboard that leaves releases what it held.** Every key it held goes
+  up as it is unplugged.
+
+The layout turns a usage into text. US QWERTY is built in; others live in
+`/usr/share/keymaps/` (`us.layout`, `de_CH.layout`), and `keymap <name>`
+switches to one, which needs the `ConsoleConfig` capability, so the command
+asks privd for it ([Privileged actions](/docs/architecture/privd)). The
+choice is saved in `/etc/keymap`, and init applies it at every boot. Layout
+files are parsed in userland, and the kernel accepts only a compact binary
+table that it checks before installing, so it never parses text from a file.
+Dead keys (an accent typed before the letter it goes on) work as on other
+systems.
+
+Where a key goes next depends on whether a desktop is running. While a
+program holds the *input sink*, which is the compositor of the session in
+front ([Sessions and login](/docs/architecture/sessions)), every key goes to
+it as an event carrying the usage, the text it makes and the modifiers held.
+While nothing holds it, at boot or on a machine without a desktop, the key
+goes to the console as the bytes a terminal would send: text as UTF-8, and
+keys like the arrows and F1 as the escape sequences xterm sends. The
+desktop's terminal encodes its keys with the same code, so a program sees the
+same bytes in both.
+
+Pointing devices share one cursor the same way. The PS/2 mouse, the touchpad
+and every USB mouse and tablet move the same pointer, whose bounds the
+display driver publishes. A mouse reports movement (*relative* motion), a
+tablet reports a position on its surface (*absolute* motion), which the
+kernel maps onto the screen. A tablet repeats its position in every report,
+so an absolute position is applied only when it changes; otherwise a click on
+a tablet would snap the cursor back from wherever a mouse had moved it. A
+button is down while any device holds it. Up to eight keyboards and eight
+pointing devices can be connected at once.
+
+What isn't merged is the stream of key events itself. A keyboard pulled while
+it holds Shift still produces a Shift release event, even though another
+keyboard holds Shift and the modifier state stays down; programs that read
+the modifier state, as the desktop does, aren't affected. Media keys
+(volume, play) aren't read at all, because the event format has no codes for
+them.
+
+## What is missing
+
+There is no SATA (AHCI) driver, no audio driver and no Wi-Fi driver. USB
+covers keyboards, pointers, sticks and network adapters; other kinds of USB
+device get no driver ([USB](/docs/architecture/usb#what-usb-devices-slopos-doesnt-support)).
+There is no IOMMU support. [Known limitations](/docs/status/known-limitations)
+keeps the current list.
 
 ## How it is tested
 
-The matching step is tested with fake drivers on both buses: priorities,
+The matching step is tested with fake drivers on PCI and ACPI: priorities,
 declining, deferring, and a probe that fails after acquiring resources and
-must release them. The Xe driver's register logic lives in a separate module
-that is tested without the hardware. The device drivers themselves run in
-every test boot under QEMU, and the laptop drivers are checked by booting the
-laptop.
+must release them. The keyboard state, the cursor and the i8042's decoding
+have kernel tests of their own. Register logic that can be separated from the
+hardware lives in crates tested on the host with simulated devices: the Xe
+driver's logic, the NVMe and RTL8168 bring-up sequences, the whole of the USB
+controller and device protocols, and HID report parsing. The device drivers
+themselves run in every test boot under QEMU, `just test-usb` plugs and
+unplugs USB devices under a running kernel, and the laptop drivers are
+checked by booting the laptop.
 
 ## For contributors
 
 - **One `Bus` trait.** `driver_core::bus` defines matching and probing for
-  both buses and never interprets a device ID, so binding behaviour can't
-  drift between PCI and ACPI.
+  all three buses and never interprets a device ID, so binding behaviour
+  can't drift between them.
 - **Registries.** PCI drivers register with `pci_driver!`, platform drivers
-  with `platform_driver!`. Default priority is 128; lower binds first, ties
-  go in link order.
+  with `platform_driver!`, USB drivers with `usb_driver!`. Default priority is
+  128; lower binds first, ties go in link order.
 - **Probe outcomes.** `Bound` moves the devres bag into the bus's claim
   table; `Declined` and errors drop the bag and offer the next candidate;
-  `Err(ProbeError::Deferred)` retries once after the first pass.
+  `Err(ProbeError::Deferred)` retries once after the first pass on PCI and
+  ACPI, and is a decline on USB, which has no later pass.
 - **No locks across probe.** Probe runs with neither the enumeration lock
-  nor the claim lock held, so it may block and allocate.
+  nor the claim lock held, so it may block and allocate. USB probes run on
+  the `usb-bind` thread, so a slow one delays other USB probes but nothing
+  else.
 - **Resources only through `BoundDevice`.** DMA memory, register windows,
-  interrupts and I/O ports all come from the bound device handle, so they are
-  recorded for release. DMA goes through the registered mapper, which is the
-  identity mapper today.
+  interrupts, I/O ports and USB endpoints all come from the bound device
+  handle, so they are recorded for release. DMA goes through the registered
+  mapper, which is the identity mapper today.
 - **Drop order.** In a claim slot the binding is declared before the bag so
-  it drops first. That and `Deferred` are where an unbind path would hook in.
+  it drops first. USB unbinding is built on that: `ClaimTable::release`, which
+  only the USB bus calls, runs the driver's removal and then drops the
+  binding before its resources.
+- **Shutdown hooks.** A `DeviceShutdown` registered with
+  `driver_core::shutdown::register` runs after the filesystem flush and after
+  the kernel I/O threads have stopped, so it polls. Hooks run newest first,
+  because a device probed later may sit behind one probed earlier.
+- **Interrupts.** A PCI device's interrupts are MSI-X or MSI, never the
+  legacy shared lines, and target the boot CPU. The i8042 and the touchpad
+  use lines of the I/O APIC.
+- **One keyboard state.** A keyboard driver claims a `KeyboardSource` and
+  reports `(source, usage, pressed)` steps to `keyboard::key`; it keeps no
+  modifier, lock or layout state of its own. A pointing device claims a
+  `PointerSource` and reports `hid-core` motion. Both release their slot when
+  the device leaves.
+- **The i8042's lights.** Changing the lock lights is a byte exchange with
+  the keyboard, which its own interrupt carries forward: each acknowledgement
+  sends the next byte, and a byte that is refused or left unanswered for
+  250 ms is sent again, twice at most. Nothing masks its interrupt line or
+  polls its data port after boot, which is what lost key presses before.
 - **ACPI.** `slopos-acpi` parses tables without allocating. The AML
   evaluator walks only the parts of the namespace SlopOS needs; it is not a
   general interpreter.
@@ -191,6 +323,10 @@ laptop.
 | `drivers/src/driver_core/` | The bus trait, matching step, devres, MSI setup and shutdown hooks |
 | `drivers/src/pci.rs` | PCI enumeration and the PCI registry |
 | `drivers/src/platform_bus/` | ACPI-described devices and their registry |
+| `drivers/src/usb/` | The xHCI driver, the USB bus and the USB class drivers; see [USB](/docs/architecture/usb) |
 | `acpi/` | ACPI table parsing and the AML evaluator |
-| `drivers/src/nvme/`, `virtio_blk.rs`, `virtio_net.rs`, `virtio_gpu/`, `xe/`, `ps2/`, `i2c/`, `touchpad/` | The device drivers |
-| `drivers/src/tests/` | Binding tests for both buses |
+| `drivers/src/keyboard.rs`, `drivers/src/input_event.rs` | The one keyboard state, the one cursor, and where their events go |
+| `keymap-core/`, `hid-core/` | Layouts, key repeat and terminal key sequences; HID report parsing, host-tested |
+| `drivers/src/nvme/`, `virtio_blk.rs`, `virtio_net.rs`, `rtl8168.rs`, `virtio_gpu/`, `xe/`, `ps2/`, `i2c/`, `touchpad/` | The other device drivers |
+| `nvme-core/`, `rtl8168-core/`, `drivers/src/xe_logic/` | Their host-tested register logic |
+| `drivers/src/tests/` | Binding tests for PCI and ACPI, and the keyboard, cursor and i8042 tests |

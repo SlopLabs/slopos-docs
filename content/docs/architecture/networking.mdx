@@ -96,7 +96,7 @@ Linux when the file is missing. One RTL8168 per machine is supported. A
 brought-up chip logs a line like:
 
 ```text
-rtl8168: RTL8168h/8111h at 02:00.0 mac 00:e0:4c:68:01:02 irq msi-x
+rtl8168: RTL8168h/8111h at 02:00.0 mac 00:e0:4c:68:01:02 irq MSI-X
 ```
 
 **USB adapters** are described on [USB](/docs/architecture/usb). To the
@@ -230,8 +230,8 @@ packets addressed to this machine, following the *weak host model* that
 Linux uses by default: a packet may arrive on any card for any of the
 machine's addresses, plus broadcast and multicast. It drops packets claiming
 to come from `127.0.0.0/8`, from a broadcast or multicast address, or from
-no address at all, and packets for `127.0.0.0/8`, which can only be forged on
-a cable. It never sends a packet with a `127.x` source out of a card either.
+no address at all, and packets for `127.0.0.0/8`, which never legitimately
+arrive on a cable. It never sends a packet with a `127.x` source out of a card either.
 
 There is one exception. Until a card holds an address, it also accepts an
 unfragmented UDP packet to the DHCP client port, because some DHCP servers
@@ -307,7 +307,8 @@ The rules a change to the stack has to keep:
   released, serialised by a sleeping mutex.
 - **A device never writes past the buffer it was given.** The Realtek chip's
   receive size limit is the buffer length its descriptors name. A larger
-  limit over smaller buffers was the precondition of CVE-2009-1389 in Linux.
+  limit over smaller buffers was the precondition of CVE-2009-1389 in Linux's
+driver for the same family.
 - **Egress identity comes from the route.** The source hardware address is
   stamped once the route has picked the device, an ARP names that device's
   address, and a neighbour's queued packets leave on the neighbour's device.

@@ -49,7 +49,7 @@ explains what privd is for and how it works.
 `bootctl --boot <partition> …` fits none of these shapes, so privd runs it
 for nobody; only a requester that already holds the capabilities, such as
 the rescue shell, runs it. `bootctl collect` has no action: init runs it
-holding `RawBlock` and `Power` itself.
+directly, handing it `RawBlock` and `Power`.
 
 ## Extensions
 
@@ -235,9 +235,10 @@ kernel still attested the program as the base's.
 | `program <path>` | a requester running the base program at that canonical path, whatever its uid, unless it is the paired agent | none |
 
 uid 0 running a program from outside the base matches nothing. The paired
-agent matches `paired` and nothing else. A requester's program is read from
-the kernel when the request arrives, so one that has run another program
-since it connected matches as that program, or as none.
+agent matches `paired` and nothing else. privd reads the requester's program
+from the kernel again before it judges, before it asks and before it starts
+the mechanism, and refuses a requester that has exec'd, mapped code from
+elsewhere or exited since it connected.
 
 ### Levels
 
@@ -266,8 +267,8 @@ When no line decides, a person whose request an administrator may answer is
 asked for an administrator's password; anyone else is refused. Who is
 logged in counts the people with a desktop or a console session, not the
 login screen and not the paired agent. When privd cannot read the accounts
-record, no requester is a person, and `alone` is judged as if someone else
-were logged in.
+record or does not know who is logged in, no requester is a person, and
+`alone` is judged as if someone else were logged in.
 
 ### Where a person is asked
 
@@ -279,7 +280,7 @@ carries, and of no other:
 | Their own desktop, in front and unlocked | A click for `confirm`, or for `password` from a person without one; their password otherwise | One of the administrators listed types their own |
 | Another uid's desktop, in front and unlocked | Their password; refused if they have none | One of the administrators listed types their own |
 | Their own console session, asking from its terminal | Their password at the requester's terminal, whatever the level; refused if they have none | Refused |
-| Anything else: behind, locked, the login screen, no session | Refused | Refused |
+| Anything else: a desktop behind or locked, or no session at all | Refused | Refused |
 
 The administrators listed are those the record names with a password, not
 counting the person asking, at most 32. With none, the request is refused
@@ -313,9 +314,10 @@ the extensions' actions again.
 `describe` and `detail` also contain no `--`, no `...`, none of the words
 the desktop's glossary replaces (see [Desktop](/docs/architecture/desktop)),
 none of `requester`, `mechanism`, `principal`, `privd`, `slot`, `base`,
-`sealed` or `uid` (or the same with an `s`), and no capability's name, except
-as a first word that only starts with a capital. The policy is held to these
-rules as it parses, and an extension's declaration when it is installed.
+`sealed` or `uid` (or the same with an `s`), and no capability's name as the
+policy spells it (`Power`, `SysInspect`), except as a first word that only
+starts with a capital. The base's policy and an extension's declaration are
+held to these rules whenever they are parsed.
 
 ## What a mechanism starts with
 
@@ -326,14 +328,16 @@ rules as it parses, and an extension's declaration when it is installed.
 - Working directory: `/`, or with `cwd` the directory the request sent,
   refused if its path no longer leads to that directory when the mechanism
   starts.
-- Descriptors 0, 1 and 2: the requester's three. A terminal or a socket is
-  never passed; the requester relays it through a pipe or a terminal of the
-  mechanism's own.
+- Descriptors 0, 1 and 2: the three the request sent. The requester's
+  library (`slopos_userland::privd`) never sends a terminal or a socket,
+  which a mechanism outside the requester's session could not use: it relays
+  them through a pipe, or through a terminal of the mechanism's own.
 - `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGPIPE` and `SIGTERM` at their default
   dispositions.
 
 A program that is a mechanism checks `PRIV_ACTION` and acts only for that
-action, so argv that belongs to another action exits with status 127.
+action, so argv that belongs to another action, or to none, exits with
+status 127.
 
 ## What a requester exits with
 
@@ -342,7 +346,7 @@ action, so argv that belongs to another action exits with status 127.
 | The mechanism's own | It ran. |
 | 126 | The person refused, did not answer in time, or typed a wrong password. |
 | 127 | privd refused for any other reason, or could not be reached. |
-| 128 + *n* | The mechanism was killed by signal *n*, or the requester stopped waiting after a second signal. |
+| 128 + *n* | The mechanism was ended by signal *n*; or the requester got signal *n* and withdrew the request (before the mechanism started) or stopped waiting (a second signal). |
 
 The requester prints privd's reason after its own name, for example
 `bootctl: You aren't allowed to do this.`, and
@@ -362,7 +366,7 @@ screen.
 | This needs your permission, and no desktop is there to ask you. | No compositor is ready to show a question. |
 | Restart the desktop, then try again. | The desktop speaks another version of the consent channel. |
 | Another request is waiting. Try again in a moment. | Eight questions are waiting, or four of this uid's. |
-| You just refused a request. Try again in a moment. | The person refused a request from this uid less than five seconds ago. |
+| You just refused a request. Try again in a moment. | The person refused a request from this uid while this one waited, or less than five seconds ago. |
 | You didn't allow this. | The person pressed Cancel or Escape. |
 | Nobody answered in time. | 120 seconds passed. |
 | Wrong password. | The password typed was wrong. |
@@ -379,12 +383,12 @@ screen.
 | The folder this was asked in moved while you were asked. Try again. | Its path leads elsewhere by the time the mechanism starts. |
 | Something like this is running already. Try again once it's done. | The action's `exclusive` group is busy. |
 | Something started before the system was updated is still running. Try again once it's done. | A mechanism the previous privd started still runs, and the action is `exclusive`. |
-| The command is too long to show in full, so it can't be allowed. | The command line or directory exceeds 320 bytes once escaped. |
+| The command is too long to show in full, so it can't be allowed. | A question for the desktop whose command line or directory exceeds 320 bytes once escaped. |
 | Who can allow this changed while you were asked. Try again. | Judged again after the answer, the request no longer qualifies. |
 | The account that asked no longer exists. | A `uid requester` action for a uid the record no longer names. |
 | The extension that runs this has changed. Try again. | The extension's activation changed between the question and the start. |
 | Too many requests are waiting. Try again in a moment. | The connection limits below are reached. |
-| That request couldn't be read. | A malformed frame; the connection ends. |
+| That request couldn't be read. | A malformed frame, or a request with the wrong number of descriptors; the connection ends. |
 | The answer came back incomplete. Try again. | A password answer arrived without its password or its administrator. |
 | Can't check the password right now. Try again in a moment. | `/sbin/authcheck` could not decide. |
 | Something went wrong. Try again in a moment. | Any other failure; privd's log says which. |
@@ -402,7 +406,7 @@ screen.
 | Requests from a uid just refused | refused for 5 seconds |
 | Command line and directory shown | 320 bytes each, escaped |
 | Dialog input ignored after it appears, moves focus or changes shape | 750 ms |
-| Wait before a person's next password check after a wrong one | 2 seconds, doubling with each, at most 60 seconds, for as long as privd runs |
+| Wait before privd checks a person's password again after a wrong one | 2 seconds, doubling with each, at most 60 seconds, for as long as privd runs |
 | `keep` | at most 900 seconds; 64 answers |
 | Request frame | 64 KiB, at most 256 arguments |
 
@@ -415,13 +419,13 @@ and the value. Numbers are decimal text.
 
 | Kind | Name | From | Fields |
 |---|---|---|---|
-| `0x01` | `REQUEST` | requester | `id`, `action`, one `arg` per argument, `cwd=1` if the request sends a directory, `terminal=1` if its standard input is a terminal |
+| `0x01` | `REQUEST` | requester | `id`, `action`, one `arg` per argument, `cwd=1` if the request sends a directory, `terminal=1` if the requester can ask its person at a terminal |
 | `0x02` | `SIGNAL` | requester | `id`, `signo`: one of `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGTERM` |
-| `0x03` | `SECRET` | requester | `id`, `secret`: what was typed at a `PROMPT` |
+| `0x03` | `SECRET` | requester | `id`, `secret`: what was typed at a `PROMPT`, possibly nothing |
 | `0x10` | `STARTED` | privd | `id`, `pid` |
 | `0x11` | `EXITED` | privd | `id`, and `code` or `signal` |
 | `0x12` | `DENIED` | privd | `id`, `reason`, `person=1` when the person refused or did not answer |
-| `0x13` | `ASKING` | privd | `id`, `app`: the name the dialog shows |
+| `0x13` | `ASKING` | privd | `id`, and `app` when the dialog names the program that asked |
 | `0x14` | `PROMPT` | privd | `id`, `about`: the question in words, `prompt`: `Password for <name>: ` |
 
 A `REQUEST` carries standard input, output and error, then the working

@@ -183,8 +183,7 @@ building or tearing it down) or a live count of typed `Frame<M>` handles.
 Frames a program or device can write are `UFrame<M>`, which allow byte copies
 and atomic word access but never a Rust reference. The first MiB of physical
 memory never reaches the allocators, because firmware is known to write there
-after it has handed the machine over; Linux keeps it back on x86 for the same
-reason.
+after it has handed the machine over, and nothing in SlopOS needs it.
 
 **Kernel allocation.** Kernel code allocates only through
 `slopos_ostd::mm::heap` (`KBox`, `KVec`, `KArc` and friends). Every
