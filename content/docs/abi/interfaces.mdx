@@ -57,6 +57,7 @@ interface lasts.
 | [App toolkit](#app-toolkit) | Each app and the crates compiled into it | Private |
 | [Window protocol](#window-protocol) | Compositor and every app | Versioned (`PROTOCOL_VERSION`) |
 | [App entries](#app-entries) | Dock and installed trees or extensions | Unversioned |
+| [Shell completion rules](#shell-completion-rules) | Shell and installed trees | Unversioned |
 | [Extension images](#extension-images) | `tools/extension`; `extctl`, init, privd and kernel | Unversioned |
 | [Extension programs at run time](#extension-programs-at-run-time) | Init, privd and loader; an extension's programs | Unversioned |
 | [Base manifest](#base-manifest) | One base's init and the next base | Unversioned |
@@ -419,6 +420,22 @@ interface lasts.
 - **Checked by:** `dock_test`.
 - **See:** [Desktop](/docs/architecture/desktop),
   [Installed software](/docs/architecture/software).
+
+### Shell completion rules
+
+- **What:** a file named after a command in a directory of
+  `SHELL_COMPLETION_PATH` (by default `/usr/local/share/shell/completions`,
+  then `/usr/share/shell/completions`): a script of `complete` lines, which
+  the shell runs the first time Tab completes one of that command's
+  arguments.
+- **Between:** the shell, in the base, and the trees in `/usr/local` that
+  ship rules for their own programs.
+- **Level:** unversioned.
+- **Held by:** `shell-core::complete::spec`, which parses `complete`'s
+  arguments.
+- **Checked by:** `shell-core`'s host tests; `shell_script_test`, which runs
+  every rule file the base ships.
+- **See:** [Userland](/docs/architecture/userland#the-shell).
 
 ### Extension images
 

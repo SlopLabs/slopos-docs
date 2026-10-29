@@ -3,22 +3,16 @@ title: "SlopRing"
 description: "The shared-memory queues a program uses to hand the kernel many I/O operations at once and collect the results."
 ---
 
-A normal system call does one thing and waits for it: one `read`, one `accept`,
-one `send`. A server handling hundreds of connections pays for hundreds of
-calls, and any one of them can stop the whole program while it waits. With
-SlopRing the program writes a batch of requests into memory it shares with the
-kernel, makes one call, and later reads the results back from the same memory.
-Each request carries a number the program chose (`user_data`), so results can
-arrive in any order and still be matched to their requests.
-
-The design is Linux's io_uring (Jens Axboe, 2019), cut down to the operations
-SlopOS needs: one queue of requests (submissions) and one of results
-(completions), both in shared memory. SlopRing is not binary-compatible with
-io_uring. This page lists the calls, memory layouts, opcodes and rules. The
-layouts, opcodes, flags and limits are defined in `abi/src/ring.rs`; the kernel
-side is the `ring` crate and `core/src/syscall/ring_handlers.rs`.
-[Userland](/docs/architecture/userland) describes the runtime that drives the
-ring.
+SlopRing hands the kernel many I/O operations in one system call. A program
+writes requests into a submission queue in memory it shares with the kernel,
+calls `ring_enter`, and reads the results from a completion queue in the same
+memory, matching each to its request by a number it chose (`user_data`), so
+results can arrive in any order. The design is Linux's io_uring (Jens Axboe,
+2019), cut down to the operations SlopOS needs; SlopRing is not
+binary-compatible with io_uring. The layouts, opcodes, flags and limits are
+defined in `abi/src/ring.rs`; the kernel side is the `ring` crate and
+`core/src/syscall/ring_handlers.rs`. [Userland](/docs/architecture/userland)
+describes the runtime that drives the ring.
 
 ## System calls
 
@@ -36,6 +30,8 @@ All three are SlopOS-only calls (see [System call ABI](/docs/abi/syscalls)).
 - `ring_enter` returns `-EINTR` only if a signal interrupts the wait and it
   submitted nothing; otherwise it returns the submission count.
 - `ring_enter` defines no flag: any bit set in `flags` is `-EINVAL`.
+- At most `cq_entries` operations are in flight at once; a submission past
+  that completes with `-EAGAIN`.
 - Every call on a ring from a process other than the one that created it
   fails with `-EBADF`.
 - The operations a `ring_enter` submits or completes run as the task that
@@ -157,16 +153,23 @@ entry's own result: `0` if it found one, `-ENOENT` if not. With
 - Completions are posted only inside `ring_enter`. No kernel thread completes
   operations in the background, and the ring descriptor never becomes
   readable.
-- If the completion queue is full, a completion that can be dropped is
-  counted in the overflow word and sets `SLOPRING_CQ_OVERFLOW` (bit 1) in the
-  completion flags word. The flag stays set until the ring is set up again.
+- A completion posted while the completion queue is full is dropped: the
+  overflow word counts it and `SLOPRING_CQ_OVERFLOW` (bit 1) is set in the
+  completion flags word. The flag stays set for the life of the ring.
 - `OP_ACCEPT` and `OP_OPENAT` (which create a descriptor) and `OP_READ`,
-  `OP_RECVMSG` and `OP_RECVFROM` (which consume data) reserve a completion slot
-  before they run, so their completion is never dropped.
+  `OP_RECVMSG` and `OP_RECVFROM` (which consume data) run only while the
+  completion queue has a free slot, so a dropped completion never loses a
+  descriptor or data. Submitted to a full queue, one does nothing and
+  completes with `-EAGAIN`, a completion that is itself dropped; one already
+  in flight waits until the program frees a slot.
 - A multishot operation (`SLOPRING_SQE_MULTISHOT`, honoured for `OP_ACCEPT`,
-  `OP_RECVMSG` and `OP_POLL_ADD`) stays in flight and posts one completion per
-  event with `SLOPRING_CQE_F_MORE` set. The last completion has the flag clear.
-  Cancelling it posts one `-ECANCELED` with the flag clear.
+  `OP_RECVMSG` and `OP_POLL_ADD`; other opcodes ignore it) stays in flight and
+  posts one completion per event with `SLOPRING_CQE_F_MORE` set: per accepted
+  connection, per message, or for `OP_POLL_ADD` each time the set of ready
+  events changes. An error, end of stream, or for `OP_POLL_ADD` `POLLERR` or
+  `POLLHUP`, posts the last completion, with the flag clear. Cancelling it
+  posts one `-ECANCELED` with the flag clear. A multishot submission that
+  also selects a buffer is `-EINVAL`.
 
 ## Registering buffers
 
@@ -179,15 +182,17 @@ entry's own result: `0` if it found one, `-ENOENT` if not. With
 
 Any other `op` returns `-ENOSYS`.
 
-**Fixed buffers.** `RING_REGISTER_BUFFERS` pins up to 1024 buffers
-(`SLOPRING_MAX_FIXED_BUFFERS`), each `{addr: u64, len: u32, _pad: u32}` and at
-most 1 GiB (`SLOPRING_MAX_REG_BUF_BYTES`). A submission uses one by setting
+**Fixed buffers.** `RING_REGISTER_BUFFERS` pins 1 to 1024 buffers
+(`SLOPRING_MAX_FIXED_BUFFERS`) in anonymous memory, each
+`{addr: u64, len: u32, _pad: u32}` and at most 1 GiB
+(`SLOPRING_MAX_REG_BUF_BYTES`); a ring holds one set, and registering a
+second is `-EEXIST`. A submission uses one by setting
 `SLOPRING_SQE_FIXED_BUFFER` and `buf_index`. The buffer is reserved from
 submission until the operation's final completion or cancellation, and
 `RING_UNREGISTER_BUFFERS` returns `-EBUSY` while any reservation is held.
 
-**Provided buffers.** `RING_REGISTER_PBUF_RING` pins a ring of buffers the
-program refills, for one buffer group:
+**Provided buffers.** `RING_REGISTER_PBUF_RING` pins a ring of buffers in
+anonymous memory that the program refills, for one buffer group:
 
 | `RegisterBufRingCmd` field | Type | Meaning |
 |---|---|---|
@@ -201,8 +206,9 @@ The program publishes buffers by advancing a `u16` tail at byte offset 14 of
 the ring, which overlaps `bufs[0].resv` as in Linux's `io_uring_buf_ring`. A
 receive submission sets `SLOPRING_SQE_BUFFER_SELECT` and `buf_group`; the
 kernel takes the next published buffer, fills it, advances the ring head and
-reports the buffer id in the completion. `RING_UNREGISTER_PBUF_RING` returns
-`-EBUSY` while any in-flight operation selects that group.
+reports the buffer id in the completion, or completes with `-ENOBUFS` when
+no buffer is published. `RING_UNREGISTER_PBUF_RING` returns `-EBUSY` while
+any in-flight operation selects that group.
 
 ## Zero-copy send
 
@@ -219,7 +225,8 @@ completion with `SLOPRING_CQE_F_NOTIF` once the kernel has released the buffer.
 
 - The descriptor can be closed and duplicated within the process. It is not
   inherited across `fork` or `exec`.
-- It cannot be polled; `read` and `write` on it fail.
+- `poll` reports it as `POLLNVAL`, and `read` and `write` on it return
+  `-EINVAL`.
 - Rings live in a table of handles with generation numbers, so a closed and
   reused descriptor, a descriptor of another kind, or a stale handle gets an
   error rather than someone else's ring.
