@@ -49,7 +49,7 @@ The root names the image: the sidecar, the store's record and
 | Read-only compatible features | `sparse_super`, `large_file`, `huge_file`, `dir_nlink`, `extra_isize`, `metadata_csum`, `read-only` |
 | Compatible features | None (no journal) |
 | Inodes | 256 bytes; root is inode 2, an empty `lost+found` is inode 11, and every other entry takes the next number from 12, breadth first, each directory's children in name order |
-| Files and directories | Mapped by extent trees, each laid out contiguously |
+| Files and directories | Mapped by extent trees, each laid out contiguously but for a backup superblock in the way |
 | Symlinks | The target in the inode when it is at most 59 bytes, otherwise in one block |
 | Owner | uid 0 for every inode |
 | Times | None recorded |
@@ -113,7 +113,7 @@ must hash to the digest its line records, and every mode must match.
 ## /.extension/release
 
 `key value` lines, none indented. Blank lines and lines starting with `#` are
-ignored. Each key appears at most once.
+ignored. Each key appears at most once, and any other key is refused.
 
 | Key | Value | Required |
 |---|---|---|
@@ -139,6 +139,7 @@ What the extension asks for. The file is at most 64 KiB.
 - A line indented with spaces or a tab is a setting of the `service` or
   `action` declared before it.
 - Blank lines and lines starting with `#` are ignored.
+- Any other keyword or setting is refused, and the refusal names its line.
 - Programs are named by the path they have once the image is shown, under
   `/opt/<name>`.
 - Capabilities are named as [Capabilities](/docs/architecture/authority)
@@ -165,7 +166,7 @@ log, state and runtime directories and runs its actions.
 
 | Setting | Value | Required | Default |
 |---|---|---|---|
-| `program <path>` | A file of the image outside its `lib/`, as `/opt/<name>/...` | Yes | |
+| `program <path>` | A file of the image outside its `lib/`, as `/opt/<name>/...`. Once | Yes | |
 | `args <word>...` | The arguments after the program. Each word printable, without `"` or `*`, at most 64 bytes. Once | No | None |
 | `user` or `user <suffix>` | Which declared user it runs as. Once | No | The first user |
 | `caps <capability>...` | The capabilities it asks for. Once | No | None |
@@ -282,7 +283,7 @@ installed and at every activation:
 | Dynamically linked | Every executable and shared object |
 | Interpreter `/lib/ld-slopos.so.1` | Every program: every executable, and every ELF file outside `/lib` |
 | Needs `libc.so` | Every program |
-| Each library it needs is `libc.so`, or a shared object found in the image at `/lib/` followed by the name it needs, directly or through up to 8 symlinks | Every executable and shared object |
+| Each library it needs is `libc.so`, or a shared object found in the image at `/lib/` followed by the name it needs, directly or through at most 7 relative symlinks | Every executable and shared object |
 | Every undefined symbol is exported by `libc.so` or a library it needs, directly or not | Every executable and shared object |
 | At most 64 needed libraries, and a closure of at most 256 | Every executable and shared object |
 | At most 1 GiB | Every ELF file |

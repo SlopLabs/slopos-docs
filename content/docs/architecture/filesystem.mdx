@@ -135,8 +135,8 @@ When the kernel starts it has to decide what `/` is. Normally it is a disk,
 mounted read-write: an installed machine names its root partition, and
 otherwise the kernel takes the first disk that isn't a USB disk, so a stick
 left in a port never changes what boots. If that disk can only be mounted
-read-only (its journal couldn't be replayed after a
-crash, for example), or there is no disk, SlopOS boots from memory instead:
+read-only (its journal couldn't be replayed after a crash, for example), or
+there is no disk, SlopOS boots from memory instead:
 it unpacks the base archive into a filesystem in RAM (what Linux calls an
 *initramfs*) and puts the read-only disk, if there is one, at `/mnt`. The
 live ISO always boots from memory.
@@ -240,9 +240,9 @@ read-only, and one with a feature it can't read safely is refused.
 
 Every writable disk the build makes carries a journal, so a crash or power
 loss can't leave the filesystem inconsistent, and the disk is repaired by
-itself at the next boot. [Crash recovery](/docs/architecture/crash-recovery) explains how the
-journal works, what programs can rely on after a crash, and what happens if
-the journal itself is damaged.
+itself at the next boot. [Crash recovery](/docs/architecture/crash-recovery)
+explains how the journal works, what programs can rely on after a crash, and
+what happens if the journal itself is damaged.
 
 ## When a disk mounts read-only
 
@@ -309,8 +309,8 @@ this: they write a file, seal it, read it back and only then believe it.
 
 A disk image can carry a table of checksums at its end, one for each block (a
 *verity trailer*), so the kernel can tell when a block has changed since the
-image was built. It catches accidental corruption, not a deliberate attacker, because
-the checksums are CRC-32. A *protected* trailer (`VERITY=on`) makes the whole
+image was built. It catches accidental corruption, not a deliberate
+attacker, because the checksums are CRC-32. A *protected* trailer (`VERITY=on`) makes the whole
 disk read-only; an *attested* one (`VERITY=rw`) allows writes and stops
 checking the blocks that were written. The boot option `verity=require`
 refuses to boot from a root disk that has no valid trailer.
