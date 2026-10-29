@@ -1,12 +1,14 @@
 ---
 title: "Roadmap"
-description: "The plans we are working on, what each is for, and how far along it is."
+description: "The plans we are working on, what each is for, how far along it is, and what has landed."
 ---
 
-This page lists the work we are doing next: running SlopOS on a real laptop
-the way it already runs in QEMU, developing SlopOS inside SlopOS, faster
-test results, and USB. For each plan it says what the work is for and how far
-along it is.
+As of 2026-10-29, SlopOS commit `fa0f8f79`.
+
+This page lists the work that is planned next and the plans that have landed
+since the project started. Today one plan is open, about CI; the rest of the
+open work is defects, listed on [Known
+limitations](/docs/status/known-limitations).
 
 ## How plans relate to these docs
 
@@ -17,71 +19,64 @@ it works. When nothing is left, the plan is deleted; git history keeps the
 record. So if a feature appears in these docs it exists, and if it appears
 only in a plan it does not.
 
-## Running SlopOS on a real machine
-
-**What it is for:** doing on the tested laptop what SlopOS already does in
-QEMU: install it from a USB stick onto a disk shared with another OS, boot it
-from that disk, build and install new versions there, and exchange commits
-over the wired network. (`plans/bare-metal.md`)
-
-**Where it stands:** three of seven steps are done: the NVMe driver, the ext4
-filesystem, and a disk layout that shares a disk with another operating
-system. SlopOS's boot loader sits in its own folder on the shared EFI system
-partition, and its two boot slots live on a partition of their own. The QEMU
-boot-slot tests already run on that layout
-([Installing a system](/docs/self-hosting/updating)). Still to do
-(the network work can happen alongside the rest):
-
-1. A crash record: the panic message written to a small partition set aside
-   for it, so the next boot can show what went wrong.
-2. An installer, and a live ISO that can run it.
-3. A driver for the laptop's Realtek wired network card, DHCP on every network
-   card, and an SSH client so git can reach another machine on the network.
-4. Measuring the CPU's real speed during a build, and turning on frequency
-   scaling if it runs slow.
-
-## SlopOS as a development machine
-
-**What it is for:** making SlopOS a place where SlopOS is developed.
-(`plans/self-hosting.md`)
-
-**Where it stands:** the loop works in QEMU. The guest pulls commits over git,
-builds the whole system, installs it into a boot slot, and pushes commits back
-([Development machine](/docs/self-hosting/development-machine)). Next is the
-same loop on real hardware, which is the plan above. After that, possibly, a
-compiler that rebuilds itself inside SlopOS; that phase is not committed to,
-because it needs tens of gigabytes and hours of CPU per build.
+`plans/` now holds two files: `ci-latency.md`, the one open plan, and
+`KNOWN_ISSUES.md`, working notes on open defects. Plans can mention file
+paths that have since moved, so check a path against the tree before relying
+on it.
 
 ## Faster continuous integration
 
-**What it is for:** keeping the time from a push to a test result short.
-(`plans/ci-latency.md`)
+**What it is for:** keeping the time from a push to a test result short, and
+the runner minutes every push costs low. (`plans/ci-latency.md`)
 
-**Where it stands:** the CI jobs are split so that each finishes in about the
-time the boot tests take. The remaining work is making the longest job's
-builds cacheable and cutting the setup every job repeats.
+**Where it stands:** CI runs four jobs side by side, each a chain of steps
+over one set of inputs, sized to finish near the longest one: the boot lane
+(the tests build, the boot, the checks that read its log, and the
+persistence, crash, USB and self-hosting-root boots), the gates (host tests,
+kernels and the framekernel gates), the toolchain (the C++ runtime, the LLVM
+port and the cross-build checks), and the proofs (Miri and Verus). Compiler
+output is cached by content, never by timestamp. Still to do:
 
-## USB
+1. Split the gates recipe so its expansion builds can use the compiler cache
+   and its compiler probes cannot, which takes the gates job below the boot
+   lane.
+2. Stop every job paying its own toolchain install, with a runner image that
+   has it built in.
 
-**What it is for:** USB keyboards and mice, and later USB storage and network
-adapters, through a driver for the USB host controller (xHCI).
-(`plans/usb-xhci.md`)
+The boot is deliberately one run, because the ratchets grade one boot's
+counts; making its slowest tests cheaper is a test change, not a CI change.
 
-**Where it stands:** not started. It is a large piece of work, and it would
-plug into the existing driver framework as one more kind of bus
-([Drivers](/docs/architecture/drivers)).
+## What is not planned
+
+Nothing in the tree plans these, so they are not coming soon:
+
+- **More hardware.** Machines other than the tested laptop, and drivers for
+  Wi-Fi, Bluetooth, audio and SATA ([Hardware](/docs/status/hardware-requirements)).
+- **A compiler that rebuilds itself inside SlopOS.** The self-hosting plan
+  considered it and left it uncommitted: it needs Python in the guest, tens
+  of gigabytes and hours of CPU per build. The plan was retired with the compilers still
+  cross-built on the host ([Toolchain](/docs/self-hosting/toolchain)).
+- **IPv6, other filesystems, time zones.** See [Known
+  limitations](/docs/status/known-limitations).
 
 ## Plans that have landed
 
 These plans are finished and deleted. What they built is described here:
 
-| Former plan | Where to read about it |
-|-------------|------------------------|
-| Driver framework | [Drivers](/docs/architecture/drivers) |
-| Persistent storage | [Disks](/docs/architecture/storage), [Filesystem](/docs/architecture/filesystem), [Crash recovery](/docs/architecture/crash-recovery) |
-| Permissions | [Permissions](/docs/architecture/authority) |
+| Former plan | Retired | Where to read about it |
+|-------------|---------|------------------------|
+| Authority model | 2026-08-19 | [Capabilities](/docs/architecture/authority) |
+| Driver framework | 2026-08-31 | [Drivers](/docs/architecture/drivers) |
+| Persistent storage | 2026-09-07 | [Disks](/docs/architecture/storage), [Filesystem](/docs/architecture/filesystem), [Crash recovery](/docs/architecture/crash-recovery) |
+| USB | 2026-10-10 | [USB](/docs/architecture/usb) |
+| SlopOS as a development machine | 2026-10-11 | [Development machine](/docs/self-hosting/development-machine), [Toolchain](/docs/self-hosting/toolchain), [Updating SlopOS](/docs/self-hosting/updating) |
+| SlopOS on bare metal | 2026-10-11 | [Installing SlopOS](/docs/self-hosting/installing), [CPU frequency](/docs/architecture/cpu-frequency), [Networking](/docs/architecture/networking), [Diagnosing the kernel](/docs/development/diagnostics), [Remote control](/docs/self-hosting/remote-control) |
+| Principals, brokered authority and consent | 2026-10-14 | [Capabilities](/docs/architecture/authority), [Privileged actions](/docs/architecture/privd) |
+| Live userland: one sealed base, replaced without a reboot | 2026-10-16 | [Base system](/docs/architecture/base), [Installed software](/docs/architecture/software), [Init and services](/docs/architecture/init) |
+| System extensions | 2026-10-23 | [Extensions](/docs/architecture/extensions) |
+| Users and login | 2026-10-23 | [Users and file permissions](/docs/architecture/users), [Sessions and login](/docs/architecture/sessions) |
+| A graphical installer | 2026-10-25 | [Installing SlopOS](/docs/self-hosting/installing) |
+| The desktop's look, words and toolkit | 2026-10-28 | [Desktop](/docs/architecture/desktop), [Windowing](/docs/architecture/userland-windowing) |
 
-The source tree also keeps working notes on open bugs (`plans/KNOWN_ISSUES.md`).
-The ones that affect you are on [Known limitations](/docs/status/known-limitations).
-Plans can mention file paths that have since moved, so check a path against
-the tree before relying on it.
+The open defects that affect you are on [Known
+limitations](/docs/status/known-limitations).

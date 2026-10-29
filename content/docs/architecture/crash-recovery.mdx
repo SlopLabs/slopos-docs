@@ -144,7 +144,9 @@ ext4: journal attached — 2048 blocks at inode 8, replayed 1 transactions (5 bl
 ext4: the journal is recovered, so the mount is writable again
 ```
 
-The log calls each journal entry a *transaction*.
+The log calls each journal entry a *transaction*. The second line is there
+because a disk that went down in use is held read-only until its replay has
+worked, and only then allowed to take writes.
 
 The same happens whenever a disk that went down in use is mounted later, not
 only at boot: a USB stick pulled out while it was mounted gets its journal

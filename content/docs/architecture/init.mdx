@@ -34,8 +34,9 @@ system configuration. Asterinas NixOS, the distribution built on the
 Asterinas kernel, runs a patched systemd as its init.
 
 SlopOS differs from systemd in three places. The limit's window is a minute
-rather than systemd's default ten seconds, and a service past it waits
-rather than failing until someone resets it. Processes are grouped by a
+rather than systemd's default ten seconds, and a service past it starts
+again on its own once the minute allows, where systemd stops restarting it
+until someone starts it by hand. Processes are grouped by a
 *login tag* the kernel keeps on every process, not by a control group. And a
 service says it is ready by writing to a pipe it inherited, not by sending a
 datagram to a socket.
@@ -116,9 +117,9 @@ init: /sbin/privd exited (Signalled(9)), its 5th in a minute; it starts again in
 A program that crashes on startup therefore costs five quick attempts and
 then one a minute or so, rather than a busy loop, and it never gives up for
 good: when whatever broke it is fixed, it comes back on its own. systemd
-handles the same case by refusing further starts until an administrator
-resets the unit. SlopOS has no administrator watching a console, so it waits
-instead.
+handles the same case by no longer restarting the unit automatically, leaving
+it to an administrator to start again. A SlopOS machine usually has nobody
+watching a console, so init waits instead.
 
 ### Ready means the program said so
 
@@ -202,10 +203,10 @@ Because the tag decides, ending a person's desktop spares remoted and the
 programs it runs (they carry remoted's tag), privd's mechanisms, and anything
 else the session did not start. The exception is a command `priv` runs for
 the person: privd starts it with the session's tag, so it ends with the
-session. When the first person's desktop ends, the
-extensions' services that run in that session end with it. The ten-second
-limit is real: a process that forks faster than init can signal can outlive
-it, and init says so rather than waiting forever.
+session. When the first person's desktop ends, the extensions' services that
+run in that session end with it. The ten-second limit is real: a process
+that forks faster than init can signal can outlive it, and init says so
+rather than waiting forever.
 
 ## When a new base arrives
 
@@ -296,11 +297,11 @@ a shell to look around with.
 ## What it means in practice
 
 - **A crash costs moments, not a reboot.** If the desktop vanishes, it comes
-  back within a few seconds. If privd crashes, requests made while it
-  is down wait up to two seconds for the new one to listen.
+  back within a few seconds. If privd crashes, requests made while it is
+  down wait up to two seconds for the new one to listen.
 - **Logging out is complete.** A daemon you started from a terminal does not
-  survive `session end`. Something meant to outlive your session belongs in
-  an extension's service, which carries a tag of its own.
+  survive `session end`. Something meant to outlive your session has to be a
+  service init runs, such as an extension's, which carries a tag of its own.
 - **Installing a base restarts little.** Only the services whose files
   changed restart; your desktop keeps running until you choose to restart
   it.

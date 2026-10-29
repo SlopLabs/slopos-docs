@@ -11,8 +11,8 @@ want to try it or install it. An install puts SlopOS on a disk you choose, in
 one of three ways: over the whole disk, in free space beside another system,
 or on one partition you name. Nothing is written until you have reviewed
 what will happen to each partition, and the installer writes only the
-partitions it made or was given, plus SlopOS's own directory on the shared
-boot partition. The same stick can later repair the installed system from a
+partitions it made or was given, plus SlopOS's own directory on a shared
+EFI system partition. The same stick can later repair the installed system from a
 rescue shell. This page covers making the stick, what the installer does,
 the first boot of the installed system, and the rescue shell.
 
@@ -31,21 +31,21 @@ them alone.
 
 ## What the install medium holds
 
-`just iso` builds `builddir/slop.iso`. Booted, it gives the kernel three
-things from Limine (see [Boot](/docs/architecture/boot)): the kernel, the
-base it runs, and the *install medium*, an archive the kernel serves
-read-only at `/media/install`. The medium holds what an install copies
+`just iso` builds `builddir/slop.iso`. When it boots, Limine loads three
+things from it (see [Boot](/docs/architecture/boot)): the kernel, the base it
+runs, and the *install medium*, an archive the kernel serves read-only at
+`/media/install`. The medium holds what an install copies
 beyond the kernel and base: Limine for the boot partition with its licence
 and notices, the apps that live outside the base (editor, files, image
-viewer, widget gallery), and the source of every third-party program the base
-carries.
+viewer, widget gallery), and the source code of the third-party programs
+the base carries.
 
 Built with `PAYLOAD=1`, the ISO also carries a *payload*: a read-only ext4
 partition with the developer tools (the [toolchain](/docs/self-hosting/toolchain)
 for `/usr/local`) and a clone of the source for `/src/slopos`, so an installed
 machine can build SlopOS itself. Limine never loads the payload. The kernel
-finds it on the disk the stick is and mounts it at `/media/payload`, which
-it can do only when the ISO was written to a USB stick: booted as a CD, or
+finds it on the stick itself and mounts it at `/media/payload`, which it can
+do only when the ISO was written to a USB stick: booted as a CD, or
 copied onto a stick as a file, the medium has no payload, and the installer
 installs without the developer tools and says so.
 
@@ -85,27 +85,31 @@ token, so keep it to your own machines.
 
 ## Starting the computer from it
 
-SlopOS boots through UEFI only, and its boot loader isn't signed, so turn
-Secure Boot off in the firmware's settings first. Then start the computer
+An installed system starts through a UEFI boot entry, so the computer needs
+UEFI firmware, and SlopOS's boot loader isn't signed, so turn Secure Boot off
+in the firmware's settings first. Then start the computer
 from the stick, usually from the firmware's one-time boot menu.
 [Hardware](/docs/status/hardware-requirements) lists what SlopOS runs on.
 It drives NVMe drives, virtio disks in a virtual machine and USB disks, and
 has no SATA driver, so an install goes onto an NVMe drive on real hardware.
 
-You see the boot screen and the Wheel of Fate, then a desktop that logs in
+You see the boot screen and the
+[Wheel of Fate](/docs/architecture/boot#the-wheel-of-fate), then a desktop
+that logs in
 by itself as `user`, the first person of a fresh system, and opens the
 installer's welcome page in place of a terminal: *Welcome to SlopOS*, with
 *Try SlopOS* and *Install SlopOS*. *Try SlopOS* closes the window and leaves
-you on the live desktop, where nothing you do is saved. The dock then has an
-*Install SlopOS* entry, which only appears on a boot from the install medium.
+you on the live desktop, where nothing you do is saved. To come back to it,
+use the dock's *Install SlopOS* entry, which appears only on a boot from the
+install medium.
 
 ## Installing from the window
 
 The window holds no capability and never touches a disk. When you press
-*Install SlopOS*, it asks [privd](/docs/architecture/privd) to run the
-installer's engine for it (the action `org.slopos.install`), and the
-consent dialog asks you to allow it. The live system's `user` is an
-administrator, so allowing it is a click. From then on the window only shows
+*Install SlopOS* (or at once, when you start it from the dock), it asks
+[privd](/docs/architecture/privd) to run the installer's engine for it (the
+action `org.slopos.install`), and the consent dialog asks you to allow it.
+The live system's `user` is an administrator, so allowing it is a click. From then on the window only shows
 what the engine reports and sends it your answers. The pages are:
 
 1. **Where do you want to install SlopOS?** Every disk, named by its model and
@@ -119,18 +123,18 @@ what the engine reports and sends it your answers. The pages are:
    will fetch from and push to. *Put SlopOS first in the startup order*
    decides whether the computer starts SlopOS by default.
 3. **Ready to install.** The disk now and after the install, and a list of
-   what happens to each partition: erased, new, formatted, shared, kept or
-   reused. The install button names what it does (*Erase disk and install*,
-   *Install beside* the other system) and stays off until you tick a box whose
-   words follow the damage, such as *I understand that everything on this disk
-   will be deleted*.
+   what happens to each partition, tagged *Erased*, *New*, *Formatted*,
+   *Shared* or *Kept*. The install button names what it does (*Erase disk
+   and install*, *Install beside* the other system) and stays off until you
+   tick a box whose words follow the damage, such as *I understand that
+   everything on this disk will be deleted*.
 4. **Installing SlopOS.** The steps as they run, with the engine's full log
    under *Show details*. The window refuses to close until the install ends.
 5. **SlopOS is installed.** Remove the stick, then *Restart*.
 
 *Back* keeps every answer you gave. If the install fails, the page says at
-which step and whether anything was written, and *Try again* starts the
-engine afresh.
+which step, or that nothing was written, and *Try again* starts the
+installer again.
 
 The window installs a fresh system with its first person named `user`, an
 administrator with no password who logs in automatically. To choose another
@@ -210,8 +214,9 @@ tools first.
 erases it, and puts the boot and crash partitions into free space unless the
 disk has SlopOS's already. On a disk that already holds SlopOS, the window
 offers *Reinstall SlopOS*, which reuses its root and keeps its accounts and
-their files: the system, `/usr/local` and the boot partition are replaced,
-`/src` stays as it was, and the people of the old system stay.
+their files: both kernel slots and both bases are written afresh from the
+stick, `/usr/local` is updated, and `/src` and the old system's people stay
+as they were.
 
 A new root takes all the free space it is given unless you ask for less, and
 never less than the system needs: 1 GiB without the developer tools, or the
@@ -227,9 +232,9 @@ shows as a list and the terminal prints as `[n/9]` lines:
 
 | Step | What it writes |
 |---|---|
-| Partitioning the disk | The GPT, each copy behind a flush, the copy it did not read from first |
+| Partitioning the disk | The GPT: a protective MBR on a fresh table, then each copy of the table behind a flush, starting with the copy the old table was not read from |
 | Reading the new partitions | Nothing: the kernel re-reads the table |
-| Formatting the new partitions | New FAT32 volumes for the ESP and the boot partition, zeros over the crash partition, ext4 for a new root (`mke2fs`) |
+| Formatting the new partitions | FAT32 on a new ESP and a new boot partition, zeros over the crash partition, ext4 on the root unless it is kept (`mke2fs`) |
 | Copying the system | The root's directories and owners, the sealed mount points the base goes over, the apps and the developer tools at `/usr/local`, the clone at `/src/slopos`, the first person |
 | Copying the startup files | The kernel into both slots, the base as both current and previous, on the boot partition |
 | Setting up the startup menu | Limine and its configuration under `\EFI\SlopOS\` on the ESP |
@@ -275,10 +280,9 @@ When an installed system won't come back, start the computer from the stick
 again and open a terminal on the live desktop. `shell --rescue` asks privd
 for a rescue shell (the action `org.slopos.rescue`): a shell running as uid 0
 that holds every capability privd can give, on a terminal of its own. It
-exists only on a boot from the install medium, the kernel says when that is
-(no command-line word can claim it), and like the installer it is allowed
-with a click by an administrator at the computer and never for a remote
-host.
+exists only on a boot from the install medium, which only the kernel can say
+(no command-line word claims it), and like the installer it is allowed with a
+click by an administrator at the computer and never for a remote host.
 
 The banner says `Rescue shell: what runs here holds everything privd can
 give.` and the prompt starts with `rescue`. Every program the rescue shell

@@ -10,8 +10,8 @@ moves the cursor alongside the built-in keyboard and touchpad. Plug in a USB
 stick and it becomes a disk, `sda`, that you can mount. Plug in a USB Ethernet
 adapter and it becomes a network interface, `eth1`, with an address from
 DHCP. Pull any of them out and the system lets go: the keys it held come up,
-its disk or interface disappears, and nothing waits for it to answer. This
-works the same under QEMU and on real hardware. Programs never talk to USB
+its disk or interface disappears, and nothing waits for it to answer.
+Programs never talk to USB
 devices directly: a device shows up only as the input, disk or network
 interface its kind gives it. What you don't get is everything else USB
 carries, from audio and cameras to Bluetooth and printers; the
@@ -71,12 +71,12 @@ its menus, and on some machines it keeps driving the controller behind the
 system's back. xHCI defines a handshake for taking it over. SlopOS sets the
 *OS owned* flag, waits up to a second (the limit the specification gives) for
 the firmware to clear its *BIOS owned* flag, and clears it itself if the
-firmware never does. Then it turns off the firmware's hooks into the
-controller, because some firmware reports a clean handover and leaves them
-armed.
+firmware never does. Then it turns off the interrupts the firmware uses to
+run its own code when the controller does something (*SMIs*), because some
+firmware reports a clean handover and leaves them armed.
 
-After that the controller is halted, cut off from memory, reset, given its
-rings and started. As a last check SlopOS sends it a command that does
+After that the controller is halted, stopped from reaching memory, reset,
+given its rings and started. As a last check SlopOS sends it a command that does
 nothing and waits for the answer: a controller whose rings or interrupt
 don't work shows up here, at boot, rather than later as a device that never
 appears. The log says which way it went:
@@ -88,8 +88,9 @@ USB: xhci 1 running on MSI
 
 A controller SlopOS can't drive is left to the firmware, untouched apart from
 its power state. That is one without message-based interrupts (MSI-X or MSI),
-one that can only reach the first 4 GiB of memory, one that wants more
-scratch memory than a page lists or no 4 KiB pages, and any past the eighth.
+one that can only reach the first 4 GiB of memory, one that asks for more
+than 512 pages of scratch memory or can't use 4 KiB pages, and any past the
+eighth.
 The `usb=` [boot option](/docs/abi/boot-options) takes three values: `on`,
 the default; `off`, which leaves every controller to the firmware; and
 `report`, which logs each controller's capabilities and ports and then leaves
@@ -100,7 +101,8 @@ it to the firmware, a safe first look at an unfamiliar machine.
 When a port says something was connected, the kernel *enumerates* the
 device, one step at a time:
 
-1. It waits for the connection to stop bouncing, then resets the port.
+1. It waits for the connection to stop bouncing, then resets the port if its
+   kind of port needs that.
 2. It asks the controller for a *slot*, the controller's record of one
    device, and has the controller give the device an address on the bus.
 3. It reads the device's *descriptors*, what the device says about itself:
@@ -112,7 +114,7 @@ device, one step at a time:
 Only one device per controller is ever between steps 1 and 2, because until
 it has an address every new device answers to the same one. Every wait is
 bounded by the timings USB 2.0 gives, and a control request has five seconds.
-A device that fails three times in a row has its port disabled until it is
+A device that fails three times has its port disabled until it is
 unplugged, and the log says `USB: 1-3 disabled until unplugged`.
 
 Hubs belong to the kernel's USB core, not to a driver. A hub is configured
@@ -127,15 +129,15 @@ Devices are named by where they are plugged in:
 <UsbTree />
 
 Controllers are numbered from 1 in the order they were found. `1-4` is root
-port 4 of controller 1, and `1-4.2` is port 2 of the hub on that port. These
-names appear in every USB line of the kernel log. The name says where a
-device is, not what it is, so a stick moved to another port gets another
-name; its disk keeps whatever name it is given when it registers.
+port 4 of controller 1, and `1-4.2` is port 2 of the hub on that port. The
+kernel log's USB lines name devices this way. The name says where a device
+is, not what it is: the same stick in another port has another name, and its
+disk takes the lowest free `sd` letter either way.
 
 When a device offers several configurations, SlopOS picks the first one in
 which a driver it has matches something, or else the first one. QEMU's USB
-network adapter, for example, lists a configuration for Microsoft's RNDIS
-protocol first, which SlopOS doesn't speak, and a standard Ethernet one
+network adapter, for example, lists a configuration for the RNDIS protocol
+first, which SlopOS doesn't speak, and a standard Ethernet one
 second.
 
 ## How a device reaches a driver
@@ -150,9 +152,9 @@ explains the matching), and the first driver to accept it owns it. Once every
 function has an answer, the log names the device and its drivers:
 
 ```text
-USB: 1-7 attached, high speed (USB 2.0 port)
-USB: 1-7 LUN 0 is sda, 16 MB in 512-byte blocks
-USB: 1-7 46f4:0001 1 function, bound usb-storage
+USB: 1-4.1 attached, full speed
+USB: 1-4.1 LUN 0 is sda, 1 MB in 512-byte blocks
+USB: 1-4.1 46f4:0001 1 function, bound usb-storage
 ```
 
 SlopOS has three USB drivers:
@@ -188,10 +190,11 @@ device through its descriptor. There is also a fixed *boot protocol*, a
 simple format a BIOS can read without parsing anything, and SlopOS uses it
 only when a keyboard's or mouse's descriptor can't be read or describes
 neither keys nor a pointer. Reading the descriptor first is deliberate: a
-device starts in the descriptor's format, and at least one wireless keyboard
-receiver acknowledges the request to switch to the boot protocol, keeps
-sending its own format, and so typed the wrong letters until we stopped
-asking.
+device starts in the descriptor's format, so the descriptor is right whether
+or not the device honours a request to switch. At least one wireless
+keyboard receiver acknowledges the switch to the boot protocol and keeps
+sending its own format, which read as boot reports typed the wrong
+letters.
 
 Each report arrives on the device's interrupt endpoint, is decoded the moment
 the controller reports it, and goes into the machine's one keyboard state or
@@ -214,7 +217,7 @@ it too.
 
 ## USB sticks
 
-A stick speaks *SCSI*, the command set of old server disks: "read 240 blocks
+A stick speaks *SCSI*, the command set first written for server disks: "read 240 blocks
 from block 2048", "how big are you?". Over USB those commands travel in the
 *Bulk-Only Transport*: the kernel sends a 31-byte command wrapper on the bulk
 out endpoint, the data moves on one of the two bulk endpoints, and the stick
@@ -245,7 +248,8 @@ and a ladder of recovery behind it, each rung heavier than the last:
    stalls cleared on both sides, and the endpoints set up afresh. Then the
    command is sent once more.
 4. If that fails, the port is reset and the stick is enumerated again, as if
-   it had been plugged in anew.
+   it had been plugged in anew. That uses up one of the port's three tries,
+   unless the stick had been working for a minute.
 
 ### Pulling a stick
 
@@ -253,15 +257,15 @@ A stick can leave while it is mounted, and while a program is writing to it.
 When it does, its disk is unregistered and every request still waiting fails
 at once instead of timing out. The filesystem on it turns read-only, as ext4
 does on a disk that fails: it refuses every change with `EROFS`, fails every
-read that would need the stick, and stays mounted until you unmount it, which
-releases the disk's name for the next stick. What a program saved with
+read that would need the stick, and stays mounted until you unmount it.
+Nothing unmounts it by force. What a program saved with
 `fsync` before the pull is on the stick, as [Crash recovery](/docs/architecture/crash-recovery)
 promises for any crash. The log records the departure:
 
 ```text
-USB: 1-7 detached
-USB: 1-7 sda removed
-USB: 1-7 removed from slot 3
+USB: 1-4.1 detached
+USB: 1-4.1 sda removed
+USB: 1-4.1 removed from slot 3
 ```
 
 At poweroff and reboot each controller's shutdown hook drains its sticks'
@@ -320,7 +324,7 @@ boots one.
 
 - **Mounting a stick takes the `Mount` capability**, as mounting any disk
   does, so at a shell you ask for it with
-  [`priv`](/docs/architecture/privd), which asks you to confirm:
+  [`priv`](/docs/architecture/privd), which asks before it runs anything:
 
   ```bash
   mkdir ~/stick
@@ -354,8 +358,8 @@ boots one.
   and go: docks, USB4 and Thunderbolt tunnels, Type-C alternate modes.
 - Isochronous transfers, so no audio devices or cameras.
 - Bluetooth, USB serial adapters, printers, smart cards, phones (MTP), and
-  any device that needs a vendor driver.
-- RNDIS network adapters, by decision: the protocol can't be made safe
+  other kinds of device.
+- RNDIS network adapters, by decision: the protocol is insecure by design
   against a hostile device.
 - UAS, the faster protocol for USB 3 disks; a UAS disk is used through the
   Bulk-Only setting it also offers.
@@ -363,7 +367,8 @@ boots one.
 - Media change in card readers: the disk is the card that was present when
   the reader was plugged in.
 - USB on the panic path: a panic's record is written to the NVMe disk, and
-  `panic=reboot` is the answer on a machine whose only keyboard is USB.
+  the panic screen reads only the built-in keyboard, so a machine whose only
+  keyboard is USB should boot with `panic=reboot`.
 
 ## Differences from Linux
 
@@ -389,9 +394,9 @@ subtle ways.
 
 `just test` attaches one QEMU controller with a scratch stick, `sda`. `just
 test-usb` boots a kernel with both of QEMU's controller models, one on MSI-X
-and one on MSI, each carrying sticks at every speed, a hub with a stick, a
-tablet, a mouse and a network adapter behind it, a keyboard, an ext4 stick
-and a read-only drive. The host then plugs and pulls devices through QEMU's
+and one on MSI, each carrying a stick at every speed, a hub with devices
+behind it and a keyboard, plus an ext4 stick, a read-only drive and a
+network adapter. The host then plugs and pulls devices through QEMU's
 control socket and types and moves the mouse through it, and the run passes
 only if every device enumerates, binds and leaves cleanly twice over with
 nothing left behind; held keys repeat, Caps Lock lights every keyboard and
@@ -430,8 +435,9 @@ have also been run on real hardware, with a USB mouse and keyboard.
   device's; a driver that owns its pipes through `BoundDevice::stream`
   recovers them itself, as Bulk-Only must.
 - **Rings and contexts are single zeroed pages**, so nothing crosses a page
-  or a 64 KiB boundary, and a TRB's cycle bit is written last, behind a
-  fence.
+  or a 64 KiB boundary. A ring entry (TRB) is written with integer stores,
+  its cycle bit last, behind a fence, since that bit hands it to the
+  controller.
 - **The specifications are the source.** No code or prose comes from Linux or
   QEMU, and spec prose stays out of comments, which cite sections.
   [Add a driver](/docs/development/adding-a-driver#a-usb-driver) shows the

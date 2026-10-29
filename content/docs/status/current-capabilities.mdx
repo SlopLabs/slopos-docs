@@ -170,10 +170,18 @@ The QEMU suite plans at least 3,100 tests: that is the floor
 on 2026-10-28), counted from what one test boot plans across the kernel and
 userland phases. Host-side unit tests run beside it, and longer checks boot
 their own machines to cover USB hotplug, installs, updates, remote control and
-self-hosting ([Write tests](/docs/development/adding-tests)). All `unsafe`
-Rust in the kernel sits in one crate, which build gates enforce
-([The framekernel](/docs/verification/framekernel)), and machine-checked
-proofs cover selected parts of it ([Proofs](/docs/verification/verus-status)).
+self-hosting ([Write tests](/docs/development/adding-tests)).
+
+All `unsafe` Rust in the kernel sits in one crate, `slopos-ostd`, which build
+gates enforce ([The framekernel](/docs/verification/framekernel)), and
+machine-checked proofs cover selected parts of it
+([Proofs](/docs/verification/verus-status)). At this commit:
+
+| Measure | Value | Measured with |
+|---------|-------|---------------|
+| `pub unsafe fn` in `slopos-ostd` | 52 | `grep -rn "pub unsafe fn" slopos-ostd/src` |
+| `pub unsafe trait` in `slopos-ostd` | 15 | `grep -rn "pub unsafe trait" slopos-ostd/src` |
+| Lines of `unsafe` code over all kernel Rust lines | 0.311 % (1,126 of 362,063, counting the vendored unwinder and DWARF reader) | `just tcb-ratio`; the gates fail above 1 % |
 
 ## Summary
 

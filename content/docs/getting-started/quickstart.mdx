@@ -140,7 +140,11 @@ slopos login:
 ```
 
 Type `user`, then press Enter at `Password:` (the first person has none), and
-you get a shell.
+you get a shell. One thing works differently there: a command that needs
+permission (installing a kernel, adding a person) asks at a terminal for your
+password, and with none set it answers `This needs your password, and you
+haven't set one.` Run such commands from the terminal on the desktop, where a
+click allows them, or set a password there first with `users passwd`.
 
 ## 4. Boot the development machine
 

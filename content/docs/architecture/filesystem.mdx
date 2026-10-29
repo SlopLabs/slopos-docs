@@ -33,7 +33,7 @@ disk format is.
 
 | Path | Comes from | Survives a reboot? |
 |------|------------|--------------------|
-| `/` | The root disk (or memory, see [below](#where-the-root-comes-from)) | Yes, on a disk |
+| `/` | The root disk (or memory, see [below](#how-the-root-is-chosen)) | Yes, on a disk |
 | `/bin`, `/sbin`, `/lib`, `/usr/bin`, `/usr/share`, `/etc/ssl` | The base, read-only | Changes only when a new base is installed |
 | `/etc`, `/var`, `/root`, `/home`, `/src`, `/usr/local` | The root disk | Yes |
 | `/opt/<name>` | An installed extension's image, read-only | Shown again at every boot while the extension is enabled |
@@ -56,34 +56,28 @@ system services such as `/run/privd` and `/run/init`, the session table in
 
 ## Why the system files are read-only
 
-A machine's state falls into two kinds. One is the operating system itself:
-its programs, its libraries, the certificates it trusts. The other is
-everything the machine did since it was installed: your configuration, your
-files, your builds. On most systems both kinds live on one writable disk, and
-that causes familiar problems. An update that dies halfway leaves a mix of
-old and new programs that may not work together. A program with enough
-privilege, or a bug in one, can overwrite a system binary. And it is hard to
-say what "this version of the system" even is, because every machine's copy
-has drifted.
-
-SlopOS keeps the two apart. The system's programs and libraries form the
-*base*, an archive (a `newc` cpio, the format Linux uses for an initramfs)
-kept on the disk's boot partition next to the kernels. The boot loader loads
-it into memory with the kernel, and the kernel serves the base directories
-straight out of that archive. Nothing in them can be written, renamed or
-deleted, nothing can be mounted on top of them, and they can't be unmounted.
-The directories that lead to them (`/usr`, `/etc`) can't be renamed or
-removed either, so no one can move `/usr/bin` aside and put a different one
-in its place.
+On most systems the operating system's programs share one writable disk with
+everything the machine has done since it was installed, so an update that
+dies halfway leaves a mix of old and new programs, and a program with enough
+privilege, or a bug in one, can overwrite a system binary. SlopOS keeps the
+two apart. The system's programs and libraries form the *base*, an archive
+(a `newc` cpio, the format Linux uses for an initramfs) kept on the disk's
+boot partition next to the kernels. The boot loader loads it into memory with
+the kernel, and the kernel serves the base directories straight out of that
+archive. Nothing in them can be written, renamed or deleted, nothing can be
+mounted on top of them, and they can't be unmounted. The directories that
+lead to them (`/usr`, `/etc`) can't be renamed or removed either, so no one
+can move `/usr/bin` aside and put a different one in its place.
 
 So updating the system means installing a new base, not editing files in
 `/bin`. The whole userland changes at once, the previous base stays on the
 boot partition in case the new one doesn't work, and your files on the disk
 are untouched. A new base can even take over while the system runs: the
 kernel moves every base directory to it in one step, and a program that
-already had a file open keeps reading the version it opened. [Base system](/docs/architecture/base) explains
-the base, its versions and how the kernel picks one at boot, and
-[Updating SlopOS](/docs/self-hosting/updating) shows the commands.
+already had a file open keeps reading the version it opened.
+[Base system](/docs/architecture/base) explains the base, its versions and
+how the kernel picks one at boot, and [Updating SlopOS](/docs/self-hosting/updating)
+shows the commands.
 
 The split also matters for security. When a program asks the privilege
 broker, privd, to do something on its behalf, privd decides partly by *which
@@ -97,8 +91,8 @@ how privd uses it.
 
 A few directories on the root disk hold records the system trusts: `/etc`
 holds the user database, and `/var/lib/slopos` holds the accounts record,
-the installed extensions and their keys, and who owns the first person's
-directories. Sealing the files (see [below](#sealed-files)) stops anyone
+the installed extensions with the keys trusted to sign them, and the record
+of which directories the first person owns. Sealing the files (see [below](#sealed-files)) stops anyone
 rewriting them, but a program allowed to mount disks could still cover the
 whole directory with another disk that holds different records, and a
 program allowed to bypass permissions could rename the directory aside and
@@ -135,7 +129,7 @@ People get the files they make, and the system's directories belong to user
 programs hold it. [Users and file permissions](/docs/architecture/users)
 explains accounts, who owns which part of the root, and how the checks work.
 
-## Where the root comes from
+## How the root is chosen
 
 When the kernel starts it has to decide what `/` is. Normally it is a disk,
 mounted read-write: an installed machine names its root partition, and

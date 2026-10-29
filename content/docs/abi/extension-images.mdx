@@ -186,7 +186,7 @@ log, state and runtime directories and runs its actions.
 | `caps <capability>...` | What the mechanism holds, among those privd can hand out. May list none. Once | Yes | |
 | `cwd` | The mechanism runs in the requester's directory instead of `/` | No | |
 | `exclusive` or `exclusive <group>` | One mechanism of the group runs at a time. The group is the action's own name, or `ext.<name>.<group>` | No | |
-| `keep <seconds>` | An answer is kept for 1 to 900 seconds for the same requester, command line and directory | No | |
+| `keep <seconds>` | An answer is kept for 1 to 900 seconds, as privd keeps one | No | |
 | `allow admin` / `admin confirm` / `admin password` | Who may ask, and at what level; see below. Repeats, each principal once | At least one | |
 | `allow user` / `user alone` / `user confirm` / `user password` | | | |
 | `allow paired` | | | |
@@ -196,8 +196,9 @@ log, state and runtime directories and runs its actions.
 | `verb "<text>"` | The allowing button's word, one of privd's list (`Allow`, `Install`, `Run`, `Send`, `Start`, `Trust`, `Turn on`...) | No | `Allow` |
 | `destructive` | Fills the allowing button with the danger colour | No | |
 
-`describe` and `detail` may not name a capability or the policy's own words
-(requester, mechanism, principal, privd, slot, base, sealed, uid). The
+`describe` and `detail` follow the desktop's words, and may not name a
+capability or the policy's own words (requester, mechanism, principal,
+privd, slot, base, sealed, uid). The
 principals and levels are privd's ([privd actions](/docs/abi/privd-actions)
 has the exact rules), with these differences for an extension:
 
@@ -281,7 +282,7 @@ installed and at every activation:
 | Dynamically linked | Every executable and shared object |
 | Interpreter `/lib/ld-slopos.so.1` | Every program: every executable, and every ELF file outside `/lib` |
 | Needs `libc.so` | Every program |
-| Each needed library is `libc.so` or a shared object at `/lib/<soname>` in the image, reached directly or through up to 8 symlinks | Every executable and shared object |
+| Each library it needs is `libc.so`, or a shared object found in the image at `/lib/` followed by the name it needs, directly or through up to 8 symlinks | Every executable and shared object |
 | Every undefined symbol is exported by `libc.so` or a library it needs, directly or not | Every executable and shared object |
 | At most 64 needed libraries, and a closure of at most 256 | Every executable and shared object |
 | At most 1 GiB | Every ELF file |
@@ -316,7 +317,7 @@ which refuses one containing a `syscall` instruction.
 | Working directory | `/`, or the requester's directory with `cwd` |
 | `argv` | The program's file name, then the requester's arguments |
 | Environment | `PATH=/bin:/sbin:/opt/<name>/bin`, `LANG=C.UTF-8`, `PRIV_ACTION` (the action's name) and `PRIV_UID` (the requester's uid) |
-| fd 0, 1 and 2 | The requester's |
+| fd 0, 1 and 2 | What the requester passed, or the pipes and terminal privd relays them through |
 
 ## Grant line
 

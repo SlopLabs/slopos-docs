@@ -199,7 +199,7 @@ Otherwise it stays installed, and the next boot of a kernel that serves it
 takes it. The last line of the output says which:
 
 ```text
-base installed: interface 13, build tag -; slopos-a's kernel serves base interfaces 10-12, so only a boot of one that serves 13 takes it
+base installed: interface <N+1>, build tag -; slopos-a's kernel serves base interfaces <min>-<N>, so only a boot of one that serves <N+1> takes it
 ```
 
 That is the case where a base needs a newer kernel. [Below](#a-base-that-needs-a-newer-kernel)
@@ -231,9 +231,9 @@ A base is not tried once and committed the way a kernel is. If the new base
 passes every check, installs and then misbehaves, it stays the current base
 for every slot until you roll it back. And the two files are each written
 safely, but not as a pair: if the power goes between the two writes, both
-files hold the same image. `bootctl` writes them in the order that leaves the
-default kernel a base it can run in that case, but you may lose the second
-base.
+files hold the same image, and one of the two bases is gone. `bootctl` writes
+them in the order that leaves the default kernel a base it can run in that
+case.
 
 ## Updating the kernel
 
@@ -314,9 +314,8 @@ panics prints its report and halts. With `panic=reboot` on the kernel command
 line it resets the machine instead, which lands on the old default with no
 one at the keyboard. A system the installer put on a disk boots with
 `panic=reboot` unless you told the installer otherwise; the development
-machine's boot disk doesn't, so after a panic
-there you restart QEMU yourself. [Boot options](/docs/abi/boot-options)
-describes the option.
+machine's boot disk doesn't, so after a panic there you restart QEMU
+yourself. [Boot options](/docs/abi/boot-options) describes the option.
 
 A kernel that panics also leaves a *crash record* on the crash partition:
 its report and the end of the kernel log. At the next boot, the fallback
@@ -353,9 +352,8 @@ there before the kernel that needs it.
 4. `bootctl commit` keeps the new kernel.
 
 If the new kernel fails at step 3, the next boot lands on the old default
-kernel. It doesn't serve
-the new base, so it boots the previous one, and the machine comes back
-exactly as it was before step 1.
+kernel. It doesn't serve the new base, so it boots the previous one, and the
+machine comes back exactly as it was before step 1.
 
 ## How the boot loader is told what to boot
 
@@ -376,7 +374,8 @@ set of them, and `bootctl` uses these, which Limine implements:
 
 `oneshot` writes the timeout before the entry, and puts the old timeout back
 if the entry can't be written: a timeout left behind alone only skips one
-menu, but an entry left behind without it would wait at the menu. Both
+menu, while an entry left behind alone would boot through the menu, with
+nobody there to answer it. Both
 variables are stored non-volatile, so they survive the reset.
 
 Choosing the default through a variable rather than by editing the menu file
@@ -461,9 +460,10 @@ until you quit QEMU. `just boot` reminds you of the loop as it starts:
 boot: in the guest: cd /src/slopos; git pull; scripts/selfhost.sh install; for a kernel, scripts/selfhost.sh install-kernel; bootctl reboot
 ```
 
-To keep what the guest built for longer than one QEMU session, copy it off the
-root with `just export-file`
-([Development machine](/docs/self-hosting/development-machine)).
+What the guest built stays on the persistent root, so after the next
+`just boot` you can install it again, and `just export-file` copies a file,
+such as a kernel the guest built, off the root to the host once the guest has
+shut down ([Development machine](/docs/self-hosting/development-machine)).
 
 ## How it is tested
 

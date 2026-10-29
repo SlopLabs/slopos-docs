@@ -85,13 +85,13 @@ boots from its own boot slots.
 | Built-in keyboard (i8042) | Works | Found through ACPI |
 | Touchpad (I²C-HID) | Works | Found through ACPI, over the I²C controller |
 | NVMe disk (Kingston NV3) | Works | SlopOS installed on it, booted from it and built itself on it |
-| Wired network (RTL8168h) | Works with limits | Brought up without the PHY patch firmware; took a DHCP lease, and every remote-control session and measurement ran over it. git over ssh to another machine and cargo fetching from crates.io were not tried |
+| Wired network (RTL8168h) | Works with limits | Brought up without the PHY patch firmware; took a DHCP lease, and the measurements below were taken over it through the remote control. git over ssh to another machine and cargo fetching from crates.io were not tried |
 | USB controllers (PCH `8086:51ed`, Thunderbolt `8086:a71e`) | Works | Both taken from the firmware and run on MSI, the internal devices enumerated |
 | USB keyboard and mouse | Works | A Logitech receiver's mouse (`046d:c548`) and a NuPhy Air75 V3 keyboard's receiver (`19f5:2620`) |
 | USB sticks and USB Ethernet | Not tested | Tested in QEMU only |
 | Crash record on the NVMe disk | Not tested | Tested in QEMU only |
 | Wi-Fi (Intel CNVi), Bluetooth, audio | No driver | |
-| Firmware | Works | Reset and power-off through UEFI; boot entries and boot-slot variables written by the installer and `bootctl` |
+| Firmware | Works | Reset and power-off through UEFI; `bootctl` tried a kernel in the spare boot slot and made it the default |
 
 A full build of the system on the installed laptop (`scripts/selfhost.sh build
 release`, kernel, programs and base, from an empty build directory, of commit

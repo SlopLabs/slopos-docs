@@ -128,8 +128,8 @@ KTAP	# elapsed_ms=14238 pass=2391 fail=1 skip=0 over_time=14
   `=== KERNEL ABORT ===` and a reason line, which the runner records as a
   kernel abort. The other CPUs may go on producing results, so the runner
   keeps reading. A fatal panic prints `=== KERNEL PANIC ===` and halts; the
-  phase then never prints its footer, and the runner reports the output as
-  cut short.
+  phase then has fewer results than its plan, which the runner reports as
+  output cut short.
 - With `tests.shutdown=on`, the kernel then writes `0` (all passed) or `1`
   (something failed) to QEMU's `isa-debug-exit` device. QEMU exits with
   `(value << 1) | 1`, so the runner does not rely on that status alone: it also

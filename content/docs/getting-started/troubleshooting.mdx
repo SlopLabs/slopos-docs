@@ -148,6 +148,21 @@ fails on every boot, which is a different thing: those directories belong to
 the read-only base. Software you add goes under `/usr/local` or `~/.local`
 ([Installed software](/docs/architecture/software)).
 
+## A command says it needs your password
+
+```text
+This needs your password, and you haven't set one.
+```
+
+Commands that change the system (`bootctl`, `scripts/selfhost.sh install`,
+`users add` and the others) ask the person at the machine first. At the
+desktop that is a dialog, which the first person, who has no password, answers
+with a click. At a text console, such as the serial console `VIDEO=0` gives
+you, the only answer is a password, so a person without one is refused. Run
+the command from the terminal on the desktop instead, or set a password there
+with `users passwd` and then use it at the console. [Privileged
+actions](/docs/architecture/privd) explains who is asked and how.
+
 ## Boot keeps restarting at the Wheel of Fate
 
 This is the Wheel of Fate doing its job: an even number restarts the machine

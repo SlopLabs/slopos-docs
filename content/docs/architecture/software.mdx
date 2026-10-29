@@ -15,11 +15,11 @@ it needs a reboot.
 
 Two promises follow from where trees live. A program in `/usr/local` or
 `~/.local` can never take the place of a system tool you run by name,
-because the system's directories are searched first. And a library you put there is never loaded
-into a program that holds more power than you, because the loader does not
-look there for such a program. What SlopOS does not promise is a package
-manager: there are no dependencies, versions or repositories, only trees and
-the manifests that record them.
+because the system's directories are searched first. And a library you put
+there is never loaded into a program that holds more power than you, because
+the loader does not look there for such a program. What SlopOS does not
+promise is a package manager: there are no dependencies, versions or
+repositories, only trees and the manifests that record them.
 
 The page walks through how a tree is installed and recorded, who may write
 `/usr/local` and how that changes when a second person joins the machine,
@@ -28,12 +28,12 @@ found.
 
 ## Where it comes from
 
-The split itself is FreeBSD's: one base system maintained with the kernel,
-and everything else under `/usr/local`, which the Filesystem Hierarchy
-Standard describes as the administrator's own tree, safe from being
-overwritten when the system is updated. `~/.local`, with programs in
-`~/.local/bin`, is the per-user counterpart the XDG Base Directory
-specification and the UAPI group's file hierarchy name. The loader's rule
+The split itself is FreeBSD's: the system's own programs in their
+directories, and everything its package tools install under `/usr/local`,
+which the Filesystem Hierarchy Standard describes as the administrator's own
+tree, safe from being overwritten when the system is updated. `~/.local`,
+with programs in `~/.local/bin`, is the per-user counterpart the XDG Base
+Directory specification and the UAPI group's file hierarchy name. The loader's rule
 is glibc's secure-execution mode carried one step further: glibc's loader
 ignores `LD_LIBRARY_PATH` for a program the kernel marks `AT_SECURE`, and
 SlopOS's also skips the directories people can write.
@@ -139,8 +139,8 @@ Every root records which of the first person's trees they hold, in
 [Users and file permissions](/docs/architecture/users)). On a machine with
 one person, the record says `/usr/local` is theirs: they can copy programs
 there, and init hands them the apps' manifest so `tree-install apps DIR
-/usr/local` works as them. The manifests directory itself is uid 0's, so a tree of a new
-name goes into their own `~/.local` instead.
+/usr/local` works as them. The directory of manifests itself is uid 0's, so
+a tree of a new name goes into their own `~/.local` instead.
 
 ### When a second person joins
 
@@ -196,8 +196,7 @@ tree into `/var/lib/slopos/tree-install`, a directory only uid 0 enters:
 Then it installs from that copy by the rules above, and the result is uid
 0's. Because the copy and the install both count against one process's disk
 quota (256 MiB by default), a tree installed through privd can be at most
-half of that. One install
-runs at a time.
+half of that. One install runs at a time.
 
 ## The apps outside the base
 

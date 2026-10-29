@@ -1,53 +1,58 @@
 ---
 title: "Known limitations"
-description: "What SlopOS does not do yet, and which of those gaps we plan to close."
+description: "What SlopOS does not do yet, and which of those gaps are recorded as defects to fix."
 ---
 
+As of 2026-10-29, SlopOS commit `fa0f8f79`.
+
 SlopOS is a research system. Everything is tested in QEMU, and one laptop runs
-the live ISO. This page lists what is missing, what each gap means for you,
-and whether we plan to close it. **Planned** links to the
-[Roadmap](/docs/status/roadmap); **Not planned** means no plan covers it today.
+an installed system. This page lists what is missing, what each gap means for
+you, and its status:
+
+- **Open defect**: a bug recorded in the source tree's `plans/KNOWN_ISSUES.md`,
+  which says where in the code it lives. It is meant to be fixed, but no fix is
+  scheduled.
+- **No plan**: a gap nothing in the tree plans to close.
+
+The [Roadmap](/docs/status/roadmap) says which plans are open; today the only
+one is about CI.
 
 ## Hardware
 
 - **Only one real machine has been tried.** Other PCs may boot, but nothing
-  outside QEMU and the tested laptop has been run, and support for other
-  machines' hardware is outside the current plans. Not planned. See
-  [Hardware](/docs/status/hardware-requirements).
-- **No installer.** The disk layout SlopOS boots from can already sit beside
-  another OS on one disk (it shares the EFI system partition and keeps its own
-  partitions), but only the host can build such a disk. Inside SlopOS there is
-  no tool to create a filesystem, check one, resize one or write a partition
-  table, so you cannot install SlopOS onto a real disk yet. Planned (bare metal).
-- **A panic on real hardware leaves no record.** With the `panic=reboot` boot
-  option the machine resets at once, and on a laptop with no serial port the
-  screen was the only copy of the message. The disk layout already reserves a
-  small partition for a crash record, but nothing writes to it yet. Planned
-  (bare metal).
-- **No network on real hardware.** The only network driver is for QEMU's
-  virtio card; the laptop's Realtek wired card has no driver. Planned (bare
-  metal).
-- **No USB.** There is no USB controller driver, so USB keyboards, mice, sticks
-  and network adapters do nothing once the kernel runs. Input on the laptop
-  comes from the built-in keyboard and touchpad. Planned (USB).
-- **No power management.** The kernel does not tune CPU frequency and does not
-  tell the laptop's fast cores from its efficient ones, so builds may run below
-  the CPU's full speed. Planned as measurement first (bare metal).
-- **No Wi-Fi, Bluetooth, audio, GPU acceleration or suspend.** Not planned.
+  outside QEMU and the tested laptop has been run, and the laptop has not been
+  rerun since 2026-10-11. See [Hardware](/docs/status/hardware-requirements).
+  No plan.
+- **Few device drivers.** SlopOS drives NVMe disks, USB sticks, the Realtek
+  RTL8168h and RTL8168M wired cards, USB Ethernet adapters, Intel integrated
+  graphics of the Tiger Lake, Alder Lake and Raptor Lake families, and USB,
+  PS/2 and I²C-HID input. There is no
+  driver for SATA disks, Wi-Fi, Bluetooth or audio, no GPU acceleration and no
+  suspend. No plan.
+- **USB through xHCI only, and three kinds of device.** Older USB controllers
+  have no driver, and only keyboards and pointers, Bulk-Only storage and
+  CDC Ethernet adapters bind; anything else is enumerated and left alone
+  ([USB](/docs/architecture/usb)). No plan.
+- **USB rough edges.** An unresponsive xHCI controller holds the boot for up
+  to 11 seconds; a device that keeps reconnecting logs every attach and
+  detach; and a keyboard pulled out while another still holds Shift reports
+  Shift released. Open defect.
+- **PCI devices are found once, at boot.** A USB device can come and go, but a
+  PCI card is probed only while the kernel boots, and drivers cannot be
+  unloaded ([Drivers](/docs/architecture/drivers)). No plan.
+- **The CPU's power limit is not read.** The kernel reads no RAPL register, so
+  a build held back by the package's power limit shows only as the throttle
+  bit in `cpufreq run` ([CPU frequency](/docs/architecture/cpu-frequency)).
+  No plan.
 
 ## Kernel
 
 - **Partial system call coverage.** System calls use Linux's numbers, but many
   are missing; a program that calls one gets `ENOSYS`. Coverage grows when a
-  port needs it. Not planned as a goal in itself.
-- **One user.** Every process runs as user 0. What a program may do comes from
-  the permissions it was started with, not from who runs it
-  ([Permissions](/docs/architecture/authority)). Not planned.
-- **Devices are found once, at boot.** Drivers cannot be unloaded, and a device
-  plugged in later is not noticed. Not planned in the mid term
-  ([Drivers](/docs/architecture/drivers)).
+  port needs it ([System calls](/docs/architecture/syscalls)). No plan as a
+  goal in itself.
 - **SlopRing covers less than io_uring.** It borrows the idea but does not aim
-  to match Linux's feature set ([SlopRing](/docs/abi/slopring)). Not planned.
+  to match Linux's feature set ([SlopRing](/docs/abi/slopring)). No plan.
 - **Proofs cover part of the trusted core.** Machine-checked proofs cover
   selected logic; some lock-free code in SlopRing and the TCP zero-copy path is
   reviewed by hand instead ([Proofs](/docs/verification/verus-status)).
@@ -55,42 +60,107 @@ and whether we plan to close it. **Planned** links to the
   inaccessible) while programs run, and relies on the processor's protection
   bits rather than unmapping itself, which is the defence Linux added against
   Meltdown ([User mode and kernel mode](/docs/architecture/privilege-separation)).
-  Not planned.
+  No plan.
+- **Interface edge cases.** `stat` reports the same device number for every
+  file, so a program cannot tell two filesystems apart by it; a pidfd turns
+  readable when the process's main thread exits even if other threads still
+  run; and a thread that survives another's `execve` runs on in the new
+  program. Open defect.
+
+## Memory and scheduling
+
+- **A link larger than an eighth of memory fails.** A page of a file a process
+  has mapped stays pinned until it is unmapped, and one process may pin at most
+  an eighth of memory, so a linker mapping more than that dies on a refused
+  fault, and the filesystem it was writing turns read-only. The debug tests
+  kernel's link does at 4 GB, which is why the development machine and the
+  self-hosting checks run at 6 GB ([Memory](/docs/architecture/memory)). Open
+  defect.
+- **An idle CPU's page zeroing can fault.** Under heavy host load an idle CPU
+  can take an invalid frame from its per-CPU cache and fault while zeroing it.
+  The cause is not found, and no path a program drives is known to reach it.
+  Open defect.
 - **Some scheduler waits cost latency.** A CPU can briefly spin waiting for
-  another to finish switching a task out, ending a task checks every CPU's
-  queue, and the memory of finished tasks is freed only when a CPU goes idle.
-  None of these is a correctness problem, and none is scheduled work.
+  another to finish switching a task out, ending a task takes every CPU's
+  queue lock in turn, the memory of finished tasks is freed only when a CPU
+  goes idle, and during boot the scheduler is turned off for every CPU while
+  the other CPUs already run programs. None of these is a correctness problem
+  ([Scheduling and waiting](/docs/architecture/scheduler-wait-protocol)).
+  Open defect.
 
 ## Storage
 
 - **ext4 as SlopOS makes it.** SlopOS formats every volume with one set of ext4
   features. It also reads ext2 and ext3, but an ext4 volume made by another
-  system with other features is not supported. Mounting btrfs, XFS or other
-  filesystems is future work with no plan yet.
-- **Self-hosted test builds need 8 GB.** At the development machine's default
-  4 GB, linking the test kernel hits a per-process memory limit and the link
-  fails. Boot with `DEV_QEMU_MEM=8G` for those builds. Open defect.
+  system with other features is not supported, and a volume past 16 TiB is
+  refused ([Filesystem](/docs/architecture/filesystem)). No plan.
+- **No other filesystems.** A FAT or exFAT stick, btrfs, XFS or NTFS does not
+  mount. The boot partition is FAT32, but only SlopOS's own tools write it,
+  through the raw disk. No plan.
+- **Four ext4 volumes at once.** The kernel mounts at most four ext4 volumes,
+  the root and an install medium's payload among them; an extension's image
+  does not count. No plan.
 
 ## Network
 
-- **IPv4 only.** There is no IPv6. Not planned.
+- **IPv4 only.** There is no IPv6. No plan.
 - **Not hardened for the open Internet.** The stack carries real TCP, UDP, DNS
   and TLS 1.3 traffic, but it is a small stack and has not been through what an
   Internet-facing one has ([Networking](/docs/architecture/networking)).
-- **No SSH client.** Git inside SlopOS reaches the host over the `git://`
-  protocol through QEMU's user networking, or GitHub over HTTPS. Planned
-  (bare metal).
+- **No incoming remote login.** OpenSSH's `ssh` comes with the toolchain, but
+  nothing runs its server. A machine is driven remotely only through the
+  paired agent, which dials out to your host
+  ([Remote control](/docs/self-hosting/remote-control)). No plan.
+
+## Installing and updating
+
+- **An install from a 512 MiB live system fails.** Booted as `just boot-live`
+  boots it, with 512 MiB of memory, the installer writes both kernel slots and
+  the base and then dies (`SIGABRT`, after the kernel logs
+  `process_vm_mmap: Failed to insert VMA`). Whether more memory avoids it is
+  not known; `just ui-shots` and `just test-installer` install at 2 GB and
+  6 GB ([Installing SlopOS](/docs/self-hosting/installing)). Open defect.
+- **A new base gets no trial boot.** A kernel goes into the spare slot and is
+  tried once before it becomes the default, but a base that passes its checks
+  becomes current for every slot at once, and stays current when it then fails
+  in userland, until the install medium's rescue shell rolls it back or a
+  reinstall writes the medium's ([Updating SlopOS](/docs/self-hosting/updating)).
+  Open defect.
+- **Another loader can move SlopOS's default.** Which slot boots by default is
+  a firmware variable every loader on the machine can write. Another system's
+  loader that deletes it makes Limine boot its first entry, and one that sets
+  it to a name Limine does not offer makes `bootctl install` refuse until
+  `bootctl set-default` names a slot. Open defect.
+- **Installing for everyone through privd is bounded.** A tree installed into
+  `/usr/local` for everyone is copied before it is installed, both counting
+  against one disk quota, so it can be at most half of that quota; and it must
+  be readable by everyone, so it cannot come from inside a home directory
+  closed to others ([Installed software](/docs/architecture/software)). Open
+  defect.
+
+## Desktop and people
+
+- **The clock shows UTC.** There are no time zones. No plan.
+- **A typed password lingers in memory.** A password typed into a dialog or
+  relayed to a program stays in kernel pipe buffers and the compositor's
+  memory until they are reused; no other program can read it there
+  ([Privileged actions](/docs/architecture/privd)). Open defect.
+- **Console input after a signal key is lost.** Characters typed in the same
+  burst after one that sends a signal, such as Ctrl+C, are dropped. Open
+  defect.
 
 ## Toolchain
 
 - **The compilers are built on the host.** LLVM and rustc are cross-built with
-  `just toolchain`; SlopOS does not rebuild its own compiler. A plan exists but
-  is not committed to ([Toolchain](/docs/self-hosting/toolchain)).
+  `just toolchain`; SlopOS does not rebuild its own compiler, and no plan
+  covers it ([Toolchain](/docs/self-hosting/toolchain)).
 - **Not a tier 2 Rust target.** Rust ships no prebuilt standard library for
-  SlopOS, so every build compiles it from source with `-Zbuild-std`.
+  SlopOS, so every build compiles it from source with `-Zbuild-std`. No plan.
 
-## Project
+## Where the full list lives
 
-- **Plans are proposals.** The plans in the source tree describe work that has
-  not landed. Only what these docs describe as working is part of the system;
-  the [Roadmap](/docs/status/roadmap) summarises the rest.
+`plans/KNOWN_ISSUES.md` in the source tree holds every open defect, with the
+files involved, including the low-severity ones this page leaves out (rough
+edges in USB and extension handling, privd's handling of signals and input,
+and peer identities that outlive what they describe). It is working notes:
+check what it says against the code before relying on it.

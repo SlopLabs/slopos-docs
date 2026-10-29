@@ -203,15 +203,16 @@ points `<NAME>_URL` (`ZLIB_URL` and so on) at a local copy.
 
 ### Libraries and programs are built differently
 
-Everything is built as shared libraries and linked with `-z defs`, which
-makes the link fail on any function slibc doesn't provide. Without it, a gap
+Every library is built shared, and everything is linked with `-z defs`,
+which makes the link fail on any function slibc doesn't provide. Without it, a gap
 in the C library would only show up on SlopOS, when the library first loads.
 
 A library finds the libraries it needs beside itself (its run path is
-`$ORIGIN`), so it works wherever it is copied. A program is different: git
-finds its helper programs, templates and configuration through the directory
-it was configured for, so programs are built for `/usr/local`, where the
-toolchain lands in the guest. A recipe that builds only programs installs no
+`$ORIGIN`), so it works wherever it is copied. A program can't always work
+that way: git finds its helper programs, templates and configuration through
+the directory it was configured for. So programs built with Meson or
+`./configure` are configured for `/usr/local`, where the toolchain lands in
+the guest, and look for their libraries in its `lib/`. A recipe that builds only programs installs no
 headers or libraries, so e2fsprogs's internal libraries reach neither another
 recipe nor the sysroot that programs are built against.
 

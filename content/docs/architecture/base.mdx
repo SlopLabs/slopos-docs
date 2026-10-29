@@ -111,8 +111,8 @@ installed and why that keeps them working across base updates.
 
 ## Where the base lives on disk
 
-A SlopOS disk has a boot partition of its own, a small FAT32 partition beside
-the firmware's EFI system partition. It holds a kernel in each of two *slots*,
+A SlopOS disk has a boot partition of its own, a FAT32 partition beside the
+firmware's EFI system partition. It holds a kernel in each of two *slots*,
 and beside the slots, the two bases:
 
 <BootPartition />
@@ -147,8 +147,9 @@ number.
 
 - **A base names the one interface it was built against**, in
   `/usr/share/slopos/base-interface`.
-- **A kernel serves a range of interfaces**, from a minimum to the newest.
-  It states the range in two places: in `sys_info`, which the shell's `info`
+- **A kernel serves a range of interfaces**, from a minimum to the newest
+  (`BASE_INTERFACE_MIN` and `BASE_INTERFACE` in the source it was built
+  from). It states the range in two places: in `sys_info`, which the shell's `info`
   command prints as `Base interfaces:`, and in an ELF note in the kernel file
   itself (the section `.note.slopos.base-interface`), so tools can read the
   range from a kernel without booting it.
@@ -171,20 +172,20 @@ the interface number of both bases and picks one:
 2. Otherwise previous, if the kernel serves that.
 3. Otherwise neither, and the boot stops.
 
-Say the default kernel serves interfaces 10 through 12, the running base was
-built against 12, and you install a base built against 13. The running base
+Say the default kernel serves interfaces up to *N*, the running base was
+built against *N*, and you install a base built against *N*+1. The running base
 moves to `previous.img` and the new one becomes `current.img`
 ([Updating SlopOS](/docs/self-hosting/updating) has the rules). At the next
-boot the default kernel finds current at 13, which it doesn't serve, and
+boot the default kernel finds current at *N*+1, which it doesn't serve, and
 boots previous instead, so the machine comes up exactly as it was. The boot
 log says which one it took:
 
 ```text
-BOOT: base previous (<n> bytes), interface 12
-BOOT: base current (interface 13) not booted; its memory goes to the allocator
+BOOT: base previous (<n> bytes), interface <N>
+BOOT: base current (interface <N+1>) not booted; its memory goes to the allocator
 ```
 
-A kernel built from the same tree as the new base serves 13, so once you
+A kernel built from the same tree as the new base serves *N*+1, so once you
 install and boot one, it boots current.
 
 The base the kernel didn't choose is loaded in memory but never used, so its
@@ -206,11 +207,12 @@ to boot next serving neither.
 
 ## How the base appears in the file tree
 
-The kernel doesn't copy the base anywhere. It builds an index of the archive's
-paths at boot and serves each file straight from the module in memory. Then
-it mounts the six base directories over whatever the root turned out to be
-(a disk, or a filesystem in memory; [Filesystem](/docs/architecture/filesystem#how-the-root-is-chosen)
-explains how it chooses):
+The kernel serves the base without copying it: it builds an index of the
+archive's paths at boot and serves each file straight from the module in
+memory. Then it mounts the six base directories over whatever the root turned
+out to be, a disk or a filesystem in memory
+([Filesystem](/docs/architecture/filesystem#how-the-root-is-chosen) explains
+how it chooses):
 
 - Each mount is read-only, and every file in it is *sealed* for good: it
   reports the immutable flag, and nothing can clear it.
@@ -225,9 +227,9 @@ explains how it chooses):
 Everything else under `/` is the root disk's: `/etc` (apart from
 `/etc/ssl`), `/var`, `/home`, `/src` and `/usr/local` hold what the machine
 wrote and survive base updates untouched. When there is no disk and the root
-lives in memory, the kernel first unpacks the archive into it, which gives
-the empty root its skeleton of directories, and then mounts the base
-directories the same way.
+lives in memory, the kernel first unpacks a copy of the archive into it,
+which gives the empty root its skeleton of directories, and then mounts the
+base directories from the module as it would over a disk.
 
 ## How a base is checked before it is used
 

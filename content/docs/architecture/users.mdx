@@ -279,8 +279,9 @@ password on standard input, one per line, and answers with its exit status
 alone: 0 for the right password, 1 for anything else (a wrong password, a
 person with no password, nobody of that name), 2 when it can't tell. Only uid 0
 may read `/etc/shadow`, so `authcheck` answers only when it runs as uid 0, as
-privd and the accounts programs run it, and whoever asks it never sees a hash. Passwords always travel on a pipe, never on a command
-line, and a terminal asking for one turns its echo off first. How the login
+privd and the accounts programs run it, and whoever asks it never sees a hash.
+A password never appears on a command line: programs hand it over on a pipe,
+or read it from a terminal whose echo they turned off first. How the login
 screen and privd slow down repeated wrong passwords is on
 [Sessions and login](/docs/architecture/sessions).
 
@@ -335,8 +336,8 @@ next boot writes it.
 - **Read people through the C library.** `getpwnam` and friends already ignore
   a database that isn't sealed; parsing `/etc/passwd` yourself doesn't.
 - **The base's tools are thin here.** There is no `chmod`, `chown` or `id`
-  command yet, and `ls -l` doesn't show owners. The system calls behave as on
-  Linux; `whoami` and `users` tell you who is who.
+  command yet, and neither `ls -l` nor `stat` shows owners. The system calls
+  behave as on Linux, and `whoami` and `users` tell you who is who.
 
 ## How it is tested
 
@@ -346,9 +347,9 @@ bit away: `/etc` refusing a new name, a file closed to others, the sticky bit,
 links in shared directories, terminal and socket ownership, uid 0 meeting the
 mode bits, and the hand-over of `/usr/local`. Run as the person instead, it
 holds the root to the ownership map. Kernel tests check the permission checks,
-`chmod` and `chown`, the signal rule's uid half and the id calls, and host tests
-check the credential arithmetic. Another userland test adds, renames, promotes and
-removes people, sets and checks passwords (including one typed at a terminal,
+`chmod` and `chown`, the signal rule's uid half and the id calls, and host
+tests check the credential arithmetic. Another userland test adds, renames,
+promotes and removes people, sets and checks passwords (including one typed at a terminal,
 which must never be echoed), and checks that `DacOverride` alone can't touch
 the record or the database. After the suite, the host checks the disk image it
 wrote against the ownership map (`check_fs_image.sh --map`), and the Argon2id

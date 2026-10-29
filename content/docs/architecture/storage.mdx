@@ -50,7 +50,7 @@ NVMe driver sets up one queue for management commands (asking the drive what
 it is, shutting it down), one pair for reads and writes that every
 namespace on the drive shares, and a second, small pair that only a kernel
 panic uses, so the panic can write its
-[crash record](/docs/development/diagnostics) without waiting on anything.
+[crash record](/docs/development/diagnostics#the-kernel-panicked) without waiting on anything.
 A single drive can present several independent disks, called *namespaces*;
 most have one. Some cheaper drives have no memory of their own and ask to
 borrow some of the computer's, which the driver grants. At power off and

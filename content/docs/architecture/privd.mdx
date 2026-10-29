@@ -5,7 +5,7 @@ description: "How a program that holds no special power gets a privileged job do
 
 import { PrivdRequest } from '@/components/diagrams/privd-request';
 
-Nothing a person starts on SlopOS can restart the computer, write a boot
+Nothing a person starts on SlopOS can, by itself, restart the computer, write a boot
 slot, install software for everyone or change another account. When a program
 needs one of those jobs done, it asks `privd`, the privilege broker. privd
 runs the job, which it calls an *action*, as a fresh program of its own, after
@@ -63,7 +63,7 @@ On SlopOS a process holds a power only if its capability mask holds it, and
 `exec` drops every capability but the universal ones (see
 [Capabilities](/docs/architecture/authority)). Init holds all of them and
 hands each service what it needs; the shell, the terminal and every program a
-person starts hold none. That is the point, but it leaves a question: how does
+person starts hold only the universal ones. That is the point, but it leaves a question: how does
 the person at the keyboard restart the computer?
 
 Making the shell powerful would make everything the shell starts powerful. A
@@ -170,12 +170,12 @@ The kernel attests a program when `exec` or `spawn` loads it: a base program
 when the file, every script of its `#!` chain and its ELF interpreter all come
 from the base, and an extension's program when the file comes from one
 extension's image and everything else from the base or that image. Anything
-else is *other*. A process stops being attested the moment it could run code
-the attestation does not cover: when it maps a file from elsewhere executable,
-makes memory executable with `mprotect`, `exec`s or exits. Once lapsed, the
-attestation never comes back for that program, so privd reads it again before
-it judges, before it asks and before it starts the mechanism, and refuses a
-requester whose program no longer stands:
+else is *other*. A process stops counting as that program the moment it could
+run code the attestation does not cover: when it maps code from anywhere else
+executable, makes memory executable with `mprotect`, `exec`s or exits. The
+socket's record then never answers for it again, so privd reads the program
+once more before it judges, before it asks and before it starts the
+mechanism, and refuses a requester whose program no longer stands:
 
 ```text
 bootctl: Nothing ran, because the app that asked changed after it asked.
@@ -203,12 +203,12 @@ Each `allow` line names a *principal* and, for a person, a *level*:
 | Level | What it takes |
 |---|---|
 | none | Nothing: the request runs unasked. |
-| `confirm` | The person who asked agrees: a click at their own desktop. |
+| `confirm` | The person who asked agrees: a click at their own desktop, their password anywhere else. |
 | `password` | The person who asked types their own password. |
 | `alone` | Nothing while nobody else is logged in, or for an administrator; otherwise an administrator's password. |
 
 privd tries the lines in order and the first that matches decides. When a
-standard user asks for an action whose lines name only `admin`, no line
+standard user asks for an action that allows `admin` but not `user`, no line
 matches them, but an administrator may still answer: the dialog lists the
 administrators who have a password, and one of them types their own. A
 standard user who wants to restart the computer while someone else is logged
@@ -217,7 +217,8 @@ password, the request is refused with
 `This needs an administrator's password, and no administrator has one.`
 
 On a fresh install the only person is an administrator without a password, so
-every action an administrator may run either runs unasked or takes one click.
+at their desktop every action an administrator may run either runs unasked or
+takes one click.
 The levels matter once there are several people. The full rules, including
 what happens with no password, are on
 [privd actions](/docs/abi/privd-actions#how-a-request-is-judged).
@@ -241,6 +242,13 @@ tag its process carries (see [Sessions and login](/docs/architecture/sessions)):
   Password for alice:
   ```
 
+  So a person without a password can allow nothing from a console login,
+  not even a `confirm` action: the first person of a fresh install, who has
+  none, gets `This needs your password, and you haven't set one.` from
+  `bootctl install` there, and from `users passwd` too. Actions that run
+  unasked still run. Running `users passwd` in a terminal on the desktop,
+  where a click answers, sets one.
+
 - **Nowhere else.** A request from a desktop behind another, or from a locked
   one, or from a process in no session is refused with
   `This needs your permission. Unlock your desktop or use a terminal, then try again.`
@@ -259,8 +267,9 @@ policy and *App* names the requester from what no process can write:
 - a base program with an app entry in the base is named by it, so the System
   Monitor asks as *System Monitor*, with its icon;
 - any other base program by its file name, such as *bootctl*;
-- an extension's program as *The* name *extension*, with no icon, so nothing
-  an extension ships can pass for another app;
+- an extension's program by its extension, as *The hello extension* for one
+  named `hello`, with no icon, so nothing an extension ships can pass for
+  another app;
 - anything else, a program from `/usr/local` or a home directory included, as
   *An unidentified app*.
 
@@ -294,8 +303,8 @@ The dialog is built so that nothing but a deliberate answer allows a request:
 - At most eight questions wait, four of them one uid's.
 
 The channel between privd and the compositor is a pair of sockets init makes
-at boot, one per desktop or login screen, and each end checks that init made
-it. No other process can open it, so a question can only come from privd and
+at boot, four of them, one for each desktop or login screen that may run at
+once, and each end checks that init made it. No other process can open it, so a question can only come from privd and
 an answer only from the compositor.
 
 ## Passwords
@@ -317,8 +326,8 @@ same session, started by the same live process (so an answer given to one
 shell covers that shell and what it starts, and nothing else in the session),
 same action, same command line and same directory. An answer an
 administrator's password gave stands only while that administrator could
-still give it. sudo, by comparison, keeps an answer per terminal, and polkit
-per action and requester whatever the other details.
+still give it. sudo, by comparison, keeps an answer per terminal by default,
+and polkit per action and requester whatever the other details.
 
 ## How a mechanism runs
 
@@ -331,20 +340,19 @@ requester:
   action's name) and `PRIV_UID` (the requester's uid), and nothing else.
 - It runs in `/`, or for a `cwd` action in the requester's directory, which
   privd checks still has the path it had when the question was asked.
-- Its standard input, output and error are the requester's. A terminal never
-  crosses over, since the mechanism runs outside the requester's terminal
-  session where the terminal would refuse it: the requester relays output
-  through pipes, and gives a mechanism that reads from a terminal (the
-  installer, `users`, `priv`, the rescue shell) a terminal of its own, which
-  it relays byte for byte.
+- Its standard input, output and error are the descriptors the requester
+  sent. A terminal never crosses over, since the mechanism runs outside the
+  requester's terminal session, where the terminal would refuse it: the
+  requester relays output meant for a terminal through pipes, and gives a
+  mechanism that reads from a terminal (the installer, `users`, `priv`, the
+  rescue shell) a terminal of its own, relayed byte for byte.
 
 A mechanism checks `PRIV_ACTION` when it starts and acts only for that
 action. The requester relays `SIGHUP`, `SIGINT`, `SIGQUIT` and `SIGTERM` to it,
 so Ctrl+C at the terminal reaches it. A signal before the mechanism has
 started withdraws the request instead, and a second signal makes the
-requester stop waiting. A mechanism whose requester goes away keeps running
-to the end, so a half-written boot slot is never left behind by a closed
-window.
+requester stop waiting. A mechanism whose requester goes away is not stopped
+for that: it runs to its end.
 
 The requester exits with the mechanism's status, with 126 when the person
 refused or did not answer, as `pkexec` does, and with 127 when privd refused
@@ -366,8 +374,8 @@ priv -s
 `org.slopos.priv.shell`. Both allow uid 0 and an administrator who confirms,
 and both run *as the requester*: privd starts `/bin/priv` again as the person
 who asked, in their own groups and session, on a terminal of its own when
-started from one, holding the requester ceiling: `Mount`, `NetAdmin`, `ConsoleConfig`, `SysInspect`,
-`Clock` and `DacOverride`. That copy runs the command holding the same, with
+started from one, holding the requester ceiling: `Mount`, `NetAdmin`,
+`ConsoleConfig`, `SysInspect`, `Clock` and `DacOverride`. That copy runs the command holding the same, with
 an environment of its own (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
 `LANG`, `SLOPOS_PRIV` and, on a terminal, `TERM`), and exits as it exits. A
 shell started this way names the power in its banner and starts its prompt
@@ -421,7 +429,7 @@ The System Monitor uses it. When you end a task the kernel refuses to let you
 end, it asks privd only if `endtask` would allow it, and otherwise says why
 not: the task belongs to the system, or holds powers.
 
-## When privd restarts
+## When a new base replaces privd
 
 A new base can change privd's program, its policy or the pairing. When it
 does, init sends privd `SIGTERM`, and privd *drains*: it stops listening,
@@ -430,7 +438,7 @@ refuses every request it reads from then on with
 on screen, and exits once every request it took has finished, so a mechanism
 in the middle of writing a boot slot is never cut off. Init starts the new
 base's privd when the old one exits, or beside it after five seconds. The new
-privd refuses `exclusive` actions while a mechanism its predecessor started
+privd refuses requests for `exclusive` actions while a mechanism its predecessor started
 still runs, since it cannot know which groups that one holds. A requester
 waits up to two seconds for a privd that is restarting, and programs whose
 requests may span a base switch (the paired agent's commands, the
@@ -460,8 +468,8 @@ from outside the base asks as the paired agent.
 - **For anything else that needs power, use `priv`.** It runs a command from
   `/bin`, `/sbin` or another directory only uid 0 can change.
 - **Read the reason.** A refusal is a sentence on standard error; the status
-  is 126 if a person said no and 127 otherwise. privd's log on the console
-  says what it saw.
+  is 126 if a person said no and 127 otherwise. privd's own log says what it
+  saw.
 - **A new privileged job is a new action.** Add it to `assets/privd/actions`
   with the narrowest argument shapes and capabilities that work, and have the
   program call `slopos_userland::privd::elevate` with the action's name before
@@ -501,17 +509,18 @@ queue and the wire formats, with mutation loops over the codecs.
 
 ## Further reading
 
-- [How User Account Control works](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works)
-  (Microsoft). Consent prompts, credential prompts and the secure desktop:
-  the nearest model for SlopOS's dialog.
 - [Trusted path](https://en.wikipedia.org/wiki/Trusted_path) (Wikipedia). A
   short definition of why the screen that asks for a password must belong to
   the system.
+- [How User Account Control works](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works)
+  (Microsoft). Consent prompts, credential prompts and the secure desktop:
+  the nearest model for SlopOS's dialog.
+- [Privilege escalation with polkit](https://github.blog/security/vulnerability-research/privilege-escalation-polkit-root-on-linux-with-bug/)
+  (GitHub Blog). A readable account of a broker that failed open, and why
+  every error path here refuses.
 - [polkit(8)](https://polkit.pages.freedesktop.org/polkit/polkit.8.html) and
   [run0(1)](https://www.freedesktop.org/software/systemd/man/latest/run0.html).
   The authorization levels and the fresh-service model privd and `priv` adapt.
-- [Privilege escalation with polkit](https://github.blog/security/vulnerability-research/privilege-escalation-polkit-root-on-linux-with-bug/)
-  (GitHub Blog). A readable account of a broker that failed open.
 - [unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html) and
   [pidfd_open(2)](https://man7.org/linux/man-pages/man2/pidfd_open.2.html).
   Linux's `SO_PEERCRED` and process handles, which SlopOS's peer options
@@ -524,7 +533,7 @@ queue and the wire formats, with mutation loops over the codecs.
 | `assets/privd/actions` | The base's policy |
 | `priv-core/src/policy.rs` | The policy's grammar and the decision rules |
 | `priv-core/src/consent.rs`, `priv-core/src/consent/` | The consent channel, the dialog's model and the question queue |
-| `priv-core/src/words.rs` | The rules for the words, and every refusal privd sends |
+| `priv-core/src/words.rs` | The rules for the words, and most of the refusals privd sends |
 | `userland/src/apps/privd/` | privd |
 | `userland/src/privd.rs` | The requester's side: `elevate`, the relays, exit statuses |
 | `userland/src/apps/compositor/consent.rs` | The dialog on screen |

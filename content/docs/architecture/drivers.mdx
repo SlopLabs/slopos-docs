@@ -179,7 +179,9 @@ of USB keyboards. SlopOS treats them as one keyboard. Every keyboard driver
 only reports which key went down or up, as a *usage* number from the USB HID
 usage tables (the i8042's driver translates its own scancodes into the same
 numbers). Everything else happens in one place, the machine's *keyboard
-state*:
+state*. Linux gives programs each keyboard as a device of its own and merges
+them only for its text console; SlopOS merges them once, in the kernel, for
+everyone:
 
 - **Modifiers are counted.** Shift is held while any keyboard holds it. If
   you hold Shift on the laptop and press a key on a USB keyboard, the key
@@ -320,6 +322,12 @@ checked by booting the laptop.
 - [ACPI based device enumeration](https://docs.kernel.org/firmware-guide/acpi/enumeration.html)
   in the Linux kernel. How IDs like `PNP0303` and the I2C-HID touchpad's
   description are found in the ACPI tables.
+- [The Linux input subsystem](https://docs.kernel.org/input/input.html). How
+  Linux passes keyboards and mice to programs one device at a time, the
+  design SlopOS's single keyboard state departs from.
+- [The HID usage tables](https://www.usb.org/document-library/hid-usage-tables-16)
+  from the USB Implementers Forum. The numbers every keyboard driver reports
+  keys in.
 
 ## In the source
 

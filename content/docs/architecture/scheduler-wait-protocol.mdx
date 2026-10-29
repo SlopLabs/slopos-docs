@@ -28,7 +28,7 @@ something happens.
 
 ### Time slices and preemption
 
-A timer interrupts each CPU every 10 milliseconds. On each of these *ticks*
+A timer interrupts each busy CPU every 10 milliseconds. On each of these *ticks*
 the kernel counts down the running task's *time slice*, which is ten ticks by
 default. When the slice runs out and another task is ready, the kernel saves
 the running task's registers, puts it back in line and switches to the next
@@ -48,8 +48,8 @@ CPU it last ran on if that CPU is idle, because its caches probably still
 hold the task's data, and otherwise to an idle or lightly loaded one. And a
 CPU with nothing to run takes a waiting task from any CPU that has at least
 two more than it does, while every few ticks a busy CPU checks whether it
-should hand work to a quieter one. An idle CPU sleeps until something wakes
-it, so a CPU that queues a task behind a running one sends an idle CPU an
+should hand work to a quieter one. An idle CPU drops its regular tick and sleeps
+until something wakes it, so a CPU that queues a task behind a running one sends an idle CPU an
 interrupt to come and take it.
 
 On a processor whose CPUs are not all alike (fast and slow cores, or two
@@ -67,7 +67,7 @@ the highest tier that has one ready:
 | Tier | Used by | Who can choose it |
 |------|---------|-------------------|
 | High | The compositor, which every window's frames pass through | A spawner holding the `SchedHigh` capability; init starts the compositor there |
-| Kernel I/O | Kernel threads devices and the filesystem depend on: the network's receive and timer threads, the USB threads, the filesystem's flusher | Kernel only |
+| Kernel I/O | Kernel threads that devices and the filesystem depend on: the network's receive and timer threads, the USB threads, the filesystem's flusher | Kernel only |
 | Normal | Ordinary programs and kernel threads (the default) | Anyone |
 | Low | Background work | Anyone |
 | Idle | The CPU's idle loop, which runs when nothing else can | Kernel only |
@@ -77,10 +77,9 @@ A program picks Normal or Low when it starts another one through
 A High task that looped forever would starve everything below it, so asking
 for High takes the `SchedHigh` [capability](/docs/architecture/authority),
 which ordinary programs never hold, and the kernel's own tiers are refused to
-everyone.
-`nice` and `setpriority` record a value for any task the caller may signal,
-but lowering a value below zero takes `SchedHigh` too, and is refused with `EACCES`
-without it. The scheduler ignores the value either way.
+everyone. `nice` and `setpriority` record a value for any task the caller may
+signal, but lowering a value below zero takes `SchedHigh` too, and is refused
+with `EACCES` without it. The scheduler ignores the value either way.
 
 Strict priority on its own would let a busy Normal task keep a Low task from
 ever running. So the scheduler counts how often each tier has been passed over

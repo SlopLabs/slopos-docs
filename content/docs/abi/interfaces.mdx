@@ -1,0 +1,756 @@
+---
+title: "Interfaces and stability"
+description: "Every place where parts of SlopOS that are built or updated separately meet, how each one may change, and the check that holds it."
+---
+
+This page lists every interface between parts of SlopOS that are built or
+replaced at different times: the kernel, the base, programs outside the base,
+extensions, the boot disk, the root filesystem, the host's tools and the test
+harness. Each entry names its source in the tree, its level, what a change to
+it takes and the gate or test that fails when the rule is broken. A script
+under **Checked by** runs from `just check-framekernel-gates`, which CI runs,
+unless the entry says otherwise; a name ending in `_test` is a userland test
+that `just test` runs.
+
+## Levels
+
+| Level | Promise | A change takes |
+|---|---|---|
+| Stable | The interface does not change. Where a specification outside SlopOS defines it (Linux, UEFI, Limine, ext4), SlopOS follows that specification. | A new name, number or format beside the old one |
+| Grows only | Additions only: nothing is removed, renamed or reshaped. | An addition. A removal is a hand edit of a tracked ledger, which review sees |
+| Versioned | Both sides name a version number, and a side refuses, or works around, a number it does not speak. | The next number |
+| Unversioned | Written by one release and read by another (on a disk, on the root, or between programs replaced apart), with no version number. | A form every reader still in use accepts. Nothing checks that |
+| Private | Both sides are built from one commit and ship together. | Nothing beyond the commit |
+
+The levels do the job of the Linux kernel's
+[ABI levels](https://docs.kernel.org/admin-guide/abi.html) (stable, testing,
+obsolete, removed), but say how a change is made rather than how long an
+interface lasts.
+
+| Field | Holds |
+|---|---|
+| What | What crosses between the two sides |
+| Between | The two sides, and when each one is built or replaced |
+| Level | One of the levels above |
+| Held by | The version number, ledger or rule that keeps the sides in agreement |
+| A change | What changing the interface takes, where that is more than the level says |
+| Checked by | The gate or test that fails when the rule is broken |
+| Not held | What no check covers, where something is not covered |
+| See | The page that explains it, and the reference page that lists it |
+
+## Summary
+
+| Interface | Between | Level |
+|---|---|---|
+| [Linux-numbered system calls](#linux-numbered-system-calls) | Kernel and every program | Stable |
+| [Private call surface](#private-call-surface) | Kernel and base | Versioned (`BASE_INTERFACE`) |
+| [SlopRing](#slopring) | Kernel and base | Versioned (`BASE_INTERFACE`) |
+| [Base images](#base-images) | Packer, boot partition and kernel | Versioned (`BASE_INTERFACE`) |
+| [Kernel command line](#kernel-command-line) | Installed loader configuration and later kernels | Unversioned |
+| [Limine boot protocol](#limine-boot-protocol) | Limine on the ESP and every kernel | Stable |
+| [Limine configuration](#limine-configuration) | Installer, Limine and `bootctl` | Unversioned |
+| [UEFI variables](#uefi-variables) | `bootctl`, installer and init; Limine and firmware | Stable |
+| [Disk layout](#disk-layout) | An installed disk and every later release | Unversioned |
+| [Crash records](#crash-records) | A panicking kernel, the next kernel and `bootctl` | Versioned (header) |
+| [C library](#c-library) | Base and every program outside it | Grows only |
+| [Programs outside the base](#programs-outside-the-base) | Apps, extensions, toolchain; kernel and base | Grows only (through `libc.so`) |
+| [App toolkit](#app-toolkit) | Each app and the crates compiled into it | Private |
+| [Window protocol](#window-protocol) | Compositor and every app | Versioned (`PROTOCOL_VERSION`) |
+| [App entries](#app-entries) | Dock and installed trees or extensions | Unversioned |
+| [Extension images](#extension-images) | `tools/extension`; `extctl`, init, privd and kernel | Unversioned |
+| [Extension programs at run time](#extension-programs-at-run-time) | Init, privd and loader; an extension's programs | Unversioned |
+| [Base manifest](#base-manifest) | One base's init and the next base | Unversioned |
+| [Consent channel](#consent-channel) | privd and each compositor | Versioned (`consent::VERSION`) |
+| [Init re-execution state](#init-re-execution-state) | Running init and the next `/sbin/init` | Versioned (header lines) |
+| [privd requests](#privd-requests) | privd and every requester | Unversioned |
+| [Installer protocol](#installer-protocol) | Installer window and installer engine | Versioned (`protocol::VERSION`) |
+| [Init control and the session table](#init-control-and-the-session-table) | Init and base programs | Private |
+| [Volume format](#volume-format) | Host e2fsprogs, kernel, the root | Stable |
+| [Verity trailer](#verity-trailer) | Host image builder and kernel | Unversioned |
+| [Ownership map](#ownership-map) | Host image builders, installer and init | Private (map), Unversioned (record) |
+| [Tree manifests](#tree-manifests) | Host and guest installers of trees | Unversioned |
+| [Accounts record and extension store](#accounts-record-and-extension-store) | Every base that runs on one root | Unversioned |
+| [Remote control protocol](#remote-control-protocol) | `remoted` and the host's broker | Versioned (`proto`) |
+| [Toolchain target and link line](#toolchain-target-and-link-line) | Installed toolchain and the tree | Private |
+| [C++ runtime](#c-runtime) | `libc++.so` and `libc.so` | Private |
+| [KTAP results](#ktap-results) | Test harness and host runner | Private |
+| [Report lines](#report-lines) | Kernel and the ratchets | Private |
+
+## Kernel and programs
+
+### Linux-numbered system calls
+
+- **What:** the number, arguments and behaviour of every call below
+  `SYSCALL_PRIVATE_BASE` (1024), the register convention, and the errno
+  values a call returns.
+- **Between:** the kernel and every program. Base programs make the calls
+  directly; a program outside the base makes them only through `libc.so`.
+- **Level:** stable. Linux x86-64 defines it.
+- **Held by:** `abi/src/syscall/numbers.rs`, the one place a number is
+  written. A Linux number carries that call's Linux signature and semantics.
+  A call SlopOS does not implement answers `ENOSYS` at its number, and the
+  number is never given to anything else. Errno values are Linux's
+  (`abi/src/errno.rs`).
+- **A change:** a call Linux has goes on Linux's number with Linux's shape. A
+  call that takes Linux's idea but not yet its shape goes in the private range
+  with a line in `scripts/gates/syscall/private-allowlist.txt` saying why, and
+  moves to Linux's number once it takes Linux's shape.
+- **Checked by:** `scripts/check_syscall_abi.sh`, against
+  `scripts/gates/syscall/linux-x86_64.tbl` (the `common` and `64` rows of
+  Linux's `syscall_64.tbl`). It fails on a constant sitting on a number Linux
+  gave another name, a number past `SYSCALL_LINUX_MAX`, a number or name
+  defined twice, a gap in the private range, and a private name Linux also
+  uses that has no allowlist line.
+- **Not held:** no check compares the errno values, or the structures a Linux
+  call passes (`sockaddr`, `msghdr`, `iovec`), with Linux's headers. The C
+  library's copies of those structures are held against change (see
+  [C library](#c-library)).
+- **See:** [System calls](/docs/architecture/syscalls),
+  [System call ABI](/docs/abi/syscalls).
+
+### Private call surface
+
+- **What:** every SlopOS-only system call, numbered `1024 + k`: its number,
+  the signature its documentation states (`name(args) -> result`), every
+  `slopos_abi` structure and constant that signature names or that
+  documentation links, everything those reach through field and alias types,
+  and the `root` lines of `scripts/gates/base-interface.txt`, which add what
+  no signature names (records behind a byte buffer, families of operations and
+  flags, SlopRing's layout, the directories the kernel keeps in place).
+- **Between:** a kernel and the bases it boots. Kernels sit in the boot
+  partition's slots and the bases beside them, and either can be replaced
+  without the other; a base can also be activated while the system runs.
+- **Level:** versioned by `slopos_abi::BASE_INTERFACE`.
+- **Held by:** a base names the number it was built against in
+  `/usr/share/slopos/base-interface`. A kernel serves `BASE_INTERFACE_MIN`
+  through `BASE_INTERFACE`, and says so in `sys_info` and in the ELF note
+  `.note.slopos.base-interface` (owner `SlopOS`, type
+  `NT_SLOPOS_BASE_INTERFACE`, the two numbers as 32-bit words), which can be
+  read from the file without booting it. `link.ld` fails a link whose note is
+  missing or the wrong size. [Base images](#base-images) lists who reads the
+  two numbers.
+- **A change:** any change to the surface takes the next `BASE_INTERFACE` and
+  a new ledger row, `interface <n> <sha256>`, which only
+  `scripts/check_base_interface.sh --record` appends; an issued row is never
+  rewritten. `BASE_INTERFACE_MIN` rises only when a change reshapes something
+  an older base calls. A change that only adds leaves it where it is, and a
+  call taken away keeps its slot and answers `ENOSYS`, so an older base still
+  boots, without what that call did.
+- **Checked by:** `scripts/check_base_interface.sh`. It renders the surface
+  from rustdoc's JSON description of `slopos-abi`, so documentation prose,
+  comments, formatting and the order of items change nothing, and holds the
+  SHA-256 of the rendering to the ledger row for the current number. It also
+  fails on a private call whose documentation states no signature, a `root`
+  line that reaches nothing, and a ledger that skips a number. A parser
+  failure, or a rustdoc `format_version` the parser was not written for, exits
+  2. `--print` writes the rendering, to diff before and after a change.
+- **Not held:** Linux's structures a private call passes through, and facts a
+  private call takes from outside `slopos-abi` (the font's glyph ranges, the
+  diagnostic console's keys, EFI GUIDs, limits written into a handler). Such a
+  fact moves into `slopos-abi` before it changes.
+- **See:** [Base system](/docs/architecture/base),
+  [System call ABI](/docs/abi/syscalls).
+
+### SlopRing
+
+- **What:** `ring_setup`, `ring_enter` and `ring_register`; the shared
+  region's layout, the submission and completion entries, the opcodes and the
+  flags (`slopos_abi::ring`).
+- **Between:** the kernel and the base programs that use rings. `libc.so`
+  exports no ring call, so no program outside the base uses one.
+- **Level:** versioned by `BASE_INTERFACE`, as part of the private call
+  surface.
+- **Held by:** the `root slopos_abi::ring::*` and
+  `root slopos_abi::syscall::numbers::RING_*` lines of
+  `scripts/gates/base-interface.txt`.
+- **Checked by:** `scripts/check_base_interface.sh`; `ring_test` runs the
+  opcodes against real descriptors.
+- **See:** [SlopRing](/docs/abi/slopring).
+
+## Kernel, loader and boot disk
+
+### Base images
+
+- **What:** a base: a `newc` cpio archive holding the userland, its interface
+  number at `/usr/share/slopos/base-interface` (a decimal number on one line)
+  and its manifest at `/usr/share/slopos/base-manifest`.
+- **Between:** `tools/initramfs`, which packs a base; `bootctl base install`
+  and `tools/bootdisk`, which write bases to a boot partition; and the
+  kernel, which chooses one at boot and serves it.
+- **Level:** versioned by `BASE_INTERFACE`.
+- **Held by:** at boot the kernel serves `current.img` when it serves that
+  base's interface, `previous.img` when it serves that one's, and otherwise
+  fails its `initramfs root` boot step, logging
+  `BOOT: no base this kernel serves (interfaces <min>-<max>): current <reading>, previous <reading>`.
+  `base_activate` refuses a base outside the kernel's range with `ENOEXEC`.
+  `bootctl install` puts a kernel in a slot only when its note says it serves
+  one of the two bases, and `bootctl base install` refuses a base that would
+  leave the default slot's kernel, the running kernel or the one armed to boot
+  once serving neither base. `boot-core::base::check` holds an image to what
+  the kernel can index and mount (every name canonical and present once, none
+  beneath a file, the base directories and every directory on the way to one
+  directories, `/tmp`, `/run` and `/dev` directories with nothing in devfs, no
+  symlink the kernel refuses, at most 2048 records, an interface and a
+  manifest), and the packer, `bootctl base install` and `bootdisk base` all
+  apply it.
+- **Not held:** the archive rules in `boot-core::base::check` are outside the
+  base interface's digest, which covers `slopos-abi` alone.
+- **Checked by:** `boot-core`'s and `tools/initramfs`'s host tests
+  (`just test-host`); the kernel's base tests; `live_base_test`;
+  `just test-install`, which installs bases and rolls them back.
+- **See:** [Base system](/docs/architecture/base),
+  [Updating SlopOS](/docs/self-hosting/updating).
+
+### Kernel command line
+
+- **What:** the options the kernel reads from its command line.
+- **Between:** the command line in an installed disk's `limine.conf`, written
+  once at install, and every kernel a slot boots later. A kernel built with
+  `SLOPOS_BUILTIN_CMDLINE` appends that line to the loader's.
+- **Level:** unversioned.
+- **Held by:** a kernel ignores an option it does not know, and keeps the
+  default for a known option whose value it cannot read, logging a
+  `Boot option: ... ignored` line for most.
+- **A change:** a renamed or removed option leaves installed disks naming the
+  old spelling, which a newer kernel ignores.
+- **Checked by:** nothing compares an installed configuration's options with
+  a kernel's.
+- **See:** [Boot options](/docs/abi/boot-options),
+  [Boot](/docs/architecture/boot).
+
+### Limine boot protocol
+
+- **What:** the requests the kernel places in its image (memory map, modules,
+  framebuffer, the kernel file and its address, the EFI system table, the
+  other CPUs, the boot time) and Limine's answers, through the `limine` crate.
+  The modules are `initramfs` (the current base), `initramfs-previous` and, on
+  an install medium, `install`.
+- **Between:** every kernel and the Limine on its disk's ESP. That Limine is
+  the one the install wrote (Limine's pinned binary release,
+  `scripts/ensure_limine.sh`); `bootctl` writes nothing on the ESP, so a
+  kernel installed later boots under it.
+- **Level:** stable. Limine's boot protocol defines it, and the kernel asks
+  for a base revision of it.
+- **Held by:** `boot/src/limine_protocol.rs`. The `limine` crate's file
+  structure leaves out a word the protocol has after `media_type`, so the
+  kernel reads the boot disk's GPT GUID from the protocol's own offset, which
+  a compile-time assertion keeps.
+- **Checked by:** every boot; `just test-install` and `just test-installer`
+  boot installed disks through it.
+- **See:** [Boot](/docs/architecture/boot).
+
+### Limine configuration
+
+- **What:** `\EFI\SlopOS\limine.conf`, and on an ESP SlopOS created a copy at
+  `\EFI\BOOT\limine.conf`: an entry `slopos-<slot>` per slot naming its kernel
+  and both bases by the boot partition's GUID, `root=PARTUUID=` for the disk's
+  root, an `efi_boot_entry` for each other system `BootOrder` lists that
+  Limine can boot, and no `default_entry`.
+- **Between:** the installer, which writes it, and Limine and `bootctl`,
+  which read it on every boot after. `bootctl --boot` reads another disk's to
+  learn what that disk's loader offers.
+- **Level:** unversioned.
+- **Held by:** `boot-core::limine`, which renders it; no commit of a slot
+  rewrites it. Limine 12.9 consults `LoaderEntryDefault` only while
+  `default_entry` is unset, which is why none is written.
+- **A change:** reaches only disks installed or reinstalled after it.
+- **Checked by:** `boot-core`'s host tests; `just test-install` holds the ESP
+  to the bytes the host built, so no commit touched it.
+- **See:** [Installing SlopOS](/docs/self-hosting/installing),
+  [Updating SlopOS](/docs/self-hosting/updating).
+
+### UEFI variables
+
+- **What:** the Boot Loader Interface's `LoaderEntryDefault`,
+  `LoaderEntryOneShot` and `LoaderConfigTimeoutOneShot`, which SlopOS sets,
+  and `LoaderEntrySelected`, `LoaderEntries` and `LoaderDevicePartUUID`, which
+  Limine sets; and the firmware's `Boot####`, `BootOrder`, `BootNext` and
+  `BootCurrent`.
+- **Between:** `bootctl`, the installer and init on one side; Limine and the
+  firmware on the other.
+- **Level:** stable. The
+  [Boot Loader Interface](https://systemd.io/BOOT_LOADER_INTERFACE/) and the
+  UEFI specification define them.
+- **Held by:** `boot-core::bli`, `boot-core::load_option` and
+  `boot-core::device_path`. The kernel holds every write of a firmware boot
+  variable to non-volatile boot and runtime access and to the format the
+  firmware parses.
+- **Checked by:** `boot-core`'s host tests; `just test-install` and
+  `just test-installer`, on an OVMF that keeps its variables.
+- **See:** [Updating SlopOS](/docs/self-hosting/updating),
+  [Installing SlopOS](/docs/self-hosting/installing).
+
+### Disk layout
+
+- **What:** SlopOS's GPT partition type GUIDs (boot, root, crash and the
+  install medium's payload, all its own, never the Discoverable Partitions
+  Specification's), the loader's place on the ESP (`\EFI\SlopOS\`), and the
+  boot partition's paths: `/boot/<slot>/kernel.elf`, `/boot/base/current.img`
+  and `/boot/base/previous.img`.
+- **Between:** the disk an install writes, and every later kernel,
+  `bootctl`, rescue and reinstall that reads it; and the host's
+  `tools/bootdisk`, which builds the QEMU boot disk.
+- **Level:** unversioned.
+- **Held by:** `boot-core::layout`, the one statement of all of it, which all
+  of those use.
+- **A change:** an installed disk keeps the layout it was given; nothing
+  migrates one.
+- **Checked by:** `boot-core`'s host tests hold the type GUIDs distinct from
+  each other, from the ESP's and from Linux's root and XBOOTLDR types.
+- **Not held:** no check holds a value against change.
+- **See:** [Installing SlopOS](/docs/self-hosting/installing),
+  [Updating SlopOS](/docs/self-hosting/updating).
+
+### Crash records
+
+- **What:** the crash partition, a ring of 64 KiB slots. A record is a
+  64-byte header (the magic `SLOPCRSH`, a format version, the text's length,
+  a sequence number and a CRC-32) and text that opens with the line
+  `SlopOS crash record` and `key: value` lines, then the panic report and the
+  kernel log's tail under `--- kernel log ---`.
+- **Between:** the kernel that panicked, the kernel of the next boot (which
+  may be another slot's), and `bootctl collect` in the base, which reads the
+  records through `/dev/crash`.
+- **Level:** versioned by the header's version field.
+- **Held by:** `boot-core::crash`. A header of another version reads as no
+  record. A reader of the summary passes over a key it does not know, so a key
+  can be added without a new version.
+- **Checked by:** `boot-core`'s host tests; `just test-install` panics a slot
+  and finds its record moved to `/var/log/crash/`.
+- **See:** [Diagnostics](/docs/development/diagnostics).
+
+## Base and programs outside it
+
+### C library
+
+- **What:** `/lib/libc.so`'s dynamic symbols (a function by name; a data
+  export with its size, because a program that is not position-independent
+  copies it at load time), and the size, alignment and field offsets of every
+  struct and union `slibc/include` defines. Its soname is `libc.so`, and its
+  loader is `/lib/ld-slopos.so.1`.
+- **Between:** the base, which ships `libc.so`, and every program outside it:
+  the apps, extensions' programs, the toolchain and the programs built from
+  recipes, each built against one base and run on later ones.
+- **Level:** grows only.
+- **Held by:** `scripts/gates/libc/exports.txt` and
+  `scripts/gates/libc/layouts.txt`.
+- **A change:** an addition is recorded with
+  `scripts/check_libc_exports.sh --record`, which only adds lines and refuses
+  while anything recorded is gone or changed. A removal or a changed layout
+  lands only as a hand edit of those files.
+- **Checked by:** `scripts/check_libc_exports.sh` (the layout half needs the
+  host clang `scripts/cxx_host_tools.sh` finds; CI's toolchain job runs it
+  with `--require`); `libc_abi_test`, which holds slibc to the declarations of
+  the `libc` crate fork that Rust's standard library for SlopOS is built on.
+- **Not held:** a function's prototype (only its name and kind are recorded),
+  and an alignment set on a typedef rather than on its record.
+- **See:** [Installed software](/docs/architecture/software),
+  [Toolchain](/docs/self-hosting/toolchain).
+
+### Programs outside the base
+
+- **What:** how a program shipped outside the base reaches SlopOS:
+  dynamically linked, with `/lib/ld-slopos.so.1` as its interpreter, `libc.so`
+  among its needed libraries, and no `syscall` instruction of its own.
+- **Between:** such a program, built on its own schedule, and the kernel and
+  base it runs on. A static program carries its own copy of the C library, and
+  a system call made in place reaches the private call surface, or a Linux
+  call, without the library between.
+- **Level:** grows only, because the one interface it uses is the
+  [C library](#c-library).
+- **Checked by:** `scripts/check_loose_programs.sh`, after every host
+  userland build on `builddir/apps/bin/*` and on the tests' extension
+  programs, and in `scripts/build_extension.sh`. `extctl` refuses an
+  extension's program that is static, or that binds a name neither `libc.so`
+  nor one of the extension's own libraries exports
+  (`slopos_extension_core::symbols`).
+- **See:** [Installed software](/docs/architecture/software),
+  [Extensions](/docs/architecture/extensions).
+
+### App toolkit
+
+- **What:** the crates an app under `apps/` may depend on: `slopos-appkit`,
+  `slopos-editor-core` and `slopos-image`.
+- **Between:** each app and the toolkit compiled into it. The toolkit reaches
+  the system only through functions `libc.so` exports (`slopos-cabi`).
+- **Level:** private. A toolkit change reaches an app at the app's next
+  build.
+- **Held by:** an app names neither the kernel's ABI, the drawing internals
+  nor the compositor connection beneath appkit, which all change with the
+  base.
+- **Checked by:** `scripts/check_app_deps.sh`.
+- **See:** [Write an app](/docs/development/writing-an-app),
+  [Desktop](/docs/architecture/desktop).
+
+### Window protocol
+
+- **What:** the messages between the compositor and its clients on
+  `$XDG_RUNTIME_DIR/compositor`: the kind byte and fields of every request
+  and event, and the error codes.
+- **Between:** the compositor, in the base, and every app, the base's own and
+  those outside it, each built against one base and run on later ones.
+- **Level:** versioned by `PROTOCOL_VERSION` (`slop-protocol`).
+- **Held by:** the compositor sends `Hello` naming its version as soon as it
+  accepts a connection, and the client's first request is a `Hello` naming
+  its own. A client refuses a compositor of another version; the compositor
+  answers a client of another version with an `Error` whose code is
+  `VersionMismatch`, then closes. The two `Hello`s never change encoding:
+  kind byte 0, then the version as a little-endian 32-bit number.
+- **A change:** any change to the wire takes the next `PROTOCOL_VERSION`. An
+  app built against another version connects again only once rebuilt.
+- **Checked by:** `protocol_test`, which holds every kind byte and both
+  `Hello` encodings to the current version's, and sees a client one version
+  older and one version newer refused.
+- **See:** [Windowing](/docs/architecture/userland-windowing),
+  [Window protocol](/docs/abi/window-protocol).
+
+### App entries
+
+- **What:** `share/slopos/apps/<id>.app`, lines of `key=value`: `id`,
+  `name`, `exec`, `icon` (a PNG in the same share's `slopos/icons/`) and
+  `boot=medium`.
+- **Between:** the dock, in the base, and the trees in `/usr/local` and
+  `~/.local` and the extensions that ship entries.
+- **Level:** unversioned.
+- **Held by:** the reader passes over a key it does not know, so a key can be
+  added. A `boot` value it does not know makes no entry.
+- **Checked by:** `dock_test`.
+- **See:** [Desktop](/docs/architecture/desktop),
+  [Installed software](/docs/architecture/software).
+
+### Extension images
+
+- **What:** an extension image: an ext4 volume (the profile without the
+  journal, with ext4's `read-only` feature) followed by a SHA-256 hash tree in
+  dm-verity's layout, whose root is the image's digest; the volume's
+  `/.extension/manifest`, `/.extension/release` and `/.extension/declare`; and
+  the signed sidecar `<name>.meta`.
+- **Between:** `tools/extension` (`just extension`), which packs an image on
+  the host from a tree built on its own schedule; the base's `extctl`, init
+  and privd, which read it; and the kernel, which serves it (`ext_activate`,
+  part of the private call surface).
+- **Level:** unversioned.
+- **Held by:** the running base's reader (`slopos_extension_core`). Every
+  activation reads the stored image again and stops an extension that no
+  longer fits, whether its record, its signer's key or a ceiling changed or
+  its declaration uses words the base no longer takes, and says why in the
+  extension's record.
+- **A change:** a word the base stops taking stops every extension that uses
+  it, at its next activation.
+- **Checked by:** `extension-core`'s host tests; `extension_test`,
+  `extension_action_test`, `extension_service_test`.
+- **See:** [Extensions](/docs/architecture/extensions),
+  [Extension images](/docs/abi/extension-images).
+
+### Extension programs at run time
+
+- **What:** what the base hands an extension's programs. A service gets the
+  readiness notifier on fd 3, its listening sockets from fd 4 (`LISTEN_FDS`,
+  and `LISTEN_FDNAMES` naming each `tcp-<port>`, `udp-<port>` or the socket's
+  own name), `/dev/null` as input, and `PATH`
+  (`/bin:/sbin:/opt/<name>/bin`), `LANG`, `HOME`, `USER` and `LOGNAME`; a
+  service that runs in a person's session gets the session's environment in
+  place of the last three. A mechanism privd runs for an extension's action
+  gets `PATH`, `LANG`, `PRIV_ACTION` and `PRIV_UID`. The loader searches
+  `/opt/<name>/lib` for a program of that extension.
+- **Between:** init, privd and the loader, in the base, and an extension's
+  programs.
+- **Level:** unversioned.
+- **Checked by:** `extension_service_test`, `extension_action_test`,
+  `extension_test`.
+- **See:** [Extensions](/docs/architecture/extensions).
+
+## Inside the base, across a live update
+
+Programs of one base are built together, but a base activated while the
+system runs replaces some of them (privd, a re-executed init) while others
+keep running (a desktop's compositor, a requester started before). These
+interfaces are the ones that cross that gap.
+
+### Base manifest
+
+- **What:** `/usr/share/slopos/base-manifest`: `<sha256> <mode> <path>` for
+  every record of the base but itself, in archive order. An extension image's
+  `/.extension/manifest` uses the same lines.
+- **Between:** `tools/initramfs`, which writes it; init, which compares the
+  manifest it read before a base switch with the new base's to see what
+  changed (`boot_core::base::changed`); and `bootctl`, which reads it to tell
+  whether the running base is the one on the boot partition. The init of one
+  base reads the manifest of the next.
+- **Level:** unversioned.
+- **Held by:** `boot-core::base`; `boot-core::base::check` refuses a base
+  whose manifest is missing or has a line that does not parse.
+- **Checked by:** `boot-core`'s and `tools/initramfs`'s host tests;
+  `live_base_test`.
+- **See:** [Base system](/docs/architecture/base),
+  [Init and services](/docs/architecture/init).
+
+### Consent channel
+
+- **What:** the frames privd and a compositor exchange about a question
+  (`READY`, the question, `SHOWN`, the answer, `RESET` and `RESET_SEEN`), over
+  the socket pairs init makes at boot.
+- **Between:** privd and each desktop's or login screen's compositor. A base
+  switch that changes privd starts a new privd, while a running desktop keeps
+  its compositor until the person restarts the desktop.
+- **Level:** versioned by `consent::VERSION` (`slopos-priv-core`).
+- **Held by:** a compositor's `READY` names its version. privd asks a
+  compositor of any other version nothing, and refuses what needs consent
+  with "Restart the desktop, then try again." A compositor closes its end on
+  a question it cannot read.
+- **A change:** a change to what a question may carry (the limits on its
+  words, the allowed button verbs in `words::VERBS`) takes the next version.
+- **Checked by:** `priv-core`'s host tests, one of which digests what a
+  question may carry and holds the digest to the version.
+- **See:** [Privileged actions](/docs/architecture/privd).
+
+### Init re-execution state
+
+- **What:** what init hands the next `/sbin/init` when it re-executes itself
+  as `/sbin/init --resume <fd>`: a first line `kept <fds>`, then the header
+  `slopos-init-state 1` and its services, start budgets, sessions, consent
+  links and listener; and the extensions' services, in further pipes, under
+  the header `slopos-init-units 1`.
+- **Between:** the running init and the `/sbin/init` of the base now in
+  place, after a base switch changed it.
+- **Level:** versioned by the header lines.
+- **Held by:** before it re-executes, init looks for each header line in the
+  new image's file, newline included, so no later version's header contains
+  an earlier one. Before an image without `slopos-init-state 1`, the sessions
+  end first; before one without `slopos-init-units 1`, the extensions'
+  services do. The `kept` line is one every version reads, so an image that
+  cannot read the rest still closes the descriptors it names, adopts the
+  privd and `remoted` among its children, starts the sessions again and runs
+  without consent until the next boot.
+- **A change:** the next number in the header line.
+- **Checked by:** `supervision_test`, `extension_service_test`.
+- **See:** [Init and services](/docs/architecture/init).
+
+### privd requests
+
+- **What:** the frames on `/run/privd` (`slopos_priv_core::wire`): a request,
+  a relayed signal and a typed secret; the started, exited, denied, asking
+  and prompt replies; and a connection handed down in `PRIVD_FD`.
+- **Between:** privd and every requester: the base's own programs, and an
+  extension's programs that one of its actions names as a `program`
+  principal, which speak the frames themselves (the test extension's client
+  is written in C).
+- **Level:** unversioned.
+- **Held by:** both ends parse strictly. Across a base switch privd drains,
+  and a requester whose requests may span the switch waits up to a minute
+  for the new privd (`slopos_userland::privd::SWITCH_WAIT`). A requester started before a
+  switch that changed privd's replies or the policy asks nothing until it
+  starts again.
+- **Checked by:** `priv-core`'s host tests; `privd_test`,
+  `extension_action_test`.
+- **See:** [Privileged actions](/docs/architecture/privd),
+  [privd actions](/docs/abi/privd-actions).
+
+### Installer protocol
+
+- **What:** the frames between `installer --serve` and the program that
+  drives it (`installer_core::protocol`): `Hello`, `Probe`, `Open`, `Propose`
+  and `Install`, and the engine's `System`, `Proposal`, `Issue`, `Step`,
+  `Progress`, `Log`, `Done` and `Failed`.
+- **Between:** the installer window, `installer-ui`, and the engine privd
+  starts for it. Both ship in one base.
+- **Level:** versioned by `installer_core::protocol::VERSION`.
+- **Held by:** each side's first frame is a `Hello` naming its version, and
+  the engine exits unless the two match.
+- **Checked by:** `installer-core`'s host tests; `installer_ui_test`, which
+  drives the window with scripted engine frames; `installer_test`
+  (`just test-installer`).
+- **See:** [Installing SlopOS](/docs/self-hosting/installing).
+
+### Init control and the session table
+
+- **What:** the lines `/run/init` takes (`restart-session`, `end-session`,
+  `lock`, `greeter`, `locked`, `unlocked`, `switch`, `login`, `reexec`,
+  `extensions`); the session table init sends privd; `/run/sessions/<tag>`,
+  which slibc's `getlogin` reads; and the descriptors init hands what it
+  starts (`init_control::fds`).
+- **Between:** init and base programs: `/bin/session`, the compositor,
+  privd, `extctl` and `libc.so`.
+- **Level:** private.
+- **Checked by:** `sessions_test`, `session_smoke_test`, `supervision_test`.
+- **See:** [Init and services](/docs/architecture/init),
+  [Sessions and login](/docs/architecture/sessions).
+
+## Root filesystem
+
+### Volume format
+
+- **What:** ext4 in one profile (`ext4-core/profile`: `has_journal`,
+  `extent`, `64bit`, `flex_bg` and `metadata_csum` among its features,
+  256-byte inodes, 4 KiB blocks), with a jbd2 journal.
+- **Between:** the host's e2fsprogs (`mke2fs`, `debugfs`, `e2fsck`), which
+  build and judge images; the kernel; the base's own `mke2fs` and `e2fsck`;
+  and a root, which outlives every kernel that mounts it.
+- **Level:** stable. ext4's on-disk format, as kernel.org's ext4
+  documentation describes it, defines it.
+- **Held by:** the profile file, which `scripts/lib/ext4.sh` and
+  `scripts/lib/ext4_profile.py` hand to `mke2fs` and `ext4-core` compiles in.
+  `scripts/build_fs_image.sh` refuses a preserved image short of the profile.
+- **Checked by:** `ext4-core`'s host tests, against images e2fsprogs made;
+  `scripts/check_fs_image.sh` (`just check-fs-image`, `e2fsck -fn` and the
+  image at rest, in CI after the suite); `scripts/check_fs_replay.sh`
+  (`just test-rude-exit`, e2fsck replaying what the kernel journaled).
+- **See:** [Filesystem](/docs/architecture/filesystem),
+  [Crash recovery](/docs/architecture/crash-recovery).
+
+### Verity trailer
+
+- **What:** the trailer `scripts/gen_verity.py` appends to a root image: a
+  CRC-32 per 4 KiB block, for an attested image a bitmap of the blocks the
+  host vouches for, and a 32-byte header at the image's end with a magic, a
+  `kind` (protected or attested) and an algorithm.
+- **Between:** the host's image builder and the kernel that mounts the
+  image.
+- **Level:** unversioned.
+- **Held by:** the kernel takes the image's tail as a trailer only past the
+  filesystem's extent, and refuses one whose kind or algorithm it does not
+  know (`verity: unsupported trailer (kind <k> algo <a> block_size <b>)`).
+- **Checked by:** `gen_verity.py --self-test`; the kernel's verity tests,
+  which mount the image the host sealed.
+- **See:** [Filesystem](/docs/architecture/filesystem).
+
+### Ownership map
+
+- **What:** which directories of a root belong to whom
+  (`slopos_abi::fs::ROOT_LAYOUT` and `PERSON_TREES`), and the owners record,
+  `/var/lib/slopos/owners`, one `<uid>:<gid> <tree>` line per tree a person
+  holds.
+- **Between:** the host's image builders (`scripts/lib/root_layout.sh`,
+  `scripts/fs_tree.py`), `tools/initramfs`, the installer and init. The
+  record outlives all of them on the root.
+- **Level:** private for the three copies of the map, which one commit
+  holds equal; unversioned for the record.
+- **Held by:** a record that is absent or cannot be read grants nothing.
+- **Checked by:** a host test in `tools/initramfs` holds the three copies
+  equal; `scripts/check_fs_image.sh --map` holds an image to the map and its
+  record.
+- **See:** [Users and file permissions](/docs/architecture/users).
+
+### Tree manifests
+
+- **What:** `/var/lib/slopos/trees/<name>`, or
+  `~/.local/share/slopos/trees/<name>` for a person's own: an `identity` line,
+  an `at` line naming where the tree went, then `<kind> <size> <path>` per
+  entry (`-` for no size), parents first. An install under way carries an
+  identity of 64 zeros.
+- **Between:** the host's `scripts/fs_tree.py`, which installs host trees
+  into images, and `tree-core` in the guest (the installer, init and
+  `tree-install`), which install and replace trees on the same root.
+- **Level:** unversioned.
+- **Held by:** `tree-core`. A manifest that does not parse is not believed,
+  and stands for an install that did not finish.
+- **Checked by:** `tree-core`'s host tests, one of which parses what
+  `fs_tree.py` writes; `fs_tree.py --self-test`; `tree_install_test`.
+- **See:** [Installed software](/docs/architecture/software).
+
+### Accounts record and extension store
+
+- **What:** the sealed stores on the root, each kept as generations
+  (`<name>.<n>`, the newest sealed one believed): the accounts record in
+  `/var/lib/slopos/accounts` (`next`, `autologin`, `remote`, then a `person`
+  line each), the extension store in `/var/lib/slopos/extensions` (`keys.<n>`,
+  and per extension `record.<n>` and its images), and the user database
+  rendered from both (`/etc/passwd`, `/etc/group`, `/etc/shadow`).
+- **Between:** the base that writes them and every base that runs on the
+  same root later, the previous one among them after
+  `bootctl base rollback`.
+- **Level:** unversioned.
+- **Held by:** each record has one spelling, the one its writer renders, and
+  a reader refuses any other. The stores' directories are part of the
+  private call surface (`slopos_abi::fs::KEPT_DIRS`), because the kernel keeps
+  them where they are.
+- **A change:** a new spelling is one an older base refuses to read.
+- **Checked by:** `accounts-core`'s and `extension-core`'s host tests;
+  `accounts_test`, `extension_test`.
+- **See:** [Users and file permissions](/docs/architecture/users),
+  [Extensions](/docs/architecture/extensions).
+
+## Host and machine
+
+### Remote control protocol
+
+- **What:** the frames between `remoted` and the broker, over TLS 1.3 on one
+  port (7330 by default): a 5-byte header (a kind and a big-endian length),
+  then `HELLO`, `WELCOME`, `EXEC`, `PUT`, `GET` and their replies
+  (`remote-core`); and the pairing a base carries under
+  `/usr/share/slopos/remote/`.
+- **Between:** `remoted`, in a paired base on the machine, and
+  `scripts/remote.py` on the developer's host, which are updated apart.
+- **Level:** versioned by `HELLO`'s `proto` field.
+- **Held by:** the broker refuses an agent that names another protocol.
+  `scripts/remote.py` restates `remote-core`'s constants, and refuses to
+  serve or install a base paired with another broker or with none.
+- **Checked by:** `remote-core`'s host tests, one of which holds the pairing
+  file to what `remote.py provision` writes, byte for byte;
+  `just test-remote`.
+- **See:** [Remote control](/docs/self-hosting/remote-control).
+
+### Toolchain target and link line
+
+- **What:** the `x86_64-unknown-slopos` target, built into the forked
+  compiler and stated again in `targets/x86_64-unknown-slopos.json`; and the
+  link line, written by hand in `scripts/build_userland.sh` and again by the
+  clang driver's `toolchains::SlopOS`.
+- **Between:** the cross-built toolchain installed at `/usr/local`
+  (`just toolchain`), which is replaced apart from the tree, and the tree it
+  builds.
+- **Level:** private: each fact has two copies in one tree, held equal.
+- **Checked by:** `scripts/check_rustc_target.sh`, which compares rustc's
+  own JSON form of the two target specs (skipped without the compiler's
+  source tree; CI's toolchain job runs it with `--require`);
+  `scripts/check_clang_driver.sh`, which builds the driver for the host and
+  grades its link jobs; `toolchain_test` (`just test-toolchain`), which holds
+  an installed toolchain to the manifest it was installed with.
+- **See:** [Toolchain](/docs/self-hosting/toolchain).
+
+### C++ runtime
+
+- **What:** `libc++.so` (libc++ and libc++abi in one object, on the tests
+  image only), the ABI flags it is built with
+  (`scripts/make_slopos_cxx.sh --print-abi-flags`), and every symbol it leaves
+  for `libc.so` to define.
+- **Between:** the runtime, built from the llvm-project release
+  `toolchain/cxx/PIN` names, and `libc.so`.
+- **Level:** private.
+- **Checked by:** `scripts/check_cxx_pin.sh`, which holds the runtime to its
+  pin and its build stamp, and every symbol `libc++.so` leaves undefined to
+  one `libc.so` exports; `cxx_test`.
+- **See:** [Toolchain](/docs/self-hosting/toolchain).
+
+## Test output
+
+### KTAP results
+
+- **What:** what the test harness prints on the serial console: lines that
+  start with `KTAP` and a tab, a `TAP version 14` header per phase, result and
+  subtest lines and diagnostic blocks; and the JSON lines the host runner
+  writes from them, which carry every key in every event, an absent one as
+  `null`.
+- **Between:** the kernel's `ktesting` and the userland test runner, which
+  print, and the host runner `tools/run_tests`, which reads.
+- **Level:** private. The grammar is the Linux kernel's KTAP; the emitter
+  and the parser are built from one commit.
+- **Checked by:** `just check-tests-host` (the runner's Go tests); every
+  `just test` run.
+- **See:** [Test output format](/docs/abi/ktap-test-output),
+  [Write tests](/docs/development/adding-tests).
+
+### Report lines
+
+- **What:** the lines the kernel prints for the ratchets: `LOCKDEP[`,
+  `LOCKDEP-CLASS[`, `QUOTA[`, `SCHEDCPU[`, `FSPERF[`, `FSCAP[` and `PROF[`,
+  each followed by a phase or label.
+- **Between:** the kernel and the scripts that read a test run's capture:
+  `scripts/check_lockdep_headroom.sh`, `scripts/check_quota_headroom.sh`,
+  `scripts/check_sched_spread.sh`, `scripts/check_fs_throughput.sh` and
+  `scripts/prof_report.py`.
+- **Level:** private.
+- **Checked by:** each ratchet's `--self-test`, which drives crafted logs
+  through its parser.
+- **See:** [Safety gates](/docs/verification/tcb-discipline),
+  [Diagnostics](/docs/development/diagnostics).

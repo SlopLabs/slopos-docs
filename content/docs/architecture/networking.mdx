@@ -26,9 +26,9 @@ that programs see copies Linux, so code written against Linux sockets
 compiles and behaves the way you expect, down to details such as when a
 restarted server may take its port back. The receive path borrows Linux's
 NAPI scheme, and what a card accepts from the wire follows the host
-requirements of RFC 1122 and, where those leave a choice, Linux's default. The page walks through a packet's path, the cards,
-what programs can use, configuration, what the machine accepts from the
-wire, and encryption.
+requirements of RFC 1122 and, where those leave a choice, Linux's default.
+The page walks through a packet's path, the cards, what programs can use,
+configuration, what the machine accepts from the wire, and encryption.
 
 ## How a packet reaches your program
 
@@ -72,8 +72,8 @@ whatever cards turn up.
 
 | Card | Where you meet it | Interface |
 |---|---|---|
-| virtio-net | QEMU's virtual card | `eth0` |
-| Realtek RTL8168h / RTL8111h, RTL8168M | The wired port on our development laptop, and many other PCs | `eth0` |
+| virtio-net | QEMU's virtual card | `eth0` under QEMU |
+| Realtek RTL8168h / RTL8111h, RTL8168M | The wired port on our development laptop, and many other PCs | `eth0` on the laptop |
 | USB Ethernet adapters speaking CDC-ECM or CDC-NCM | Plugged in at any time; QEMU's `usb-net` among them | the lowest `ethN` free, e.g. `eth1` |
 
 Every card enters service the same way: its driver hands the stack a device
@@ -138,8 +138,8 @@ A few things behave in ways worth knowing:
   address and port, or one the wildcard address and one a specific address
   on the same port, only if every one of them set `SO_REUSEADDR`; the newest
   then receives. So no program can take over a port another holds. A bind to
-  port 0 picks a free port at once. A connected UDP socket
-  receives only datagrams from the address it connected to.
+  port 0 picks a free port at once. A connected UDP socket receives only
+  datagrams from the address it connected to.
 - **`IP_TOS` marks your packets.** The type-of-service byte you set on a
   socket goes into the IPv4 header of every TCP segment and UDP datagram it
   sends, with the two congestion-notification bits left to TCP, and an
@@ -233,7 +233,8 @@ Linux uses by default: a packet may arrive on any card for any of the
 machine's addresses, plus broadcast and multicast. It drops packets claiming
 to come from `127.0.0.0/8`, from a broadcast or multicast address, or from
 no address at all, and packets for `127.0.0.0/8`, which never legitimately
-arrive on a cable. It never sends a packet with a `127.x` source out of a card either.
+arrive on a cable. It never sends a packet with a `127.x` source out of a
+card either.
 
 There is one exception. Until a card holds an address, it also accepts an
 unfragmented UDP packet to the DHCP client port, because some DHCP servers
@@ -245,8 +246,9 @@ follows the rule its RFC gives: an ARP packet refreshes the entry of any
 sender the machine already knows, but creates a new entry only when the ARP
 was aimed at this card's own address, and a card answers ARP requests only
 for its own address. So a neighbour can't fill the table by announcing
-itself. A ping sent to a broadcast address goes unanswered, so the
-machine can't be used to multiply someone else's traffic.
+itself. A ping sent to a broadcast or multicast address goes unanswered, as
+RFC 1122 allows, because the reply would have to carry that address as its
+source.
 
 ## Encryption (TLS)
 
@@ -311,14 +313,15 @@ The rules a change to the stack has to keep:
 - **A device never writes past the buffer it was given.** The Realtek chip's
   receive size limit is the buffer length its descriptors name. A larger
   limit over smaller buffers was the precondition of CVE-2009-1389 in Linux's
-driver for the same family.
+  driver for the same family.
 - **Egress identity comes from the route.** The source hardware address is
   stamped once the route has picked the device, an ARP names that device's
   address, and a neighbour's queued packets leave on the neighbour's device.
 - **IPv4 headers carry real identification.** Every outgoing packet gets a
-  fresh 16-bit ID, and TCP segments set Don't Fragment, as RFC 6864 asks and
-  as Linux sends them. A home network extender in the field corrupted every
-  TCP segment that had neither.
+  fresh 16-bit ID, which RFC 6864 requires of any packet that may be
+  fragmented, and TCP segments set Don't Fragment, as Linux sends them. A
+  home network extender in the field corrupted every TCP data segment that
+  had neither.
 - **TCP options fit inside the MSS.** A data segment carrying the 12-byte
   timestamp option carries 12 bytes less data (RFC 6691), or full segments
   overflow a 1500-byte path and are dropped.

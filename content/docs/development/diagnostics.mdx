@@ -16,9 +16,18 @@ Everything below appears in the kernel log. Under QEMU the log goes to the
 serial port, which `just boot` and the other boot recipes print in your
 terminal; `just boot-log` saves it to `test_output.log`. On a machine with no
 serial port, the kernel can draw the log on screen: press Esc while the boot
-splash is showing to toggle it. Once the desktop has drawn its first frame,
+screen is showing to toggle it. Once the desktop has drawn its first frame,
 Esc belongs to applications again. The on-screen log is drawn from the
 kernel's timer, so it keeps working when every program is stuck.
+
+On a machine paired with your host for
+[remote control](/docs/self-hosting/remote-control), read the log from the
+host instead:
+
+```bash
+just remote klog            # the kernel log as it stands
+just remote klog --follow   # and whatever it adds from then on
+```
 
 Several steps below use boot options. To try one, put it on the command line
 of a live boot (the default options are `tests=off root=initramfs`, so keep
@@ -29,48 +38,77 @@ BOOT_CMDLINE='tests=off root=initramfs lockdep=warn' just boot-live
 ```
 
 `just boot`, which boots the development machine, does not read
-`BOOT_CMDLINE`. [Boot options](/docs/abi/boot-options) describes every option
-mentioned here.
+`BOOT_CMDLINE`, and neither does an installed system, whose boot entries are
+fixed. For those, build the kernel with `SLOPOS_BUILTIN_CMDLINE` set: the
+kernel appends those options to whatever the loader gave it and logs
+`BOOT: built-in command line appended: …`. [Boot options](/docs/abi/boot-options)
+describes every option mentioned here.
 
 ## The diagnostic console
 
-The tool you'll reach for first is the kernel's diagnostic console. You press
+The diagnostic console is SlopOS's equivalent of Linux's
+[magic SysRq key](https://docs.kernel.org/admin-guide/sysrq.html): you press
 a key combination on the machine's own keyboard, and the kernel prints a
-report to its log. It works like Linux's
-[magic SysRq key](https://docs.kernel.org/admin-guide/sysrq.html), and for the
-same reason: it's handled inside the keyboard interrupt, so it answers when
-nothing else does.
+report to its log. It is the tool you'll reach for first, because it is
+handled where the keyboard's input arrives, ahead of every program, so it
+answers when nothing else does.
 
-To use it, press **SysRq** (Alt+PrintScreen) and then, within three seconds,
-one command key. Under QEMU, if your desktop takes PrintScreen for itself,
-send the keys from the QEMU monitor instead (see
-[Debugging with GDB](/docs/development/debugging-gdb-record-replay) for how to
-open it): `sendkey sysrq`, then `sendkey t`. On a serial line, send a BREAK
-and then the command key.
+### How to trigger it
 
-| Key | Prints |
-|-----|--------|
-| `h` | The list of commands this kernel has |
-| `t` | Every task: its state, which CPU it's on, why it's blocked, where it's parked |
-| `w` | Only the blocked tasks, each with a stack trace |
-| `x` | Tasks that have exited but haven't been collected, and who should collect each one |
-| `s` | Scheduler counters, per CPU and in total |
-| `i` | The kernel's I/O service threads: state and how many rounds each has done |
-| `k` | The longest stall each CPU has seen, and which tasks are waiting on which |
-| `p` | Asks every other CPU for its registers and prints a stack trace for this one |
-| `d` | How full the lock-order checker's tables are (needs `lockdep=warn`) |
-| `m` | Memory: the page allocator, per-CPU caches, the small-object allocator |
-| `c` | Each CPU's memory-type settings |
-| `q` | Resource accounts: used, peak, limit and refusals for each kind of resource |
-| `n` | Network interfaces, addresses, routes and connectivity |
-| `f` | Framebuffer drawing speed per CPU |
-| `o` | Write back the filesystems and power off |
-| `b` | Reboot |
+- **From the keyboard.** Press **SysRq** (Alt+PrintScreen) and then, within
+  three seconds, one command key. Any keyboard works, PS/2 or USB. Under QEMU,
+  if your desktop takes PrintScreen for itself, send the keys from the QEMU
+  monitor instead (see
+  [Debugging with GDB](/docs/development/debugging-gdb-record-replay) for how
+  to open it): `sendkey sysrq`, then `sendkey t`.
+- **From a serial line.** Send a BREAK, then the command key.
+- **From a program.** `/bin/kconsole` takes command keys as its argument,
+  runs each one and prints what it added to the kernel log, for example
+  `kconsole tw`. With no argument it runs `h`. It reaches the kernel through
+  privd's `org.slopos.kconsole` action, which an administrator and the paired
+  agent may run unasked, so `just remote run -- kconsole tp` reads a machine
+  nobody is sitting at.
 
-`o` and `b` are refused unless you boot with `kconsole=0x3`, because they
-change the state of the machine. Nothing a program does can trigger the
-console: the keys are taken before they reach any program, and a serial BREAK
-isn't a byte a program can write.
+### The command keys
+
+| Key | Prints | Changes the machine |
+|-----|--------|---------------------|
+| `h` | The list of commands this kernel has, and the permission mask | no |
+| `t` | Every task: its state, which CPU it's on, why it's blocked, where it's parked | no |
+| `w` | Only the blocked tasks, each with a stack trace | no |
+| `x` | Tasks that have exited but haven't been collected, and who should collect each one | no |
+| `s` | Scheduler counters, per CPU and in total | no |
+| `i` | The kernel's I/O service threads: state and how many rounds each has done | no |
+| `k` | The longest stall each CPU has seen, and which tasks are waiting on which | no |
+| `p` | Asks every other CPU for its registers and what it is running, and prints a stack trace for this one | no |
+| `d` | How full the lock-order checker's tables are (needs `lockdep=warn`) | no |
+| `m` | Memory: the page allocator, per-CPU caches, the small-object allocator | no |
+| `c` | Each CPU's memory-type settings | no |
+| `q` | Resource accounts: used, peak, limit and refusals for each kind of resource | no |
+| `n` | Network interfaces, addresses, routes and connectivity | no |
+| `u` | USB controllers, ports, devices, drivers and transfer queues | no |
+| `f` | Framebuffer drawing speed per CPU | no |
+| `o` | Writes back the filesystems and powers off | yes |
+| `b` | Reboots | yes |
+
+### Why nothing happens
+
+- **The command changes the machine.** `o` and `b` are refused unless you
+  boot with `kconsole=0x3`, and the log says
+  `kconsole: 'o' (poweroff) refused by policy (kconsole=0x1)`. No program can
+  run them at all, whatever the mask: `/bin/kconsole` answers
+  `refused: the command may change the machine`.
+- **The console is off.** `kconsole=off` turns it off entirely; the default,
+  `kconsole=on`, allows the commands that only print.
+- **The key came too late.** The trigger stays armed for three seconds
+  (`kconsole.arm_ms`). A key no command takes logs
+  `kconsole: no command for '<key>'`.
+- **The serial trigger is off.** `kconsole.serial=off` disarms BREAK.
+
+Nothing a program does can reach a command that changes the machine: the
+keys are taken before they reach any program, and a serial BREAK isn't a
+byte a program can write. This is narrower than Linux, whose
+`/proc/sysrq-trigger` lets an administrator run any command.
 
 ## The machine is stuck
 
@@ -107,11 +145,13 @@ prints where it is: `rip=` is the instruction it's running, and the symbol
 next to it is the function. Here, it was spinning on a read from device
 memory.
 
-A stall that lasts five times the threshold is turned into a panic, and so
-is a chain of CPUs waiting on each other in a circle (a deadlock), on the
-first report. Under a hypervisor, a CPU that the host didn't schedule
-looks exactly like a stuck one, so there the watchdog only reports unless you
-boot with `watchdog.panic=on`.
+A stall that lasts five times the threshold is fatal, and so is a chain of
+CPUs waiting on each other in a circle (a deadlock), on the first report.
+Under a hypervisor, a CPU that the host didn't schedule looks exactly like a
+stuck one, so there the watchdog only reports unless you boot with
+`watchdog.panic=on`. A fatal stall ends the machine as a panic does,
+leaving a crash record (below) with the message
+`NMI watchdog: CPU made no progress, sustained`.
 
 ## A program died with an oops
 
@@ -145,7 +185,8 @@ That's why the number is limited: the 100th oops in a boot (by default; set
 it with `panic.oops_limit`) is a full panic. To stop at the first one
 instead, which is what you want while debugging, boot with
 `panic.on_oops=on`. Test runs always do: with `tests=on`, every panic is
-fatal.
+fatal. An oops leaves no crash record of its own, but its report goes into
+the kernel log, so a later panic's record carries it.
 
 ## The kernel panicked
 
@@ -168,7 +209,8 @@ Backtrace (most recent call first):
   #2 rbp=0xffffffff81788ca0 rip=0xffffffff80031f61 slopos_boot::early_init::boot_run_step+0xe1
 ```
 
-and then `System halted.`
+then `Kernel panic: unrecoverable error`, a line saying what became of the
+crash record (next section), and the same report on screen.
 
 **How to read it.** Start with the second line: the file, line and message
 of the panic. `tainted: oops=3` means the boot had already recovered from
@@ -185,14 +227,74 @@ If it isn't, or you need to see variables,
 [Debugging with GDB](/docs/development/debugging-gdb-record-replay) shows how
 to stop at the panic and how to record a run and step backwards from it.
 
-By default a panicked machine halts so you can read the screen. With
-`panic=reboot` it resets instead. A boot entry that carries that option goes
-back to the previous entry when its kernel panics, which is how a bad
-install rolls itself back; see
-[Installing a system](/docs/self-hosting/updating).
+By default a panicked machine waits on its panic screen so you can read it,
+and powers off when you press Enter. With `panic=reboot` it resets instead,
+after holding the screen for ten seconds on real hardware (not under a
+hypervisor, whose log you already have). An installed system boots with
+`panic=reboot`, so a kernel tried in the spare slot that panics hands the
+machine back to the default slot; see
+[Updating SlopOS](/docs/self-hosting/updating).
 
 To see a panic on purpose, `panic.fatal_smoke=on` raises one right after
 boot.
+
+### The crash record
+
+A machine with no serial port, or one that resets after a panic, would lose
+the report. So a fatal panic also writes it to the boot disk, the way Linux's
+pstore keeps a panic's log for the next boot. The disk SlopOS was installed
+on carries a small *crash partition*, a ring of slots, and each panic writes a
+*crash record* into one: a summary, the panic report and the newest lines of
+the kernel log. Then the next boot saves it as a file.
+
+1. **At boot, the kernel finds the store.** On the disk Limine loaded the
+   kernel from, it claims the crash partition for itself and logs
+   `CRASH: records go to <partition> (<n> slots, <n> held)`. The development
+   machine's boot disk and every installed disk have one; the live ISO does
+   not, and a disk that isn't an NVMe drive keeps no records yet, because the
+   record is written through the NVMe driver's own polled queue, which needs
+   no interrupts, locks or memory allocation.
+2. **At the panic, the kernel writes the record** before it waits or resets,
+   and says how it went on serial and on the panic screen:
+   `crash record: <n> written to <partition> slot <n>`, or
+   `crash record: none, the boot disk keeps no crash store`. The lockup the
+   watchdog ends (above) writes one too; a kernel stack overflow can't, since
+   writing needs the stack that ran out.
+3. **At the next boot, init saves it.** Before any service starts, init runs
+   `bootctl collect`, which copies each record to
+   `/var/log/crash/<index>-<UTC time>-<slot>.txt`, makes the copy durable, and
+   only then erases the record. It prints, for example,
+   `bootctl: crash record 1 saved to /var/log/crash/000003-20261029T101502Z-b.txt: <panic>`.
+   It keeps the newest 64 files, and erases nothing while `/var/log/crash` is
+   on no writable disk, so a record waits in the partition until a boot can
+   keep it.
+
+A saved record opens with its summary:
+
+```text
+SlopOS crash record
+kernel: /boot/b/kernel.elf
+cmdline: <the kernel's command line>
+build: <build tag>
+time: <unix seconds>
+uptime: <n> ms
+cpu: <n>
+panic: <file:line:column: message>
+```
+
+followed by the panic report and, under `--- kernel log ---`, the log's last
+lines. The kernel's path names the slot it came from, so `bootctl status`
+shows each slot's last boot and last crash:
+
+```text
+slot b: kernel <n> bytes, last boot crashed: /var/log/crash/000003-20261029T101502Z-b.txt
+```
+
+Installing a new kernel into a slot clears both. The records themselves are
+also files under `/dev/crash`, one per record, named by its sequence number
+and ending in `-torn` when its checksum fails (a reset cut it short); reading
+or removing one takes the `RawBlock` capability, since a record is the
+kernel's memory as it died.
 
 ## Something is slow
 
@@ -201,8 +303,20 @@ for scheduler counters, `w` to see what blocked tasks are waiting on, and `i`
 to see whether the kernel's I/O threads are making progress.
 
 For numbers, use the sampling profiler. It is off by default and costs
-nearly nothing when off. Turn it on with `prof=on`. It prints its report at
-the end of a test run, so use it with a test recipe:
+nearly nothing when off. On a running system, `/bin/prof` starts and stops
+it (through privd's `org.slopos.prof`, which an administrator runs unasked):
+
+```sh
+prof start
+# ... run the slow thing ...
+prof report slow > slow.log
+prof stop
+```
+
+`prof report <label>` prints the report's lines, which start `PROF[<label>]:`,
+and `scripts/prof_report.py --label slow slow.log` on the host turns them
+into tables. To profile a whole test run instead, boot it with `prof=on` and
+the report comes at the end:
 
 ```bash
 TEST_CMDLINE_EXTRA=prof=on just test-selfhost
@@ -211,9 +325,10 @@ TEST_CMDLINE_EXTRA=prof=on just test-selfhost
 `just bench-selfhost` does this for you on SlopOS building itself, and
 summarises the result with `scripts/prof_report.py`.
 
-**What you'll see.** Lines that start `PROF[post-userland-tests]:`, covering:
+**What you'll see.** Lines that start `PROF[<label>]:`, covering:
 
-- per CPU, time spent in programs, in the kernel and idle;
+- per CPU, time spent in programs, in the kernel and idle, how much of the
+  time it was busy, and how fast it actually ran;
 - the kernel functions where the most samples landed, and the programs
   using the most time;
 - time spent in each system call and in page faults;
@@ -225,6 +340,13 @@ summarises the result with `scripts/prof_report.py`.
 is slow means tasks are waiting, so read the "where blocked programs were
 waiting" lines. Mostly kernel time means look at the hottest kernel
 functions and the system call times.
+
+A CPU that runs slower than it should is the other usual cause, especially
+on a laptop. `cpufreq run -- <command>` runs a command and then prints, per
+CPU and per kind of core, how long it was busy and its effective clock
+speed, the package temperature and what limited the speed, ending with one
+`CPUFREQ[run]:` line to compare between runs.
+[CPU frequency](/docs/architecture/cpu-frequency) explains the numbers.
 
 ## A lock problem
 
@@ -263,7 +385,7 @@ tables are. The kernel also prints a summary line at boot and after each test
 phase:
 
 ```
-LOCKDEP[boot]: ACTIVE classes=71/508 (13%) edges=40/1024 chains=107/2048 declared=0/1 held_max=3/16 held_drops=0 chain_hit=85897 chain_miss=107 violations=0 reports=0 collisions=0 leaked=0 mode=Panic
+LOCKDEP[boot]: ACTIVE classes=<n>/<max> (<n>%) edges=<n>/<max> chains=<n>/<max> declared=<n>/<n> held_max=<n>/<max> held_drops=0 chain_hit=<n> chain_miss=<n> violations=0 reports=0 collisions=0 leaked=0 mode=Panic
 ```
 
 CI reads those lines and fails if there's a violation or the tables grow past
@@ -279,11 +401,16 @@ instead, with the lock and its holder named; see
   `just test` sets it.
 - `tp.debug` turns on touchpad diagnostics, and a check for tasks left
   asleep by a missed wake-up.
+- `usb=report` logs each USB controller's capabilities, protocols and ports
+  and leaves the controller to the firmware; [USB](/docs/architecture/usb)
+  covers the rest.
 - `LD_DEBUG`, an environment variable rather than a boot option, makes the
   dynamic loader trace what it loads; see [Userland](/docs/architecture/userland).
 
 Read next: [Debugging with GDB](/docs/development/debugging-gdb-record-replay)
 for stopping the kernel and inspecting it, and the Linux documentation on
-[lockup detectors](https://docs.kernel.org/admin-guide/lockup-watchdogs.html)
-and [bug hunting](https://docs.kernel.org/admin-guide/bug-hunting.html), which
-explain the same kinds of report on Linux.
+[lockup detectors](https://docs.kernel.org/admin-guide/lockup-watchdogs.html),
+[bug hunting](https://docs.kernel.org/admin-guide/bug-hunting.html) and
+[pstore/blk](https://docs.kernel.org/admin-guide/pstore-blk.html), which
+explain the same kinds of report, and the same idea of a panic log kept on a
+disk, on Linux.

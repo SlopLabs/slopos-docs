@@ -8,9 +8,10 @@ Unix that looks a lot like Linux from the inside. There is a C library with
 the usual POSIX functions, a standard Rust target so ordinary crates build
 unchanged, a POSIX shell, the familiar command-line tools, and dynamic
 linking with `dlopen`. One rule matters more than any other: a program that
-is not part of the system itself reaches SlopOS only through `libc.so`, the
-shared C library, whose interface is only ever added to. Build against it
-and your program keeps working as the system underneath it is updated. What
+is not part of the system's own read-only core should reach SlopOS only
+through `libc.so`, the shared C library, whose interface is only ever added
+to. Build against it and your program keeps working as the system underneath
+it is updated. What
 you can't count on is Linux itself: SlopOS is not built to run binaries
 compiled for Linux, and some less common calls are missing.
 
@@ -44,17 +45,18 @@ The library comes in the forms a compiler expects: `libc.so` to link
 against dynamically, `libc.a` for a static link, `crt0.o`, the code that
 runs before `main`, and `libbuiltins.a`, the helper routines a compiler calls
 for operations the processor has no instruction for, such as 128-bit
-division. SlopOS has no libgcc, so those helpers come from LLVM's
-compiler-rt, built here.
+division. SlopOS has no libgcc, so those helpers are LLVM compiler-rt's,
+built from the copy Rust's standard library carries.
 
 ### Programs in the base and outside it
 
 SlopOS keeps its own programs in the [base](/docs/architecture/base), a
 read-only image that is installed and replaced together with the kernel's
 interface. Those programs are linked statically: each carries its own copy
-of slibc and may make SlopOS's private system calls directly, because the
-base and the kernel agree on a numbered *base interface* and change
-together.
+of slibc and may make SlopOS's private system calls directly. That is safe
+because those calls are numbered as a whole, the *base interface*: a base
+names the one it was built against, and a kernel boots only a base whose
+interface it serves.
 
 Everything else is linked dynamically against `libc.so`. That includes the
 apps that ship outside the base (the editor, the file manager, the image
@@ -178,7 +180,7 @@ capabilities `priv` grants (see [Privileged actions](/docs/architecture/privd)),
 and on the install medium `shell --rescue` starts the rescue shell (see
 [Installing SlopOS](/docs/self-hosting/installing)). Since `exec` drops
 every gated capability, such a shell starts each program in a way that hands
-it what the shell holds, and says so in its prompt.
+it what the shell holds, and says so in its banner and its prompt.
 
 ## The tools
 
@@ -228,9 +230,10 @@ The base's cryptography comes from one library, `tls-core`, written for
 SlopOS in safe Rust with every primitive under it implemented here. It
 serves three jobs:
 
-- **TLS 1.3 connections**, for `curl` and for `remoted` talking to its
-  broker, checked against the certificate bundle the base carries.
-  [Networking](/docs/architecture/networking#encryption-tls) covers it.
+- **TLS 1.3 connections**, for `curl`, checked against the certificate
+  bundle the base carries, and for `remoted`, checked against its broker's
+  own pinned certificate authority.
+  [Networking](/docs/architecture/networking) covers TLS.
 - **Signatures**: Ed25519, verified strictly as RFC 8032 describes, and SSH
   signatures in the format `ssh-keygen -Y sign` writes. `extctl` checks a
   signed extension and its signed configuration this way (see
@@ -297,9 +300,9 @@ with cargo on SlopOS itself. On every commit CI also runs the checks on
   the first definition in lookup order wins.
 - **`libc.so` only grows.** Removing an export or changing a structure's
   layout fails `check_libc_exports.sh`. Record an addition with
-  `check_libc_exports.sh --record`; the private calls behind the library are
-  numbered and checked separately (see
-  [System calls](/docs/architecture/syscalls)).
+  `check_libc_exports.sh --record`. The private calls behind the library are
+  numbered and checked separately, as the base interface (see
+  [Base system](/docs/architecture/base)).
 - **`malloc` follows mimalloc.** Each thread owns a heap of size-class spans
   carved from large aligned segments, so a pointer finds its metadata by
   masking its address. Same-thread allocation and free take no lock; a free
@@ -330,8 +333,9 @@ with cargo on SlopOS itself. On every commit CI also runs the checks on
   by Ulrich Drepper. What a dynamic loader does, in detail, from glibc's
   maintainer.
 - [*Libraries and APIs*](https://doc.redox-os.org/book/libraries-apis.html),
-  from the Redox book. Redox also keeps its stable interface in the C
-  library rather than in its system calls, the choice `libc.so` makes here.
+  from the Redox book. Redox also keeps its stable interface in a library
+  (libredox, an ABI its C library relibc provides) rather than in its system calls,
+  the choice `libc.so` makes here.
 - [*A fork() in the road*](https://www.cs.bu.edu/~jappavoo/jappavoo.github.com/451/papers/fork-hotos19.pdf)
   by Baumann et al., HotOS 2019. The case for creating processes directly
   instead of copying the parent, the approach slibc's `posix_spawn` takes.
