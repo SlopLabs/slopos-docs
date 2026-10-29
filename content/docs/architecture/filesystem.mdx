@@ -21,11 +21,11 @@ repair them with its standard tools.
 None of the ideas here are new. The disk format is Linux's ext4, the
 permission bits are Unix's, and the read-only system image follows systems
 that ship the operating system as a read-only tree, such as those built on
-OSTree, so that it is replaced as a whole instead of edited file by file. The difference in SlopOS is that
-the kernel enforces the split itself, where other systems leave it to a
-startup script. This page walks through where each part of the tree comes
-from, what protects the system's part, how disks are mounted, and what the
-disk format is.
+OSTree, so that it is replaced as a whole instead of edited file by file. In
+SlopOS the kernel itself keeps the split: no program, however privileged, can
+write, unmount, remount or cover the system's directories. This page walks
+through where each part of the tree comes from, what protects the system's
+part, how disks are mounted, and what the disk format is.
 
 ## What lives where
 
@@ -40,8 +40,8 @@ disk format is.
 | `/opt/bin` | The root disk: links to the commands extensions provide | Yes |
 | `/tmp`, `/run`, `/dev/shm` | Memory | No |
 | `/dev` | The kernel's list of devices | Rebuilt at every boot |
-| `/media/install`, `/media/payload` | The install medium, read-only, when the machine booted from one | |
-| `/mnt` | The root disk, when it could only be mounted read-only and SlopOS booted from memory instead | |
+| `/media/install`, `/media/payload` | The install medium, read-only, when the machine booted from one | Present only on that boot |
+| `/mnt` | The root disk, when it could only be mounted read-only and SlopOS booted from memory instead | Nothing written there, since it is read-only |
 
 A *mount* is how one filesystem appears inside another: the kernel keeps a
 table saying "below this directory, ask that filesystem instead". All of the
@@ -123,8 +123,8 @@ create files, only a file's owner may remove it), and a symbolic link
 someone else left in them is not followed, as Linux's `protected_symlinks`
 setting does.
 
-People get the files they make, and the system's directories belong to user
-0. Being user 0 doesn't let a program past those checks. Only the
+People get the files they make, and the system's directories belong to uid
+0. Running as uid 0 doesn't let a program past those checks. Only the
 `DacOverride` [capability](/docs/architecture/authority) does, and few
 programs hold it. [Users and file permissions](/docs/architecture/users)
 explains accounts, who owns which part of the root, and how the checks work.
@@ -165,12 +165,18 @@ mount("/dev/nvme0n1p3", "/media/data", "ext4", MS_RDONLY, NULL);
 ```
 
 A person who administers the machine can do the same from a shell through
-[`priv`](/docs/architecture/privd), whose commands hold `Mount`:
+[`priv`](/docs/architecture/privd), whose commands hold `Mount`. `/media`
+belongs to uid 0, so the mount point is made through `priv` too (it then
+belongs to you):
 
 ```sh
+priv mkdir /media/photos
 priv mount -r LABEL=photos /media/photos
 priv umount /media/photos
 ```
+
+`mount` takes `-r` (or `-o ro`) for a read-only mount and `-t` for the type,
+`ext4` unless you say otherwise; `umount -l` detaches a busy mount.
 
 A few rules are worth knowing:
 
@@ -189,8 +195,9 @@ A few rules are worth knowing:
   [Disks](/docs/architecture/storage#why-two-things-cant-write-one-disk) page
   explains claims.
 - **At most four disk volumes at once.** Disk mounts come from a fixed pool
-  of four, and the root takes one. Extensions' images have a pool of their
-  own.
+  of four. The root takes one, and so does the install medium's payload on a
+  boot from the medium. Extensions' images have a pool of their own, and so
+  do `ramfs` mounts, four at a time.
 - **Unmounting a busy disk** fails with `EBUSY` unless you pass
   `MNT_DETACH`, in which case the name disappears at once and open files keep
   working until they are closed. When the last mount of a disk goes away, the
@@ -231,9 +238,9 @@ read-only, and one with a feature it can't read safely is refused.
 
 ## What happens after a crash
 
-A journal on every disk means a crash or power loss can't leave the
-filesystem inconsistent, and the disk is repaired by itself at the next
-boot. [Crash recovery](/docs/architecture/crash-recovery) explains how the
+Every writable disk the build makes carries a journal, so a crash or power
+loss can't leave the filesystem inconsistent, and the disk is repaired by
+itself at the next boot. [Crash recovery](/docs/architecture/crash-recovery) explains how the
 journal works, what programs can rely on after a crash, and what happens if
 the journal itself is damaged.
 
@@ -300,9 +307,9 @@ this: they write a file, seal it, read it back and only then believe it.
 
 ## Checksummed disk images
 
-A disk image can carry an extra block of checksums at its end (a *verity
-trailer*) so the kernel can tell when a block has changed since the image was
-built. It catches accidental corruption, not a deliberate attacker, because
+A disk image can carry a table of checksums at its end, one for each block (a
+*verity trailer*), so the kernel can tell when a block has changed since the
+image was built. It catches accidental corruption, not a deliberate attacker, because
 the checksums are CRC-32. A *protected* trailer (`VERITY=on`) makes the whole
 disk read-only; an *attested* one (`VERITY=rw`) allows writes and stops
 checking the blocks that were written. The boot option `verity=require`

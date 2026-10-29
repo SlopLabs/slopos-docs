@@ -74,9 +74,9 @@ A zombie keeps its thread charged to its person until its parent reaps it,
 rather than to the parent's own budget, so a person who leaves thousands of
 children unreaped spends only their own share. Ending their session ends
 every process that carries its login tag, a fork bomb included, and gives
-back what they held ([Sessions and login](/docs/architecture/sessions)). The accounts are made as each
-person first runs something, for the first sixteen people in a boot; anyone
-after that shares the system's account. Memory isn't divided this way: it
+back what they held ([Sessions and login](/docs/architecture/sessions)).
+The accounts are made as each person first runs something, for the first
+sixteen people in a boot; anyone after that shares the system's account. Memory isn't divided this way: it
 stays the machine's, under the one commit ceiling below.
 
 Linux reaches for the same goal with `RLIMIT_NPROC`, which it counts for each
@@ -202,10 +202,10 @@ error, and the OOM killer's tests cover each rule in its choice of victim. A
 userland test starts a fork bomb as one person and checks that it stops at
 their share, with their unreaped children counted against it, while another
 person's session keeps starting programs. An in-kernel audit cross-checks
-the running totals against the memory they describe. The ledger's arithmetic has a machine-checked proof (see
-[Proofs](/docs/verification/verus-status)) as a sequential state machine; the
-per-row atomics and account release are covered by the audit, KernMiri and
-tests.
+the running totals against the memory they describe. The ledger's arithmetic
+has a machine-checked proof, as a sequential state machine (see
+[Proofs](/docs/verification/verus-status)); the per-row atomics and account
+release are covered by the audit, KernMiri and tests.
 
 ## For contributors
 
@@ -236,8 +236,9 @@ walk bounded.
 (`charge_clone`) each charge one task to the account of the process the new
 task belongs to. When the last task of a person's process exits, its charge
 moves onto the zombie leader, held by the person's row
-(`ChargeSlot::bequeath_into`), and is refunded at the reap. A memfd's charges move too when its sizer dies
-(`ChargeSlot::bequeath`), to the root, which is never released.
+(`ChargeSlot::bequeath_into`), and is refunded at the reap. A memfd's charges
+move too when its sizer dies (`ChargeSlot::bequeath`), to the root, which is
+never released.
 
 **Commit classes** decide how each memory region is charged. A class never
 moves back; only `Unreserved` changes, the first time a protection lets its

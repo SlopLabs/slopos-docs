@@ -25,8 +25,11 @@ image.
 |---|---|
 | `just iso`, `just boot-live`, `just boot-log` (live ISO) | `BOOT_CMDLINE`, default `tests=off root=initramfs`, plus `boot.debug=on` with `DEBUG=1` and `roulette=skip` with `ROULETTE=0` |
 | `just boot`, `just boot-fast`, `just boot-debug` (development boot disk) | `tests=off`, plus the same `DEBUG` and `ROULETTE` additions; each slot's entry adds `slot=<name>`, which the kernel does not read |
-| `just test` and its variants | The justfile's `test_cmdline`: `tests=on tests.shutdown=on tests.verbosity=summary boot.debug=on roulette=skip root=auto mount=LABEL=slopos-media:/media`, plus the `tests.*` options the runner adds from its flags (see [Test output format](/docs/abi/ktap-test-output#host-runner)). `just test-userland-only` takes `TEST_CMDLINE` from the environment in its place |
+| `just test` and its variants | The justfile's `test_cmdline`: `tests=on tests.shutdown=on tests.verbosity=summary boot.debug=on roulette=skip root=auto mount=LABEL=slopos-media:/media`, plus the `tests.*` options the runner adds from its flags, `tests.warn_ms=500` among them by default (see [Test output format](/docs/abi/ktap-test-output#host-runner)). `just test-userland-only` boots `test_cmdline`, or `TEST_CMDLINE` from the environment, with `tests.run=__userland_only__` added, which matches no kernel test |
 | `just test-persist`, `test-rude-exit`, `test-capacity`, `test-install` | `test_cmdline` and a `tests.run=` naming their tests; `test-install`'s slots boot with `root=PARTUUID=` of the disk's root partition in place of `root=auto` |
+| `just test-usb` | `tests=on tests.shutdown=on tests.verbosity=summary boot.debug=on roulette=skip root=initramfs` and a `tests.run=` naming the USB tests |
+| `just test-installer` | The live ISO: `tests=on tests.shutdown=on tests.verbosity=summary boot.debug=off roulette=skip root=initramfs watchdog.miss_threshold=300 tests.run=*ext4_aaa*,*installer*`. The systems it installs are given the same words through `installer --cmdline`, with `panic=reboot` in place of `root=initramfs` |
+| `just test-remote` | `tests=off roulette=skip`, its slots with `root=PARTUUID=` of the disk's root partition |
 | `just test-toolchain`, `test-selfhost`, `bench-selfhost`, `test-install-guest` | `test_cmdline` with `boot.debug=off`, plus `watchdog.miss_threshold=300` and a `tests.run=` naming their tests. All but `test-install-guest` append `TEST_CMDLINE_EXTRA`; `bench-selfhost` also adds `prof=on` unless `BENCH_PROF` is set |
 | An installed system | `root=PARTUUID=<root partition> panic=reboot`, where `installer --cmdline <words>` replaces `panic=reboot` |
 
@@ -46,9 +49,9 @@ slot whose loader entry is fixed still boots with an experiment's options:
 SLOPOS_BUILTIN_CMDLINE='cpufreq=firmware prof=on' just remote-install
 ```
 
-The boot log says `BOOT: built-in command line appended: <text>`. The two lines
-together must fit in 1024 bytes; when they do not, the kernel uses the
-loader's alone and logs
+The boot log says `BOOT: built-in command line appended: <text>`. The two lines,
+with a space between them, must together be shorter than 1024 bytes; when they
+are not, the kernel uses the loader's alone and logs
 `BOOT: built-in command line dropped: it does not fit beside the loader's`.
 
 ## How options are read
@@ -61,7 +64,8 @@ loader's alone and logs
 - On/off options accept exactly `on` and `off`.
 - Where an option appears more than once, the last accepted value wins.
   The exceptions: `mount=`, `tests.run=` and `tests.skip=` accumulate;
-  `prof=on` and `panic=reboot` take effect wherever they appear;
+  `prof=on`, `panic=reboot` and `verity=require` take effect wherever they
+  appear;
   `extensions=off` takes effect wherever it appears, and a later
   `extensions=on` does not undo it.
 - `video=framebuffer`, `roulette=skip`, `tp.off`, `tp.poll`, `tp.debug`,
@@ -95,7 +99,9 @@ it differs from Linux's.
     until USB settles (at most `usb.settle_ms`). If it is still absent, the
     boot logs `FS: root=<device> names no usable block device (...)` and
     uses the initramfs, as it does when the device holds no volume the
-    kernel can mount.
+    kernel can mount. A named device that mounts read-only is treated as
+    `auto` treats the first disk: `/` is the initramfs and the device is
+    shown at `/mnt`.
 - **Differs from Linux:** Linux's `root=` takes a block device (`/dev/<name>`,
   `PARTUUID=`, `PARTLABEL=` or a hexadecimal device number) or `ram`, `nfs`,
   `cifs`, `mtd` or `ubi`, and leaves a filesystem's `UUID=` or `LABEL=` to an
@@ -189,7 +195,7 @@ does not accept is ignored without a log line.
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `mem.commit=` | percent | `100` | How much memory, as a percentage of usable physical memory, the kernel may promise to private mappings. Values above `400` are capped at `400`; `0` counts promises but sets no ceiling. See [Memory](/docs/architecture/memory) |
-| `quota=` | `off`, `warn`, `enforce` | `enforce` | What a resource limit does when a program would exceed it. `warn` grants and counts; `off` still counts but never refuses. See [Resource limits](/docs/architecture/resource-accounting) |
+| `quota=` | `off`, `warn`, `enforce` | `enforce` | What a resource limit does when a program would exceed it. `enforce` refuses the charge; `warn` grants it and counts it as a denial; `off` consults no limit but still counts what each account holds. See [Resource limits](/docs/architecture/resource-accounting) |
 
 ### Logging, diagnostics and profiling
 
@@ -226,7 +232,7 @@ report. `just test` never sets them.
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `tests=` | `on`, `off` | `off` | Runs the kernel test harness. `off` also clears `tests.shutdown`. Any `tests=on` also puts userland in test mode: init runs the userland tests in a copy of itself, `test_key` answers, and the Wheel of Fate cannot restart the machine |
+| `tests=` | `on`, `off` | `off` | Runs the kernel test harness, and makes the `usb settle` boot step wait up to a minute for USB to settle and fail the run with `USB: unsettled after 60000 ms` if it does not. `off` also clears an earlier `tests.shutdown`. Any `tests=on` also puts userland in test mode: init runs the userland tests in a copy of itself, `test_key` answers, and the Wheel of Fate cannot restart the machine |
 | `tests.run=` | globs separated by commas | all tests | Runs only tests whose `module::name` matches one of the globs. A test registered as explicit runs only when a pattern is exactly its full name |
 | `tests.skip=` | globs separated by commas | none | Skips matching tests |
 | `tests.verbosity=` | `quiet`, `summary`, `verbose` (any case) | `summary` | `quiet` prints only failures; `verbose` adds the captured log of passing tests. Any other value means `summary` |

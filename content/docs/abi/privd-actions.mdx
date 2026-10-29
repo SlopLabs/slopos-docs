@@ -210,7 +210,7 @@ bytes, and each name occurs once.
 | Setting | Value | Required | Meaning |
 |---|---|---|---|
 | `program` | one path | yes, once | The mechanism. A canonical path under `/bin/`, `/sbin/` or `/usr/bin/`, at most 255 bytes, with no empty, `.` or `..` component. |
-| `args` | words, then optionally `*` | at least one, repeatable | One argument shape. Each word is printable ASCII without `"` or `*`, at most 64 bytes; `*` may only come last. A shape with no `*` matches exactly that many arguments, so `args` alone matches none. The same shape may not appear twice. |
+| `args` | words, then optionally `*` | at least one, repeatable | One argument shape. Each word is printable ASCII without `"` or `*`, at most 64 bytes; `*` may only come last. A shape with no `*` matches exactly that many arguments, so a bare `args` line matches only a request with no arguments. The same shape may not appear twice. |
 | `caps` | capability names, possibly none | yes, once | What the mechanism holds. Each name once, from `Power`, `ProcSignal`, `Mount`, `RawBlock`, `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `Seal`, `BootEntry`, `DacOverride`, `BaseUpdate`, `ExtensionUpdate`. |
 | `uid` | `0` or `requester` | yes, once | Whom the mechanism runs as. `requester` runs it as whoever asked, in their own group, `admin` (gid 10) while the record names them an administrator, and their session's login tag. Its `caps` must stay within `REQUESTER_CEILING` and its `allow` lines name only `root`, `user` and `admin`. |
 | `allow` | a principal, then a level | at least one, repeatable | Who may ask, and what they must do. Each principal at most once. |
@@ -253,7 +253,7 @@ elsewhere or exited since it connected.
 | Level | For |
 |---|---|
 | none | Runs unasked. |
-| `alone` | `user`: runs unasked while no other person is logged in at a desktop or a terminal, or when the person asking is an administrator; otherwise the line does not decide, and an administrator's password answers. `greeter`: runs unasked while nobody is logged in; otherwise the request is refused. |
+| `alone` | `user`: runs unasked while no other person is logged in at a desktop or a terminal, or when the person asking is an administrator; otherwise the line does not decide, and unless a later line does, an administrator's password answers. `greeter`: runs unasked while nobody is logged in; otherwise the request is refused. |
 | `confirm` | The person asking answers for themselves: a click at their own desktop, their password anywhere else. |
 | `password` | The person asking types their own password; at their own desktop, a person with no password clicks instead. |
 

@@ -34,10 +34,10 @@ choices or recipe behaviour.
 | `ROULETTE` | `1` | `0`, `false`, `off`, `no` or `skip` adds `roulette=skip`: no Wheel of Fate |
 | `DEBUG` | `0` | `1`, `true`, `on` or `yes` adds `boot.debug=on` |
 | `VIDEO` | `1` for `boot` and `boot-live` | `0` opens no window; the console is the terminal |
-| `KERNEL_RELEASE` | `1` for `boot`, and for `iso` when `PAYLOAD=1`; otherwise `0` | `1` builds and boots the optimised kernel, `0` the dev kernel |
+| `KERNEL_RELEASE` | `1` for `boot`, and for `iso` when `PAYLOAD=1`; otherwise `0` | `1` builds and boots the optimised kernel, `0` the dev kernel. `test-installer`, `test-install-guest`, `test-selfhost` and `bench-selfhost` always use the optimised tests kernel |
 | `PAYLOAD` | `0` | `1` makes `just iso` add the toolchain and a clone of `HEAD` in a partition of the ISO, which the installer copies to the disk it installs |
 | `REMOTE` | `0` | `1` makes `just iso` pack a base paired with this host's remote-control broker. That ISO carries the broker's token |
-| `BOOT_CMDLINE` | `tests=off root=initramfs` | The live ISO's whole kernel command line (`iso`, `boot-live`, `boot-log`). `boot` ignores it |
+| `BOOT_CMDLINE` | `tests=off root=initramfs` | The live ISO's kernel command line (`iso`, `boot-live`, `boot-log`), to which `DEBUG` and `ROULETTE` add their options. `boot` ignores it |
 | `BOOT_LOG_TIMEOUT` | `15` | Seconds `boot-log` runs before QEMU is stopped |
 | `LOG_FILE` | `test_output.log` | Where `boot-log` writes the serial log, with ANSI escapes removed |
 | `DEV_QEMU_MEM` | `6G` | Memory for `boot`, the self-hosting checks and `test-installer` when `QEMU_MEM` is unset |
@@ -49,8 +49,10 @@ choices or recipe behaviour.
 | `CAPACITY_IMAGE_SIZE` | `16G` | Size of the `test-capacity` volume |
 | `CAPACITY_INODE_RATIO` | `16384` | Bytes per inode for the `test-capacity` volume |
 | `CAPACITY_QEMU_MEM` | `2G` | Memory for `test-capacity` when `QEMU_MEM` is unset |
-| `TEST_CMDLINE` | the justfile's `test_cmdline` | The test ISO's whole kernel command line |
-| `TEST_CMDLINE_EXTRA` | empty | Appended to the self-hosting root's boots, for example `prof=on` |
+| `TEST_CMDLINE` | the justfile's `test_cmdline` | The kernel command line `test-userland-only` and `test-elf` give the tests ISO, before each adds its `tests.run=`. `just test` and its variants ignore it and build theirs from `test_cmdline` and their arguments, and the other checks set their own |
+| `TEST_CMDLINE_EXTRA` | empty | Appended to the command line of `test-toolchain`, `test-selfhost` and `bench-selfhost`, for example `prof=on` |
+| `BENCH_PROF` | `prof=on` | What `bench-selfhost` adds to its command line; set it empty to profile nothing |
+| `INSTALLER_PAYLOAD` | `1` | `0` builds `test-installer`'s medium without the toolchain, so each installed disk clones a slot instead of building the system |
 | `UI_SHOTS_WIDTH`, `UI_SHOTS_HEIGHT` | `1280`, `800` | Screen size for `ui-shots` |
 | `BUILD_DIR` | `builddir` | Build output directory |
 

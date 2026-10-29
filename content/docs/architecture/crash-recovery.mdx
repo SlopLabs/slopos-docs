@@ -193,6 +193,12 @@ A damaged journal means the disk lost or garbled data after confirming that
 it had stored it. The journal can't protect you from that, but the checksums
 make sure SlopOS notices instead of copying the damage into place.
 
+SlopOS also leaves alone a journal that holds entries while the flag says the
+disk was not in use. SlopOS never writes that combination, and its copies may
+be older than what is already in place, so replaying them could undo newer
+changes. That disk mounts read-only too, with a line saying its journal is
+one the kernel neither replays nor writes, and `e2fsck` decides.
+
 ## What programs can rely on
 
 Here is what you get when you write files on SlopOS:
@@ -224,7 +230,8 @@ have the details.
 ## Differences from Linux
 
 The on-disk format is the same, so a disk can move between SlopOS and Linux.
-SlopOS replays a journal that Linux wrote, and `e2fsck` replays a journal
+SlopOS replays a journal that Linux wrote with its default journal features
+(it refuses Linux's optional fast commits), and `e2fsck` replays a journal
 that SlopOS wrote. Behaviour differs in a few places:
 
 | | Linux ext4 (defaults) | SlopOS |
@@ -244,8 +251,8 @@ disk that needs no recovery at all.
 
 Crash bugs don't show up in normal testing, because normal testing doesn't
 crash. So one test crashes on purpose. `just test-rude-exit` boots SlopOS,
-creates a file, calls `fsync`, and then kills the virtual machine. The host
-then checks the disk image:
+creates a file, calls `fsync`, and then ends the virtual machine at once,
+without unmounting the disk. The host then checks the disk image:
 
 1. The disk must still be marked in use, with an entry in its journal, so the
    test really did stop in the middle.

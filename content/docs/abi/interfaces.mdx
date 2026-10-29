@@ -193,11 +193,11 @@ interface lasts.
   symlink the kernel refuses, at most 2048 records, an interface and a
   manifest), and the packer, `bootctl base install` and `bootdisk base` all
   apply it.
-- **Not held:** the archive rules in `boot-core::base::check` are outside the
-  base interface's digest, which covers `slopos-abi` alone.
 - **Checked by:** `boot-core`'s and `tools/initramfs`'s host tests
   (`just test-host`); the kernel's base tests; `live_base_test`;
   `just test-install`, which installs bases and rolls them back.
+- **Not held:** the archive rules in `boot-core::base::check` are outside the
+  base interface's digest, which covers `slopos-abi` alone.
 - **See:** [Base system](/docs/architecture/base),
   [Updating SlopOS](/docs/self-hosting/updating).
 
@@ -220,9 +220,11 @@ interface lasts.
 
 ### Limine boot protocol
 
-- **What:** the requests the kernel places in its image (memory map, modules,
-  framebuffer, the kernel file and its address, the EFI system table, the
-  other CPUs, the boot time) and Limine's answers, through the `limine` crate.
+- **What:** the requests the kernel places in its image (the memory map and
+  the EFI memory map, the higher-half direct map, modules, framebuffer, the
+  kernel file and its address, the ACPI RSDP, the EFI system table, the other
+  CPUs, the loader's name and version, the boot time) and Limine's answers,
+  through the `limine` crate.
   The modules are `initramfs` (the current base), `initramfs-previous` and, on
   an install medium, `install`.
 - **Between:** every kernel and the Limine on its disk's ESP. That Limine is
@@ -676,8 +678,8 @@ interfaces are the ones that cross that gap.
 
 - **What:** the frames between `remoted` and the broker, over TLS 1.3 on one
   port (7330 by default): a 5-byte header (a kind and a big-endian length),
-  then `HELLO`, `WELCOME`, `EXEC`, `PUT`, `GET` and their replies
-  (`remote-core`); and the pairing a base carries under
+  then `HELLO`, `WELCOME`, `PING`, `PONG`, `EXEC`, `PUT`, `GET` and their
+  replies (`remote-core`); and the pairing a base carries under
   `/usr/share/slopos/remote/`.
 - **Between:** `remoted`, in a paired base on the machine, and
   `scripts/remote.py` on the developer's host, which are updated apart.
@@ -710,8 +712,9 @@ interfaces are the ones that cross that gap.
 
 ### C++ runtime
 
-- **What:** `libc++.so` (libc++ and libc++abi in one object, on the tests
-  image only), the ABI flags it is built with
+- **What:** `libc++.so` (libc++ and libc++abi in one object, in no base: the
+  tests image and the toolchain's sysroot carry it), the ABI flags it is built
+  with
   (`scripts/make_slopos_cxx.sh --print-abi-flags`), and every symbol it leaves
   for `libc.so` to define.
 - **Between:** the runtime, built from the llvm-project release

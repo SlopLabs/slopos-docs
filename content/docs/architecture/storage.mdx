@@ -194,10 +194,12 @@ root unless the root is a disk of its own, and a small crash partition where
 a panicking kernel leaves its record. These carry partition types that
 belong to SlopOS rather than the standard Linux ones, so a Linux on the same
 disk doesn't mistake them for its own and mount them. The running kernel
-itself ignores partition types, except that it finds its crash partition by
-type on the disk it was loaded from and holds it for the whole boot: the
-root is whatever the `root=` boot option names, and a boot entry names its
-root partition by `PARTUUID`.
+itself looks at partition types in only two places: it finds its crash
+partition by type on the disk it was loaded from and holds it for the whole
+boot, and, booted from an [install medium](/docs/self-hosting/installing),
+it finds the medium's toolchain partition (the *payload*) by type and mounts
+it read-only. Otherwise the root is whatever the `root=` boot option names,
+and a boot entry names its root partition by `PARTUUID`.
 
 The only thing in SlopOS that writes a partition table is the
 [installer](/docs/self-hosting/installing), on the disk you choose to install
@@ -233,8 +235,8 @@ Reading or writing a disk directly bypasses every file permission on it (and
 ext4 doesn't erase a deleted file's blocks), so it takes the `RawBlock`
 [capability](/docs/architecture/authority), which ordinary programs never
 hold. The boot manager, the installer and the rescue shell hold it while
-they work. Mounting a volume takes a different capability, `Mount`, which an
-administrator's [`priv`](/docs/architecture/privd) carries, so
+they work. Mounting a volume takes a different capability, `Mount`, which a
+command run through [`priv`](/docs/architecture/privd) holds, so
 `priv mount -r /dev/sda1 <directory>` mounts a stick read-only.
 
 ## Disks that come and go
@@ -284,13 +286,15 @@ request back. If the abandoned request was a write, every later write or
 flush that could land in the wrong order behind it waits until it comes back.
 Otherwise a late write could overwrite newer data with older data.
 
-A program killed while waiting on a read is released at once, since a read
-changes nothing wherever it lands. A killed write is waited out for a while
-first and then abandoned to the quarantine.
+Because an abandoned request costs a quarantine place, and an abandoned write
+holds up every later write, a program killed while its request is in flight
+isn't released at once: the kernel goes on waiting for the disk for up to five
+seconds, read or write, and only then abandons the request to the quarantine.
 
 An NVMe or virtio-blk disk that keeps ignoring requests ends up with every
-slot quarantined, logs that it is not completing requests, and stops serving
-until the next boot; SlopOS doesn't reset such a drive. A USB stick is
+slot quarantined and logs that it is not completing requests. It serves
+nothing more until it hands requests back, which a hung drive doesn't do
+before the next boot; SlopOS doesn't reset such a drive. A USB stick is
 different, because Bulk-Only has a recovery procedure: the driver resets the
 stick's pipes and tries the command once more, and a stick that still won't
 answer is reset at its port and found again as if it had been plugged back

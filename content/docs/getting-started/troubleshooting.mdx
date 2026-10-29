@@ -43,6 +43,7 @@ or complete it.
 |---------|---------|
 | `build_recipes: make is required to build e2fsprogs` or `build_recipes: pkg-config is required to build e2fsprogs` | `make` and `pkg-config` (`pkgconf` on Arch) |
 | `build_bootdisk: missing host tools:` followed by any of `sfdisk mkfs.fat mmd mcopy truncate dd` | util-linux or fdisk (`sfdisk`), dosfstools (`mkfs.fat`), mtools (`mmd`, `mcopy`), coreutils (`truncate`, `dd`) |
+| `make_slopos_cxx: cmake is required to build the C++ runtime`, or the same for `ninja` | CMake and Ninja (`ninja-build` on Debian) |
 | `mke2fs is required` or `debugfs is required` | e2fsprogs |
 | `resize2fs is not installed, so the image cannot be grown` | e2fsprogs |
 | `gen_verity: python3 is required` | Python 3 |
@@ -53,10 +54,11 @@ disk; the live ISO does not need them.
 
 ## The build cannot find LLVM
 
-Every base carries programs cross-compiled for SlopOS with your clang, and the
-test image adds a C++ runtime built from pinned LLVM sources. Building them
-needs `clang`, `clang++`, `ld.lld` and `llvm-ar` that all report the same LLVM
-version, 18 or later, plus `cmake` and `ninja`. So `just boot-live` and
+Every base carries programs cross-compiled for SlopOS with your clang, and
+the cross compiler that builds them needs SlopOS's C++ runtime, which is
+built from pinned LLVM sources. Building them needs `clang`, `clang++`,
+`ld.lld` and `llvm-ar` that all report the same LLVM version, 18 or later,
+plus `cmake` and `ninja`. So `just boot-live` and
 `just boot` need them as much as `just test` does. The build looks for version
 18 first (`clang-18`, `/usr/lib/llvm-18/bin`, `/usr/lib64/llvm18/bin`), then
 the unversioned tools, then any newer installed version.
@@ -130,8 +132,9 @@ recovery](/docs/architecture/crash-recovery) explains the journal.
 
 The root filesystem came up read-only. When the kernel finds a journal on the
 disk that it cannot replay safely, it mounts the disk read-only and leaves the
-repair to `e2fsck`. A read-only disk cannot be the root, so the system boots
-from its built-in RAM disk instead and mounts the real disk at `/mnt`.
+repair to `e2fsck`. A read-only disk cannot be the root, so the system runs
+with its root in memory instead, as the live ISO does, and mounts the real
+disk at `/mnt`.
 Everything looks normal, but nothing written to `/` is kept.
 
 Shut the guest down, then check and repair the disk on the host:
@@ -154,8 +157,9 @@ the read-only base. Software you add goes under `/usr/local` or `~/.local`
 This needs your password, and you haven't set one.
 ```
 
-Commands that change the system (`bootctl`, `scripts/selfhost.sh install`,
-`users add` and the others) ask the person at the machine first. At the
+Commands that install or change the system (`bootctl install`,
+`scripts/selfhost.sh install`, `users add` and others) ask the person at the
+machine first. At the
 desktop that is a dialog, which the first person, who has no password, answers
 with a click. At a text console, such as the serial console `VIDEO=0` gives
 you, the only answer is a password, so a person without one is refused. Run
@@ -242,7 +246,7 @@ For more detail, skip the wheel and turn on debug logging:
 
 ```bash
 ROULETTE=0 DEBUG=1 just boot
-BOOT_CMDLINE='tests=off root=initramfs roulette=skip boot.debug=on' just boot-log
+ROULETTE=0 DEBUG=1 just boot-log
 ```
 
 If a running system stops responding, press SysRq (Alt+PrintScreen) in the

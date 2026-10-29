@@ -5,8 +5,8 @@ description: "A SlopOS virtual machine that keeps its disk between boots and can
 
 `just boot` starts SlopOS in a QEMU virtual machine that you can develop
 SlopOS on. It has a disk that keeps what you write between boots, a Rust and
-C toolchain that runs on SlopOS, and a git clone of the checkout you booted
-from. Inside it you pull the host's commits, build the system, switch the
+C toolchain that runs on SlopOS (once you have cross-built it), and a git
+clone of the checkout you booted from. Inside it you pull the host's commits, build the system, switch the
 running machine to the programs you just built, try a new kernel for one boot
 and keep it, and push your commits back to the host. You work as an ordinary
 person, `user`, and the machine asks you before anything replaces its kernel
@@ -44,7 +44,7 @@ On the root disk you find:
 
 | Path | What it is |
 |------|------------|
-| `/src/slopos` | A git clone of your host checkout |
+| `/src/slopos` | A git clone of your host checkout. Its builds fetch crates from crates.io (and a `tests` build the LLVM sources) as your checkout's do, so the guest needs the host's network the first time |
 | `/usr/local` | The toolchain (`rustc`, `cargo`, `clang`, `clang++`, `ld.lld`, `git`, `ssh`, `bash`, `cmake`, `ninja` and their licence texts) and the apps that live outside the base: the editor, the file manager, the image viewer and the widget gallery |
 | `/home/user` | Your home directory |
 | `/etc`, `/var` | The machine's own state, as on any Unix machine |
@@ -223,7 +223,7 @@ over.
 apps without installing anything. All three commands take an optional
 variant: `release` (the default), `dev`, or `tests`, which builds the kernel
 with its test suite and the base with the test programs. The outputs are in
-`builddir/` inside the clone: `builddir/kernel-release.elf`,
+`builddir/` inside the clone: `builddir/kernel-<variant>.elf`,
 `builddir/initramfs.cpio` (`builddir/initramfs-tests.cpio` for `tests`) and
 `builddir/apps`.
 

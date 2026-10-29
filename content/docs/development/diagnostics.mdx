@@ -164,20 +164,26 @@ BOOT_CMDLINE='tests=off root=initramfs panic.recover_smoke=on' just boot-log
 grep -E 'panic recovery|SMOKE' test_output.log
 ```
 
-**What you'll see.**
+**What you'll see.** Two deliberate panics, one in a kernel thread and one
+in a program's system call, each followed by a line saying the kernel
+survived (the order can vary):
 
 ```
-panic recovery: syscall task=<id> core/src/syscall/test_handlers.rs:154:5: test_panic: deliberate syscall-context panic (panic.recover_smoke) (oops total=<n>)
+panic recovery: kthread task=<id> boot/src/early_init.rs:1035:5: panic.recover_smoke: deliberate recoverable kthread panic (oops total=<n>)
+PANIC RECOVERY SMOKE: cleanup observed; kernel survived
+panic recovery: syscall task=<id> core/src/syscall/test_handlers.rs:156:5: test_panic: deliberate syscall-context panic (panic.recover_smoke) (oops total=<n>)
 SYSCALL PANIC SMOKE: task died; kernel survived
 ```
 
 **How to read it.** A *panic* is the kernel finding itself in a state it
 wasn't written to handle. If that happens while the kernel is working on a
-program's system call, SlopOS doesn't take the whole machine down: it stops
-the system call, kills the program that made it, releases the locks the
-failed call held, and carries on. Linux calls this an *oops*. The line gives
-the task, the source file, line and column where the panic happened, the
-panic message, and how many oopses this boot has had.
+program's system call, or in one of its own background threads (other than
+a CPU's idle task), SlopOS doesn't take the whole machine down: it stops the
+system call and kills the program that made it, or ends the thread, releases
+the locks the failed code held, and carries on. Linux calls this an *oops*.
+The line says which kind it was, and gives the task, the source file, line
+and column where the panic happened, the panic message, and how many oopses
+this boot has had.
 
 An oops is still a kernel bug. Recovery cleans up what Rust's ownership
 cleans up, but some state (a counter, a reference count) may now be wrong.
@@ -190,12 +196,12 @@ the kernel log, so a later panic's record carries it.
 
 ## The kernel panicked
 
-**What you'll see.** A panic outside a system call stops the machine. It
-prints a block like this one, from a real boot that failed:
+**What you'll see.** Any other panic stops the machine. It prints a block
+like this one, from a boot whose setup failed:
 
 ```
 === KERNEL PANIC ===
-boot/src/early_init.rs:329:9: Boot init step failed
+boot/src/early_init.rs:319:9: Boot init step failed
 tainted: oops=3
 Register snapshot:
 RSP: 0xFFFFFFFF81788B60
@@ -294,7 +300,7 @@ Installing a new kernel into a slot clears both. The records themselves are
 also files under `/dev/crash`, one per record, named by its sequence number
 and ending in `-torn` when its checksum fails (a reset cut it short); reading
 or removing one takes the `RawBlock` capability, since a record is the
-kernel's memory as it died.
+kernel's state as it died.
 
 ## Something is slow
 
@@ -334,7 +340,9 @@ summarises the result with `scripts/prof_report.py`.
 - time spent in each system call and in page faults;
 - where blocked programs were waiting, sampled each time a CPU goes idle;
 - calls per futex, how long each context switch keeps interrupts off, and
-  how long tasks waited for and held the filesystem's locks.
+  how long tasks waited for and held the filesystem's lock and each address
+  space's lock;
+- disk reads, writes and flushes, with the time they took.
 
 **How to read it.** Start with the per-CPU split. Mostly idle while the work
 is slow means tasks are waiting, so read the "where blocked programs were

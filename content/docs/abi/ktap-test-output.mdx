@@ -110,7 +110,8 @@ KTAP	ok 5 - slopos_core::utests::utest_heap_allocator # time_ms=234
   top-level result.
 - On a passing case, text after `#` is a note; only `SKIP` changes the
   outcome. On a failing case it is the failure message.
-- Notes and messages are cut to their first line.
+- Notes and messages are cut to their first line. The `test_report` call
+  already cut a name at 64 bytes and a note or message at 128.
 - A skipped case is `ok N - name # SKIP`, with no reason.
 - Subtest lines go straight to the console rather than through the per-test
   log capture, so a long test that overflows the capture cannot lose them.
@@ -123,13 +124,13 @@ KTAP	# elapsed_ms=14238 pass=2391 fail=1 skip=0 over_time=14
 
 - Each phase ends with a footer holding its time and counters.
 - If a test whose name starts with `bootstrap_` fails, the harness prints
-  `KTAP	Bail out! <reason>` and runs no more tests in that phase.
+  `KTAP	Bail out! <test name>` and runs no more tests in that phase.
 - The format-free abort a lockup or a broken unwind takes prints
   `=== KERNEL ABORT ===` and a reason line, which the runner records as a
   kernel abort. The other CPUs may go on producing results, so the runner
-  keeps reading. A fatal panic prints `=== KERNEL PANIC ===` and halts; the
-  phase then has fewer results than its plan, which the runner reports as
-  output cut short.
+  keeps reading. A fatal panic prints `=== KERNEL PANIC ===`, and the tests kernel then
+  writes `1` to `isa-debug-exit`; the phase has fewer results than its plan,
+  which the runner reports as output cut short.
 - With `tests.shutdown=on`, the kernel then writes `0` (all passed) or `1`
   (something failed) to QEMU's `isa-debug-exit` device. QEMU exits with
   `(value << 1) | 1`, so the runner does not rely on that status alone: it also
@@ -146,7 +147,7 @@ KTAP	# elapsed_ms=14238 pass=2391 fail=1 skip=0 over_time=14
 | `just test-verbose` | `--verbose` | `tests.verbosity=verbose`; shows the captured log of every test |
 | `just test-quiet` | `--quiet` | `tests.verbosity=quiet`; shows only failures and the summary |
 | `just test-raw` | `--raw` | Prints QEMU's serial output unchanged |
-| `just test-json PATH` | `--json PATH` | Appends one JSON event per line to `PATH` |
+| `just test-json PATH` | `--json PATH` | Writes one JSON event per line to `PATH`, replacing what it held |
 | | `--timeout-secs N` | Stops the whole run after `N` seconds; default `900`, `0` disables |
 | | `--silence-secs N` | Stops the run if QEMU prints nothing for `N` seconds; default `120`, `0` disables |
 | | `--color auto\|always`, `--no-color` | Colour of the rendered output; `NO_COLOR` in the environment also turns it off unless `--color always` |
@@ -169,7 +170,7 @@ as `TEST_CMDLINE`.
 | `0` | Tests ran and all passed |
 | `1` | A test failed, a phase bailed out, the run timed out, the output was cut short, or the kernel aborted |
 | `2` | No trustworthy answer: no phase header appeared, an unfiltered run planned zero tests, or QEMU's wrapper exited with an unexpected status |
-| `64` | Bad command-line arguments |
+| `64` | Bad command-line arguments (`--rerun-failed` with no recorded failures among them), or the runner could not build the ISO, find the ISO or test image, or start QEMU |
 | `130` | Interrupted with Ctrl-C |
 
 ## JSON lines

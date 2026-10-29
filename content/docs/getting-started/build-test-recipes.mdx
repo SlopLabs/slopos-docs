@@ -48,8 +48,9 @@ sources the C++ runtime is built from, and the source tarballs of the C
 programs and libraries built for SlopOS (`third_party/recipes/`).
 
 Building any base needs the host's LLVM toolchain, because every base carries
-the e2fsprogs tools, cross-compiled with clang after the C++ runtime they
-link against. Every kernel build ends by running checks on the finished ELF
+the e2fsprogs tools, cross-compiled with clang, and the cross compiler that
+builds them needs the C++ runtime, which the build makes first with clang,
+CMake and Ninja. Every kernel build ends by running checks on the finished ELF
 (for example, that no function's stack frame is too large), so a build can
 still fail after the compiler has succeeded. [Safety
 gates](/docs/verification/tcb-discipline) lists them.
@@ -63,8 +64,8 @@ compiler. `KERNEL_RELEASE=1` selects the release kernel for any recipe, and
 `KERNEL_RELEASE=0 just boot` boots the dev kernel instead. The test suite
 uses a *tests* kernel, which has the test harness compiled in and comes in
 the same two builds (`kernel-tests.elf` and `kernel-release-tests.elf`).
-`PAYLOAD=1 just iso` builds the release kernel too, since a system installed
-from that medium builds itself.
+`PAYLOAD=1 just iso` builds the release kernel instead, since a system
+installed from that medium builds itself.
 
 ### Passing options to a recipe
 
@@ -163,10 +164,10 @@ self-hosting root) after every test run; the others are run by hand.
 | Check | What it needs beyond `just test` |
 |-------|----------------------------------|
 | `just test-persist`, `test-rude-exit`, `test-usb` | Nothing |
-| `just test-install`, `test-remote` | The boot-disk tools: dosfstools, mtools, `sfdisk` and zstd |
+| `just test-install`, `test-remote` | The boot-disk tools: dosfstools, mtools, `sfdisk` and zstd; `test-remote` also `openssl`, to make the broker's keys |
 | `just test-installer` | The boot-disk tools, and `just toolchain` first, or `INSTALLER_PAYLOAD=0` to install without the toolchain |
 | `just test-toolchain` | `git`, `openssl` and `ssh-keygen` to stage its fixtures; with a toolchain built, also `sshd` (on `PATH` or at `/usr/sbin/sshd`) and internet access for the rungs that reach GitHub and crates.io |
-| `just test-selfhost`, `test-install-guest`, `bench-selfhost` | `just toolchain` first, and for the first two no uncommitted changes, because the guest builds `HEAD` |
+| `just test-selfhost`, `test-install-guest`, `bench-selfhost` | `just toolchain` first, and what `test-toolchain` needs to stage its fixtures; `test-install-guest` also the boot-disk tools. The first two refuse a working tree with uncommitted changes, because the guest builds `HEAD` |
 
 Each says what it is waiting for and where its log is. [Write
 tests](/docs/development/adding-tests) describes what each one grades.
@@ -203,7 +204,7 @@ recipe's own description.
 
 | Recipe | What it does |
 |--------|--------------|
-| `just boot` | The development machine: release kernel and base on an A/B boot disk, persistent root, 6 GB of memory, Wheel of Fate first |
+| `just boot` | The development machine: release kernel and base on an A/B boot disk, persistent root, 6 GiB of memory, Wheel of Fate first |
 | `just boot-fast` | `just boot` with `ROULETTE=0` |
 | `just boot-debug` | `just boot-fast` on the dev kernel with QEMU's GDB stub on port 1234 and a monitor socket |
 | `just boot-live` | The live ISO from memory, no disk; Wheel of Fate unless `ROULETTE=0` |
@@ -235,7 +236,7 @@ base the guest installed survives guest reboots but not the next `just boot`.
 | `just test-verbose ['glob']` | Also print the kernel log of every passing test |
 | `just test-quiet ['glob']` | Print only failures and the summary |
 | `just test-raw` | Pass QEMU's output through unchanged, KTAP and kernel log mixed |
-| `just test-json <path>` | Also append one JSON event per line to `<path>` |
+| `just test-json <path>` | Also write one JSON event per line to `<path>`, replacing what it held |
 | `just test-userland-only` | Skip the kernel tests; run only the userland tests |
 | `just test-elf [ELF=]<kernel> [BASE=<base.cpio>] ['glob']` | Run the suite on a tests kernel and base built elsewhere, such as inside the guest |
 | `just test-host` | Unit tests of the pure-logic crates and of `slopos-ostd`, on the host, no QEMU |
@@ -246,7 +247,7 @@ base the guest installed survives guest reboots but not the next `just boot`.
 | `just test-usb` | Boot with both of QEMU's USB controllers, plug and pull sticks, keyboards, pointers, a hub and a USB network adapter through QEMU's control socket, and check that every device comes and goes cleanly |
 | `just test-capacity` | Mount and write a 16 GiB volume (built once, then kept), and grade the cost |
 | `just test-install` | On one disk laid out as on a real machine: register SlopOS's firmware boot entry, install a kernel into a boot slot, try it, commit it, roll back slots that panic, install and roll back bases, and check the EFI system partition was left unchanged |
-| `just test-installer [disk...]` | Install from the ISO on an emulated USB stick onto a blank disk, beside another system and over an existing partition, and from a CD onto a blank disk; boot each, build the system there and commit it; repair one from the rescue shell and reinstall it keeping its root. Names a subset: `blank`, `foreign`, `reuse`, `optical` |
+| `just test-installer [disk...]` | Install from the ISO on an emulated USB stick onto a blank disk, beside another system and over an existing partition, and from a CD onto a blank disk; boot each, build the system there (the CD's install, which has no toolchain, clones a slot instead) and commit it; repair one from the rescue shell and reinstall it keeping its root. Names a subset: `blank`, `foreign`, `reuse`, `optical` |
 | `just test-install-guest` | The guest builds a kernel and base from `HEAD`, installs them, boots them, pushes a commit back, commits the slot and rolls back a slot that panics |
 | `just test-remote` | Boot an installed machine paired with a broker on this host and drive it through `scripts/remote.py`: commands, files, the kernel log, a base and a kernel installed, power-off |
 | `just test-toolchain` | Run the toolchain checks on the self-hosting root, over two boots |

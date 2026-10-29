@@ -117,7 +117,7 @@ programs through `std::net`, as described in
 |---|---|
 | `AF_INET`, `SOCK_STREAM` | A TCP connection or listener |
 | `AF_INET`, `SOCK_DGRAM` | UDP datagrams |
-| `AF_INET`, `SOCK_DGRAM`, `IPPROTO_ICMP` | Ping without special permission, as on Linux |
+| `AF_INET`, `SOCK_DGRAM`, `IPPROTO_ICMP` | Ping without special permission. Linux has the same socket, but opens it only to the groups `net.ipv4.ping_group_range` names |
 | `AF_UNIX`, `SOCK_STREAM` | A local stream between programs, named by a file path, or a connected pair from `socketpair` |
 | `AF_INET6` | Refused with `EAFNOSUPPORT` |
 
@@ -203,7 +203,8 @@ ip -br addr         # addresses, one line per interface
 ip route            # the route table
 ip dhcp             # the current lease
 ip status           # the whole stack on one screen
-ip monitor          # print changes as they happen
+ip monitor          # print changes as they happen, for ten seconds
+ip -t 0 monitor     # the same, until you stop it
 ip link set eth0 down
 ```
 
@@ -216,13 +217,16 @@ click, or `org.slopos.net.toggle` for `ip net on` and `ip net off`, which an
 administrator may do unasked. The desktop's network switch runs the same
 `ip net` command, and is offered only to people who can use it without being
 asked. For familiar habits, `ifconfig` is `ip` under another name and
-`netstat` is `ss` under another name; `ss` shows every socket to anyone, but
-names the process that owns one only to its owner or a `NetAdmin` holder.
+`netstat` is `ss` under another name, with `netstat -r` and `netstat -i` for
+the routes and the per-interface counters; `ss` shows every socket to anyone,
+but names the process that owns one only to its owner or a `NetAdmin` holder.
 
 The desktop's menu bar shows whether you have no connection, only the local
-network, or the internet. It works this out from the cards' link state, the
-address and the default route, and confirms it by pinging the gateway and a
-machine beyond it.
+network, or the internet. The kernel works this out from the cards' link
+state, the address and the default route, and from traffic it has seen
+answered: a reply from the gateway, a name lookup, a TCP connection to a
+machine beyond it. When that evidence is old, it pings the gateway or the DNS
+server to check.
 
 ## What the machine accepts from the wire
 
@@ -261,9 +265,11 @@ Certificates are checked against Mozilla's root list, shipped in
 `/etc/ssl/certs/ca-certificates.crt`.
 
 The developer tools in the [toolchain](/docs/self-hosting/toolchain) bring
-their own, built from upstream: cargo's and git's HTTPS goes through libcurl
-with Mbed TLS, and git's `ssh://` remotes go through OpenSSH's `ssh` client,
-the one git is tested against. No SSH server runs on SlopOS.
+their own, built from upstream: git's HTTPS and cargo's registry downloads go
+through libcurl with Mbed TLS, cargo fetches git dependencies through
+libgit2, which uses OpenSSL, and git's `ssh://` remotes go through OpenSSH's
+`ssh` client, the one git is tested against. OpenSSH's server is installed
+with the client, but nothing starts it.
 
 ## What is missing
 

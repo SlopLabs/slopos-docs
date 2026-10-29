@@ -150,7 +150,7 @@ runs the boot-time jobs the same way:
 |---|---|---|
 | `/sbin/privd` | uid 0 | Every capability an action may name, and `SetId` |
 | `/bin/compositor`, for a person's desktop or the login screen | the person, or `greeter` | `DisplaySeat` and `InputSeat`, at the `High` tier |
-| `/bin/terminal`, the shell of a console login, `/bin/remoted` | the person | nothing |
+| `/bin/terminal` (or, on a live boot, `/bin/installer-ui --welcome`), the shell of a console login, `/bin/remoted` | the person | nothing |
 | `/bin/login`, the console's prompt | `greeter` | nothing |
 | `/bin/roulette` | the first person | `DisplaySeat` |
 | `bootctl collect`, at boot | uid 0 | `RawBlock` and `Power` |

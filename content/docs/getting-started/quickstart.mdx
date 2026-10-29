@@ -27,12 +27,16 @@ tools. One command per platform installs them:
 
 ```bash
 brew install rustup qemu xorriso e2fsprogs just go python git curl zstd \
-  dosfstools mtools util-linux llvm lld cmake ninja pkg-config openssl
+  dosfstools mtools util-linux llvm lld cmake ninja pkg-config openssl \
+  coreutils findutils
 ```
 
-The build looks every tool up on `PATH`, so add Homebrew's `e2fsprogs`,
-`util-linux` and `llvm` directories to it if `brew` tells you they are not
-linked.
+We build and test SlopOS on Linux, and CI runs only there. The build looks
+every tool up on `PATH` and expects GNU's versions of a few (`nproc`,
+`sha256sum` and `truncate` from coreutils, `find -printf` from findutils), so
+put the `libexec/gnubin` directories of Homebrew's `coreutils` and
+`findutils` first on `PATH`, and add its `e2fsprogs`, `util-linux` and
+`llvm` directories if `brew` tells you they are not linked.
 
 </Tab>
 <Tab value="Debian/Ubuntu">
@@ -57,11 +61,13 @@ sudo pacman -S rustup qemu-full xorriso e2fsprogs python git curl zstd \
 </Tab>
 </Tabs>
 
-The LLVM tools are needed even to boot. Every SlopOS system carries the
-e2fsprogs tools (`mke2fs`, `e2fsck` and the rest), cross-compiled for SlopOS
-from their release tarball with your clang, and that build needs the C++
-runtime the build also makes with clang, CMake and Ninja. The development
-machine adds dosfstools, mtools, `sfdisk` and zstd; the test suite adds Go;
+The LLVM tools, `make` and `pkg-config` are needed even to boot. Every
+SlopOS system carries the e2fsprogs tools (`mke2fs`, `e2fsck` and the rest),
+cross-compiled for SlopOS from their release tarball with your clang, and
+the cross compiler that builds them needs the C++ runtime the build also
+makes with clang, CMake and Ninja. Your own e2fsprogs and Python build the
+disk images that `just boot` and `just test` use; the development machine's
+boot disk adds dosfstools, mtools, `sfdisk` and zstd; the test suite adds Go;
 `openssl` and `ssh-keygen` are for the host-side tests. [Building and
 testing](/docs/getting-started/build-test-recipes) says which recipe needs
 what.
@@ -154,7 +160,7 @@ just boot-fast
 
 This is `just boot` with the wheel skipped. It boots an optimised kernel and
 the system's programs (its *base*) from a boot disk it rebuilds on every run,
-with 6 GB of memory and a persistent root filesystem at
+with 6 GiB of memory and a persistent root filesystem at
 `fs/assets/ext4-persist.img`. The first run builds that root and puts a clone
 of your checkout at `/src/slopos`; after that, what you write to it is still
 there next time.

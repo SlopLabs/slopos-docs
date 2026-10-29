@@ -65,9 +65,10 @@ its HWP levels.
 
 Before writing anything, the first CPU records what the firmware left: whether
 it had enabled HWP, whether it had disabled turbo (the speeds above the
-processor's sustained rating), the processor's highest speed without turbo,
-and each CPU's speed request. That record never changes, so you can always see what the
-machine would have run at without SlopOS.
+processor's sustained rating), and the processor's highest speed without
+turbo. Each CPU records its own speed request the same way as it comes up.
+That record never changes, so you can always see what the machine would have
+run at without SlopOS.
 
 Then, under `cpufreq=hwp` (the default), each CPU with HWP:
 
@@ -169,9 +170,11 @@ Reading is open to everyone. Changing a setting takes the `Power`
 [privilege broker](/docs/architecture/privd) to run it as the action
 `org.slopos.cpufreq.set`, which root, an administrator and the
 [paired agent](/docs/self-hosting/remote-control) may do unasked. After a
-change it prints the settings every CPU now runs under:
+change it says when every CPU took it and prints the settings they now run
+under, here after `cpufreq set epp performance`:
 
 ```text
+epp 0: applied by 12 CPUs in 3 ms (generation 2)
 policy:     hwp
 epp:        0 (performance)
 limits:     min lowest, max highest
