@@ -1,0 +1,365 @@
+---
+title: "Init and services"
+description: "What the first program starts, how it keeps those programs running, and how it ends, restarts and replaces them, itself included."
+---
+
+import { InitStartup } from '@/components/diagrams/init-startup';
+
+`/sbin/init` is the first program the kernel runs, and it is SlopOS's service
+manager. It gets the root ready, starts the system's services in a fixed
+order, and starts a service again when it crashes. It keeps the sessions
+people log in to, ends a session completely when asked, restarts only what a
+newly installed base changed, and can replace itself with a newer init
+without stopping anything it runs. So if privd, the privilege broker, or your
+desktop crashes, it comes back within moments; if a program keeps crashing,
+it comes back at most five times a minute instead of spinning; and logging
+out ends every program the session started, however it was started.
+
+What init does not do is read configuration. There are no unit files: the
+services are written into init itself, beside the services that extensions
+declare, so changing what the system runs means installing a new base. This
+page walks through what init starts and in what order, how it keeps those
+programs running, how other programs ask it for things, and how it ends
+sessions and replaces itself.
+
+## Where it comes from
+
+Almost every rule here is systemd's, chosen deliberately and kept small.
+The restart limit counts starts the way systemd's start limit does, the way
+a session ends (`SIGTERM`, `SIGCONT`, then `SIGKILL` after a timeout) is
+systemd's stop sequence, and init re-executes itself carrying its state
+across the exec as `systemctl daemon-reexec` does. Restarting only the
+services a new base changed is what NixOS does when it switches to a new
+system configuration. Asterinas, which runs a NixOS userland, uses systemd
+itself.
+
+SlopOS differs from systemd in three places. The limit's window is a minute
+rather than systemd's default ten seconds, and a service past it waits
+rather than failing until someone resets it. Processes are grouped by a
+*login tag* the kernel keeps on every process, not by a control group. And a
+service says it is ready by writing to a pipe it inherited, not by sending a
+datagram to a socket.
+
+## What init starts, and in what order
+
+<InitStartup />
+
+Init does a few jobs before any service runs, and waits for each to finish:
+
+1. **Crash records.** `bootctl collect` copies what a kernel panic left on
+   the crash partition into `/var/log/crash`
+   (see [Diagnostics](/docs/development/diagnostics)).
+2. **The root.** Init makes each directory of the root's ownership map that
+   is missing (see [Users and file permissions](/docs/architecture/users)),
+   finishes a hand-over of `/usr/local` that a crash cut short, and on a live
+   boot from the install medium copies the medium's apps into the RAM root's
+   `/usr/local` (see [Installed software](/docs/architecture/software)).
+3. **People.** `users sync` writes `/etc/passwd`, `/etc/group` and
+   `/etc/shadow` from the accounts record.
+4. **Extensions.** `extctl activate-all` shows each enabled extension at
+   `/opt/<name>`, unless the boot said `extensions=off`
+   (see [Extensions](/docs/architecture/extensions)).
+
+Then it opens its own socket, `/run/init`, and starts privd, which runs the
+privileged actions everything else asks for. Init waits until privd says it
+is listening, because almost every later step may need it. Next comes
+`remoted`, but only on a base that carries a pairing with a host (see
+[Remote control](/docs/self-hosting/remote-control)), so that a machine whose
+desktop never comes up can still be reached. Then the keyboard layout saved
+in `/etc/keymap` is applied, and the Wheel of Fate runs; init waits for it
+too, unless the command line said `roulette=skip`.
+
+After that, init starts the console's login prompt (`/bin/login`, on init's
+own terminal), each extension's services, and the screen's first session:
+the desktop of the person the accounts record logs in automatically, or the
+login screen when nobody is set to. When that desktop's compositor says it is
+ready, init opens its first window, a terminal, or on a live boot the
+installer's welcome. [Sessions and login](/docs/architecture/sessions)
+covers what happens from there.
+
+Every program init starts is given exactly the capabilities it needs,
+beside the universal ones every program holds. Init itself holds them all,
+so the table below is the whole of what it hands out
+([Capabilities](/docs/architecture/authority) explains the mask):
+
+| Program | Runs as | Capabilities | Started again when it exits |
+|---|---|---|---|
+| `bootctl collect` | uid 0 | `RawBlock`, `Power` | No: runs once at boot |
+| `users sync` | uid 0 | `Seal` | No: runs once at boot |
+| `extctl activate-all` | uid 0 | `ExtensionUpdate`, `Seal` | No: runs once at boot |
+| `/sbin/privd` | uid 0 | every capability an action may name, and `SetId` | Yes |
+| `/bin/remoted` | the person the accounts record names for it, else the first administrator | none | Yes |
+| `/bin/roulette` | the first person | `DisplaySeat` | No: init waits for it once |
+| `/bin/login` | `greeter` (uid 50) | none | Yes |
+| `/bin/compositor` | the session's person, or `greeter` for the login screen (`--greeter`) | `DisplaySeat`, `InputSeat` | Yes, with its session |
+| `/bin/terminal`, `/bin/installer-ui --welcome` | the session's person | none | No: it is the session's first window |
+| `/bin/shell` | the person a console login named | none | No: the session ends with it |
+| `/sbin/init --run-tests` | uid 0 | `TestHarness` | No: test boots only |
+
+## Starting a service again
+
+Init is one thread waiting in one `poll`: on its socket, on a *pidfd* for
+each child (a descriptor that becomes readable when that process exits), on
+the readiness pipes of programs that are starting, and on the kernel's base
+monitor. It never blocks on a single child once the boot jobs are done, so a
+service that hangs holds up nothing but itself.
+
+When privd, remoted, the login prompt or a session's compositor exits, init
+starts it again. It counts each service's starts over the last minute, and
+the sixth start within any minute waits until the oldest of the five is a
+minute old. Init says so when it happens:
+
+```text
+init: /sbin/privd exited (Signalled(9)), its 5th in a minute; it starts again in 56 s
+```
+
+A program that crashes on startup therefore costs five quick attempts and
+then one a minute or so, rather than a busy loop, and it never gives up for
+good: when whatever broke it is fixed, it comes back on its own. systemd
+handles the same case by refusing further starts until an administrator
+resets the unit. SlopOS has no administrator watching a console, so it waits
+instead.
+
+### Ready means the program said so
+
+A program that others connect to is not ready when it starts but when it
+listens. Init hands privd, each compositor and each extension service a pipe
+on descriptor 3, the *readiness notifier*. The program writes one byte to it
+and closes it once it is serving. If it exits first, the pipe reads as
+closed, which init also notices. So init can wait for privd before starting
+anything that might ask it for something, and give a compositor the screen
+only once it can draw: a compositor that is not ready within a minute gets
+its first window anyway (`init: the compositor was not ready in time`), but
+not the screen.
+
+## Asking init: `/run/init`
+
+Other programs ask init for things through the socket `/run/init`, one
+request line per connection, answered with `ok` or a line starting
+`refused:`. The socket is open to everyone (mode 0666) because init judges
+each connection by who made it, as the kernel recorded it when the
+connection was made: its uid (`SO_PEERCRED`) and whether it runs a program of
+the base (`SO_PEERPROGRAM`). uid 0 on its own is not enough, since being uid
+0 grants no power in SlopOS: system requests come only from uid 0 running a
+base program, which in practice means a mechanism privd started.
+[Privileged actions](/docs/architecture/privd) explains how a peer's
+program is attested.
+
+| Request | Who may send it | What it does |
+|---|---|---|
+| `restart-session` | a person, for the session their process belongs to | Ends that session and starts it again |
+| `end-session` | a person, for their session | Ends it, which logs the person out |
+| `lock` | a person, for their desktop | The compositor shows its lock screen |
+| `greeter` | a person at the desktop in front, or uid 0 | Brings the login screen in front, so someone else can log in |
+| `locked`, `unlocked` | a desktop's compositor only | Records whether that desktop is locked; a desktop behind stays locked |
+| `restart-session`, `end-session` from outside every session | uid 0 | Every session at once; after `end-session` none starts until uid 0 restarts them |
+| `restart-session <tag>`, `end-session <tag>` | uid 0 | The session with that login tag |
+| `switch <tag>` | uid 0 | Brings that desktop in front |
+| `login desktop <name>`, `login console <name>` | uid 0 | Logs a person in whose password was already checked; a console login hands init its terminal with the request |
+| `extensions` | uid 0 | Starts, stops and replaces extensions' services as the store now says |
+| `reexec` | uid 0 | Re-executes init |
+
+A person's own requests go through `/bin/session` (`session restart`,
+`session end`, `session lock`, `session greeter`), which is also what the
+system menu's *Log out…* and *Restart desktop…* use. `session status` lists
+the sessions init keeps:
+
+```text
+$ session status
+ 1048576 user         user       in front
+```
+
+The first column is the session's login tag, then its person and its class.
+Each uid may have four connections waiting to finish their line, which must
+arrive within two seconds, so one person cannot crowd out init's other
+callers.
+
+## Ending a session
+
+A session is everything its person started there, and some of it does not
+stay where it began: a program can start a new process group, a daemon can
+detach. So init does not end a session by its process tree or its POSIX
+session. It ends it by its *login tag*, a number the kernel keeps on every
+process, which `fork`, `spawn` and `exec` pass on and which only a holder of
+`SetId` can set, when it starts a process. Init gives each session its own
+tag when it starts the session's first program, so every process of that
+session carries it whatever it does afterwards.
+[Sessions and login](/docs/architecture/sessions) describes the tags.
+
+To end a session, init then:
+
+1. sends `SIGTERM` to every process carrying the tag, and `SIGCONT` to any
+   that are stopped, since a stopped process cannot act on its `SIGTERM`;
+2. on each pass after that, sends `SIGTERM` to whatever has appeared with the
+   tag since the last pass, so a program forking while it is asked to end is
+   chased;
+3. after five seconds, sends `SIGKILL` to everything still carrying the tag;
+4. after ten seconds, stops waiting, and answers the request with how many
+   processes would not end:
+   `refused: 3 processes of the session would not end`.
+
+Because the tag decides, ending a person's desktop spares remoted and the
+programs it runs (they carry remoted's tag), privd's mechanisms, and anything
+else the session did not start. When the first person's desktop ends, the
+extensions' services that run in that session end with it. The ten-second
+limit is real: a process that forks faster than init can signal can outlive
+it, and init says so rather than waiting forever.
+
+## When a new base arrives
+
+A base can be replaced while the system runs (see
+[Base system](/docs/architecture/base)), and init watches for that through
+the kernel's base monitor. When the base changes, init compares the new
+base's manifest, which lists the digest of every file, with the one it read
+before, and restarts only what changed:
+
+- **privd**, when its program, its policy or the pairing changed. Init sends
+  it `SIGTERM`, and privd *drains*: it stops taking requests and exits once
+  every request it took is answered. Its successor starts when it exits, or
+  beside it after five seconds, so a mechanism waiting on a person's answer
+  is never cut off.
+- **remoted**, when its program changed. If the pairing itself changed, init
+  ends everything the old broker's agent was running, as it ends a session,
+  before the new remoted starts.
+- **Extensions' services**, when the base's ceiling for extensions changed.
+- **Init itself**, when `/sbin/init` changed (see below).
+
+```text
+init: the new base changes privd; it drains and starts again
+```
+
+Sessions keep running. A desktop whose compositor or terminal changed is not
+restarted under its person; the compositor shows *Restart the desktop to
+finish updating* in its system menu and leaves the choice to them.
+
+## Replacing init itself
+
+Init cannot exit and be started again, since nothing runs it. So when it
+re-executes, it writes everything it knows into a pipe and executes
+`/sbin/init --resume <fd>`, keeping that pipe and every descriptor its state
+names open across the exec. The new image reads the state back and carries
+on with the same process id, the same children and the same capabilities.
+The state is plain text: the services and their recent starts, each
+session's tag, person, class, leader and lock state, the consent links to
+privd, and the request that asked for the exec, which the new image answers.
+Extensions' services go in further pipes of their own, named after the first.
+
+Three things make this safe:
+
+- **Init re-executes only when nothing is in flight.** A session that is
+  starting or ending, or a service that is draining, has timers and pipes
+  the state does not describe, so init waits until everything settles. A
+  `reexec` request that comes too early is refused.
+- **The new image must be able to read the state.** Before the exec, init
+  looks for its state's header line, `slopos-init-state 1`, in the new
+  image's file. If the new init would not understand the state, the sessions
+  end first; an image that cannot read the extensions' services has those
+  end first. A new image that still finds nothing it can read closes the
+  descriptors the state's first line names, adopts the privd and remoted
+  already running, and starts the sessions again, without consent dialogs
+  until the next boot.
+- **The kernel lets only this exec keep capabilities.** Every other `exec`
+  drops a process's gated capabilities. Init executing the base's
+  `/sbin/init` as its process's only thread is the one exception, because it
+  loads no program but init.
+
+```text
+init: re-executed
+```
+
+## Extensions' services
+
+Init also runs the services that installed extensions declare, as the
+extension's own users, holding what the extension was granted. Each gets
+`/dev/null` as input, the readiness notifier on descriptor 3, the sockets init
+listens on for it from descriptor 4 (named in `LISTEN_FDS` and
+`LISTEN_FDNAMES`, as systemd's socket activation does), and a log at
+`/var/log/<name>/<service>.log`, kept by a copy of init running as the
+extension's first user. Each carries a login tag of its own, so when it exits
+whatever it left behind is ended before it starts again, under the same
+five-a-minute budget. The `extensions` request tells init the store changed.
+[Extensions](/docs/architecture/extensions) covers the rest.
+
+## Test boots
+
+With `tests=on`, init starts a copy of itself, `/sbin/init --run-tests`,
+holding `TestHarness`, which runs the userland tests. The real init keeps
+serving meanwhile, so a test can restart privd, end a session or ask init to
+re-execute, and see it happen. A test boot runs no Wheel, no login prompt and
+no session until a test asks for one. When the tests pass, init exits; when
+one fails, init brings the screen up as an ordinary boot would, so there is
+a shell to look around with.
+
+## What it means in practice
+
+- **A crash costs moments, not a reboot.** If the desktop vanishes, it comes
+  back, locked, within a few seconds. If privd crashes, requests made while it
+  is down wait up to two seconds for the new one to listen.
+- **Logging out is complete.** A daemon you started from a terminal does not
+  survive `session end`. Something meant to outlive your session belongs in
+  an extension's service, which carries a tag of its own.
+- **Installing a base restarts little.** Only the services whose files
+  changed restart; your desktop keeps running until you choose to restart
+  it.
+- **Read the console when something keeps restarting.** Each exit is logged
+  with its status, and the fifth in a minute says when the next start is.
+
+## How we know it works
+
+`supervision_test` holds init to its promises against the init that booted
+the test machine: a privd it kills comes back, a re-executed init keeps what
+it serves, and a session restart ends a stopped process by its `SIGTERM`
+while sparing what carries remoted's tag. `live_base_test` activates a base
+that changes privd and checks that init starts the new privd and that it
+serves. `sessions_test`, `session_smoke_test` and `extension_service_test`
+cover the sessions and the extensions' services.
+
+## For contributors
+
+- **Init must never block.** Everything after the boot jobs runs in the poll
+  loop. A call that waits on one child or one socket stalls every service and
+  every session.
+- **Give a service nothing it does not need.** Init holds every capability,
+  so a `Service` entry's `caps` is the whole of what that program gets.
+- **End things by login tag.** A process that must survive a session's end
+  needs a tag of its own; a parent and child relationship decides nothing.
+- **The re-exec state is a contract between two versions of init.** A change
+  an older reader would misread takes a new header number, which is what
+  makes the running init end the sessions first rather than hand them to an
+  image that cannot read them.
+- **`/run/init` judges by attested identity.** A new request names who may
+  send it in `judge`; never treat uid 0 alone as authority.
+
+## Further reading
+
+- [*systemd.kill(5)*](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html).
+  How systemd stops a unit: the `SIGTERM`, `SIGCONT`, `SIGKILL` sequence init
+  uses to end a session.
+- [*systemd.unit(5)*](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html),
+  under `StartLimitIntervalSec=` and `StartLimitBurst=`. The start limit init's
+  budget counts like, and what systemd does past it.
+- [*NixOS manual: switching configurations*](https://nixos.org/manual/nixos/stable/#sec-switching-systems).
+  An ordered account of restarting only the services a new system changed,
+  the model for what init does when a base changes.
+- [*systemctl(1)*](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html),
+  under `daemon-reexec`. systemd serializing its state and executing itself
+  again, as init does with `--resume`.
+- [*sd_listen_fds(3)*](https://www.freedesktop.org/software/systemd/man/latest/sd_listen_fds.html)
+  and Lennart Poettering's
+  [*systemd for Developers I*](https://0pointer.de/blog/projects/socket-activation.html).
+  The socket-passing convention extensions' services speak, and the case for
+  it.
+
+## In the source
+
+| Path | What is there |
+|---|---|
+| `userland/src/apps/init/mod.rs` | The boot jobs, the poll loop, `/run/init` requests and base switches |
+| `userland/src/apps/init/service.rs` | The service table, the restart budget and how a program is started |
+| `userland/src/apps/init/session.rs` | Sessions, and ending everything that carries a tag |
+| `userland/src/apps/init/control.rs` | `/run/init`: who may ask for what |
+| `userland/src/apps/init/reexec.rs` | Re-execution and the state it carries |
+| `userland/src/apps/init/extensions.rs` | Extensions' services |
+| `userland/src/init_control.rs` | The request grammar, the login tags and the descriptor layout |
+| `userland/src/apps/session.rs` | `/bin/session` |
+| `userland/src/bin/tests/supervision_test.rs` | The supervision test |

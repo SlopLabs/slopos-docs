@@ -123,9 +123,9 @@ own program from the base, which keeps everything it held
 When a process's effective ids differ from its real ones, the new program
 starts with `AT_SECURE` set. That is a flag in the startup information the
 kernel gives every program, and it tells the C library and the loader not to
-trust the environment the caller left: the loader ignores
-`LD_LIBRARY_PATH` and searches no directory a user could have written to, and
-`secure_getenv` returns nothing.
+trust the environment the caller left: the loader ignores `LD_LIBRARY_PATH`
+and `$ORIGIN` and skips the libraries under `/usr/local/lib` and
+`~/.local/lib`, and `secure_getenv` returns nothing.
 
 `exec` also records which program the process now runs, and whether that
 file came from the [base](/docs/architecture/base) or from an installed
@@ -157,8 +157,8 @@ never give a child a file its parent couldn't open.
 Powers work the same way. The child gets the universal capabilities, plus
 whichever of the caller's own gated capabilities the caller names; naming one
 the caller doesn't hold fails with `EPERM`. The child runs as the caller
-unless the caller asks for other user or group ids, a different set of groups
-or a different login tag, all of which take `SetId`. A child that holds a
+unless the caller asks for user or group ids it doesn't hold itself, other
+supplementary groups or a login tag, all of which take `SetId`. A child that holds a
 gated capability, or runs with ids other than its spawner's real ones, starts
 with `AT_SECURE` set. This is how init starts each service with exactly what
 its service table names, and how privd starts a program it has been asked to
@@ -390,13 +390,12 @@ fix that, and SlopOS has both.
 
 Kernel tests cover the rules one at a time: which `clone` flags are accepted,
 how `#!` lines are parsed, which ids `exec` and spawn leave a process with,
-who may signal whom, how pending and queued signals behave. Userland tests
-run real programs through the paths a shell uses: starting programs each way,
-delivering signals, waiting through a pidfd, killing a program stuck in a
-loop, pressing Ctrl-C on a job blocked writing to a full terminal, and ending
-hundreds of processes at once on every CPU. Others run as an ordinary person
-(uid 1000, holding nothing) to check that the user-id and capability rules
-refuse what they should.
+what a spawn may delegate and who may set a login tag, who may signal whom
+(by user id and by capability), and how pending and queued signals behave.
+Userland tests run real programs through the paths a shell uses: starting
+programs each way, delivering signals, waiting through a pidfd, killing a
+program stuck in a loop, pressing Ctrl-C on a job blocked writing to a full
+terminal, and ending hundreds of processes at once on every CPU.
 
 ## For contributors
 
@@ -442,11 +441,12 @@ power would leak into a child.
 **Spawn.** The primitive is `spawn_path` (a SlopOS-private syscall number),
 taking a `SpawnAttrs` with up to 64 descriptor actions (`CloneFd`,
 `TransferFd`, `Close`). Its flag word may only ask for a new process group
-and the foreground (`SPAWN_USER_SETTABLE`); the kernel's own `NO_PREEMPT`
-answers `EPERM` and an undefined bit `EINVAL`, in that order, so probing
-reserved bits learns nothing. `caps` must be a subset of the spawner's mask,
-and `uid`, `gid`, `groups` and `login` take effect only under their `set`
-bits, ids the spawner doesn't hold and any login tag needing `SetId`. The
+and the foreground (`SPAWN_USER_SETTABLE`). An undefined bit answers
+`EINVAL` before anything is said about privilege, so probing reserved bits
+learns nothing, and the kernel's own `NO_PREEMPT` answers `EPERM`. `caps`
+must be a subset of the spawner's mask, and `uid`, `gid`, `groups` and
+`login` take effect only under their `set` bits, with ids the spawner doesn't
+hold, any groups and any login tag needing `SetId`. The
 spawned ids are saved as an `exec` saves them. The checks live in
 `Endowment::check` in `core/src/exec/mod.rs`.
 

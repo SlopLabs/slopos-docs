@@ -1,0 +1,432 @@
+---
+title: "privd actions"
+description: "Every action privd runs, who may ask for each one, and the grammar of the policy file that defines them."
+---
+
+This page lists every action in the base's policy, the sealed file
+`/usr/share/slopos/privd/actions` (`assets/privd/actions` in the source tree),
+then the grammar of that file, the rules that decide a request, and what a
+requester sees when it is refused. The parser and the decision rules are
+`priv-core/src/policy.rs`; the rules for the words a person reads are
+`priv-core/src/words.rs`. [Privileged actions](/docs/architecture/privd)
+explains what privd is for and how it works.
+
+## How to read the tables
+
+- **Runs** is the mechanism's program and the argument shapes it accepts, one
+  per line of the policy. Words are matched exactly; `*` matches any further
+  arguments, none included.
+- **Capabilities** are what the mechanism holds besides the universal ones
+  (`ConsoleIo`, `ClipboardGlobal`, `Fate`); *none* means only those.
+- **Settings** are the action's `cwd`, `exclusive`, `keep` and `medium`
+  lines (see [Settings](#settings)). Every action runs as uid 0 unless its
+  settings say *as the requester*.
+- **Who may ask** lists the action's `allow` lines in the order privd tries
+  them (see [Principals](#principals) and [Levels](#levels)).
+
+## Power
+
+| Action | Runs | Capabilities | Settings | Who may ask |
+|---|---|---|---|---|
+| `org.slopos.power.poweroff` | `/bin/halt halt`, `/bin/halt poweroff`, `/bin/halt shutdown` | `Power` | | `root`, `greeter alone`, `user alone`, `admin`, `paired` |
+| `org.slopos.power.reboot` | `/bin/halt reboot` | `Power` | | `root`, `greeter alone`, `user alone`, `admin`, `paired` |
+
+## Boot slots and bases
+
+| Action | Runs | Capabilities | Settings | Who may ask |
+|---|---|---|---|---|
+| `org.slopos.boot.status` | `/bin/bootctl status` | `RawBlock`, `Power` | | `root`, `user`, `paired` |
+| `org.slopos.boot.install` | `/bin/bootctl install *` | `RawBlock`, `Power` | `cwd`, `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
+| `org.slopos.boot.clone` | `/bin/bootctl clone *` | `RawBlock`, `Power` | `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
+| `org.slopos.boot.oneshot` | `/bin/bootctl oneshot *` | `Power` | `exclusive boot-slots` | `root`, `admin`, `paired` |
+| `org.slopos.boot.set-default` | `/bin/bootctl set-default *` | `RawBlock`, `Power` | `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
+| `org.slopos.boot.commit` | `/bin/bootctl commit` | `Power` | `exclusive boot-slots` | `root`, `admin`, `paired` |
+| `org.slopos.boot.spare` | `/bin/bootctl spare` | `Power` | | `root`, `user`, `paired` |
+| `org.slopos.boot.reboot` | `/bin/bootctl reboot` | `Power` | | `root`, `greeter alone`, `user alone`, `admin`, `paired` |
+| `org.slopos.base.install` | `/bin/bootctl base install *` | `RawBlock`, `Power`, `BaseUpdate` | `cwd`, `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
+| `org.slopos.base.rollback` | `/bin/bootctl base rollback` | `RawBlock`, `Power`, `BaseUpdate` | `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
+
+`bootctl --boot <partition> …` fits none of these shapes, so privd runs it
+for nobody; only a requester that already holds the capabilities, such as
+the rescue shell, runs it. `bootctl collect` has no action: init runs it
+holding `RawBlock` and `Power` itself.
+
+## Extensions
+
+| Action | Runs | Capabilities | Settings | Who may ask |
+|---|---|---|---|---|
+| `org.slopos.extension.install` | `/bin/extctl install *` | `ExtensionUpdate`, `Seal` | `cwd`, `exclusive extensions` | `root`, `admin confirm`, `paired` |
+| `org.slopos.extension.install-signed` | `/bin/extctl install-signed *` | `ExtensionUpdate`, `Seal` | `cwd`, `exclusive extensions` | `root`, `admin`, `paired` |
+| `org.slopos.extension.trust` | `/bin/extctl key add *`, `/bin/extctl key remove *` | `ExtensionUpdate`, `Seal` | `exclusive extensions` | `root`, `admin confirm`, `paired` |
+| `org.slopos.extension.manage` | `/bin/extctl enable *`, `disable *`, `remove *`, `rollback *` | `ExtensionUpdate`, `Seal` | `exclusive extensions` | `root`, `admin confirm`, `paired` |
+| `org.slopos.extension.config` | `/bin/extctl config install *` | `Seal` | `cwd`, `exclusive extensions` | `root`, `admin confirm`, `paired` |
+| `org.slopos.extension.config-signed` | `/bin/extctl config apply *` | `Seal` | `cwd`, `exclusive extensions` | `root`, `admin`, `paired` |
+
+## Software and accounts
+
+| Action | Runs | Capabilities | Settings | Who may ask |
+|---|---|---|---|---|
+| `org.slopos.software.install` | `/bin/tree-install *` | none | `cwd`, `exclusive software` | `root`, `admin confirm`, `paired` |
+| `org.slopos.accounts.password` | `/bin/users passwd` | `Seal` | `exclusive accounts` | `root`, `user confirm` |
+| `org.slopos.accounts.manage` | `/bin/users add *`, `remove *`, `rename *`, `passwd *`, `promote *`, `demote *`, `autologin *`, `remote *` | `Seal`, `DacOverride` | `exclusive accounts` | `root`, `admin confirm` |
+
+## Logging in and unlocking
+
+| Action | Runs | Capabilities | Settings | Who may ask |
+|---|---|---|---|---|
+| `org.slopos.login` | `/bin/session login desktop *`, `/bin/session login console *` | none | `exclusive login` | `root`, `greeter` |
+| `org.slopos.session.unlock` | `/bin/session unlock` | none | `exclusive unlock` | `root`, `program /bin/compositor` |
+
+Both mechanisms read the password on their standard input and check it
+themselves, which is why they may be asked for unasked.
+[Sessions and login](/docs/architecture/sessions) describes the flow.
+
+## System settings and diagnostics
+
+| Action | Runs | Capabilities | Settings | Who may ask |
+|---|---|---|---|---|
+| `org.slopos.cpufreq.set` | `/bin/cpufreq set *` | `Power` | | `root`, `admin`, `paired` |
+| `org.slopos.kconsole` | `/bin/kconsole *` | `SysInspect` | | `root`, `admin`, `paired` |
+| `org.slopos.prof` | `/bin/prof *` | `SysInspect` | | `root`, `admin`, `paired` |
+| `org.slopos.task.end` | `/bin/endtask *` | `ProcSignal` | | `root`, `admin confirm` |
+| `org.slopos.console.keymap` | `/bin/keymap *` | `ConsoleConfig` | | `root`, `user alone`, `admin`, `paired` |
+| `org.slopos.net.toggle` | `/bin/ip net on`, `/bin/ip net off` | `NetAdmin` | | `root`, `admin` |
+| `org.slopos.net.configure` | `/bin/ip *` | `NetAdmin` | | `root`, `admin confirm` |
+
+`ip net on` and `ip net off` ask for `org.slopos.net.toggle`; every other
+`ip` command that changes something asks for `org.slopos.net.configure`, and
+one that only reads asks for nothing.
+
+## Install medium
+
+| Action | Runs | Capabilities | Settings | Who may ask |
+|---|---|---|---|---|
+| `org.slopos.install` | `/bin/installer *` | `RawBlock`, `Mount`, `Power`, `BootEntry`, `Seal`, `DacOverride` | `exclusive` (group `org.slopos.install`) | `root`, `admin confirm` |
+| `org.slopos.rescue` | `/bin/shell --rescue` | `Power`, `ProcSignal`, `Mount`, `RawBlock`, `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `Seal`, `BootEntry`, `DacOverride`, `BaseUpdate`, `ExtensionUpdate` | `medium` | `root`, `admin confirm` |
+
+## Commands run as the requester
+
+| Action | Runs | Capabilities | Settings | Who may ask |
+|---|---|---|---|---|
+| `org.slopos.priv` | `/bin/priv *` | `Mount`, `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `DacOverride` | as the requester, `cwd`, `keep 300` | `root`, `admin confirm` |
+| `org.slopos.priv.shell` | `/bin/priv -s` | `Mount`, `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `DacOverride` | as the requester, `cwd` | `root`, `admin confirm` |
+
+Those six capabilities are `REQUESTER_CEILING`, the most any action run as
+its requester may hold.
+
+## What each action says
+
+A question's headline is *App* wants to *describe*., where *App* names the
+program that asked (see [Privileged actions](/docs/architecture/privd#what-the-dialog-shows)).
+The detail is a sentence under it, and the allowing button says the verb, or
+*Allow* when the action names none. Only `org.slopos.install` is
+`destructive`, which colours its button in the danger tone.
+
+| Action | describe | detail | Button |
+|---|---|---|---|
+| `org.slopos.power.poweroff` | power off the computer | Anything that isn't saved will be lost. | Power off |
+| `org.slopos.power.reboot` | restart the computer | Anything that isn't saved will be lost. | Restart |
+| `org.slopos.boot.status` | show which kernels and systems are installed and which one starts | | Allow |
+| `org.slopos.boot.install` | install a new kernel beside the one that starts by default | The kernel that starts by default stays, so you can go back to it. | Install |
+| `org.slopos.boot.clone` | copy one installed kernel over the other | The kernel it copies over is replaced. | Copy |
+| `org.slopos.boot.oneshot` | choose the kernel that starts at the next restart | It starts only once, and then the usual kernel starts again. | Allow |
+| `org.slopos.boot.set-default` | change which kernel starts by default | | Change |
+| `org.slopos.boot.commit` | keep the kernel that started this time as the default | | Keep |
+| `org.slopos.boot.spare` | find where a new kernel would be installed | | Allow |
+| `org.slopos.boot.reboot` | restart the computer with the kernel chosen for the next start | Anything that isn't saved will be lost. | Restart |
+| `org.slopos.base.install` | install a new version of the system | The version that last ran is kept, so you can go back to it. | Install |
+| `org.slopos.base.rollback` | go back to the version of the system that ran before | The version running now is kept, so you can return to it. | Go back |
+| `org.slopos.extension.install` | install an extension and give it what it asks for | If it asks for the disks or every file, it can take over the whole computer. | Install |
+| `org.slopos.extension.install-signed` | install or update an extension signed by a key you trust | It gets no more than that key is trusted to give. | Install |
+| `org.slopos.extension.trust` | change which keys may install extensions | Extensions a trusted key signs go in without asking, within the limits shown. | Change |
+| `org.slopos.extension.manage` | turn an extension on or off, remove it or go back to its last version | | Allow |
+| `org.slopos.extension.config` | change an extension's settings | What reads those settings restarts. | Change |
+| `org.slopos.extension.config-signed` | change an extension's settings, signed by the key that installed it | | Change |
+| `org.slopos.software.install` | install software for everyone on this computer | It replaces what its last install put there. | Install |
+| `org.slopos.accounts.password` | change your password | | Change |
+| `org.slopos.accounts.manage` | add, remove or change the users of this computer | | Allow |
+| `org.slopos.login` | log a user in | | Allow |
+| `org.slopos.session.unlock` | unlock the screen | | Allow |
+| `org.slopos.cpufreq.set` | change how fast the processors run | | Change |
+| `org.slopos.kconsole` | read the kernel's diagnostic information | | Allow |
+| `org.slopos.prof` | measure where the computer spends its time | | Allow |
+| `org.slopos.task.end` | end another user's task | Anything it hasn't saved will be lost. | Allow |
+| `org.slopos.console.keymap` | change the keyboard layout | | Change |
+| `org.slopos.net.toggle` | turn networking on or off | | Allow |
+| `org.slopos.net.configure` | change the network settings | | Change |
+| `org.slopos.install` | install SlopOS on a disk | It can delete everything on the disk you choose. | Install |
+| `org.slopos.rescue` | open a rescue shell that can read and change every disk | Anything typed into it can change anything on this computer. | Open |
+| `org.slopos.priv` | run a command that can read and change every file | It can also mount disks and change the network and the clock. | Run |
+| `org.slopos.priv.shell` | open a shell that can read and change every file | Anything typed into it can also mount disks and change the network and the clock. | Open |
+
+## Extensions' actions
+
+An enabled extension's actions are read from its activation's
+`/.extension/declare` and added beside the base's as
+`ext.<extension>.<action>`; one whose name the base already uses is left out.
+They take the same settings as the base's, less `uid` and `medium`, with
+these differences:
+
+- The program is a file of the extension's own image, under `/opt/<name>`.
+- The mechanism runs as the extension's first user, never as uid 0, and with
+  `/opt/<name>/bin` after `/bin:/sbin` on its `PATH`.
+- `allow` takes `admin`, `user`, `paired` and `program <path>`, where the path
+  may be the extension's own program; never `root` or `greeter`.
+- An `exclusive` group is `ext.<extension>.<group>`, so it never shares a
+  group with the base or another extension.
+- Capabilities are held to the extension's grant and the base's ceiling.
+
+[Extension images](/docs/abi/extension-images) gives the declaration's
+grammar, and [Extensions](/docs/architecture/extensions) what an extension
+may be granted.
+
+## The policy file
+
+### Layout
+
+The file is lines of text. A blank line, or one whose first non-blank
+character is `#`, is ignored; there are no comments at the end of a line.
+`action <name>` starts an action, and every setting after it belongs to that
+action until the next `action` line. Each setting is a keyword, then its
+value after whitespace. Indentation is a convention only. A setting before
+the first action, an unknown keyword or a malformed value fails the whole
+file, naming the line; a missing required setting names the action's own
+line.
+
+An action's name is lowercase words of letters, digits and `-`, each
+starting with a letter, joined by `.`, at least two words and at most 64
+bytes, and each name occurs once.
+
+### Settings
+
+| Setting | Value | Required | Meaning |
+|---|---|---|---|
+| `program` | one path | yes, once | The mechanism. A canonical path under `/bin/`, `/sbin/` or `/usr/bin/`, at most 255 bytes, with no empty, `.` or `..` component. |
+| `args` | words, then optionally `*` | at least one, repeatable | One argument shape. Each word is printable ASCII without `"` or `*`, at most 64 bytes; `*` may only come last. A shape with no `*` matches exactly that many arguments, so `args` alone matches none. The same shape may not appear twice. |
+| `caps` | capability names, possibly none | yes, once | What the mechanism holds. Each name once, from `Power`, `ProcSignal`, `Mount`, `RawBlock`, `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `Seal`, `BootEntry`, `DacOverride`, `BaseUpdate`, `ExtensionUpdate`. |
+| `uid` | `0` or `requester` | yes, once | Whom the mechanism runs as. `requester` runs it as whoever asked, in their own group, `admin` (gid 10) while the record names them an administrator, and their session's login tag. Its `caps` must stay within `REQUESTER_CEILING` and its `allow` lines name only `root`, `user` and `admin`. |
+| `allow` | a principal, then a level | at least one, repeatable | Who may ask, and what they must do. Each principal at most once. |
+| `cwd` | none | no | The request must send its working directory, and the mechanism runs there. Without it the mechanism runs in `/`, and a request that sends a directory is refused. |
+| `exclusive` | an optional group word | no, once | One mechanism of the group runs at a time; a request while one runs is refused. The group is the action's name when none is given. |
+| `keep` | seconds, 1 to 900 | no, once | An answer is kept that long (see [Kept answers](#kept-answers)). |
+| `describe` | a quoted line | yes, once | Completes "*App* wants to …" (see [Rules for the words](#rules-for-the-words)). |
+| `detail` | a quoted line | no, once | A sentence on what follows from allowing it. |
+| `verb` | a quoted word or phrase | no, once | The allowing button; one of the verbs listed below. *Allow* when absent. |
+| `destructive` | none | no | The allowing button takes the danger tone, and Enter in the password field moves to it rather than pressing it. |
+| `medium` | none | no | The action exists only on a boot the kernel says served the install medium (`BOOT_FLAG_MEDIUM`); on any other boot privd and every requester treat it as no action at all. |
+
+A quoted value is one line of printable ASCII between `"` and `"`, with no
+`"` inside, at most 160 bytes.
+
+privd refuses the whole policy, and with it every request, when a `program`
+principal or `paired` names a program that is not statically linked: the
+dynamic loader could map a library from outside the base into it while the
+kernel still attested the program as the base's.
+
+### Principals
+
+| Principal | Matches | Levels it takes |
+|---|---|---|
+| `root` | uid 0 running a base program | none |
+| `greeter` | uid 50, the login screen's `greeter` user, running a base program | none, `alone` |
+| `user` | a person the accounts record names, running any program, unless the request comes from the paired agent | none, `alone`, `confirm`, `password` |
+| `admin` | a person the accounts record names an administrator, likewise | none, `confirm`, `password` |
+| `paired` | `/bin/remoted` on a base that carries a remote pairing | none |
+| `program <path>` | a requester running the base program at that canonical path, whatever its uid, unless it is the paired agent | none |
+
+uid 0 running a program from outside the base matches nothing. The paired
+agent matches `paired` and nothing else. A requester's program is read from
+the kernel when the request arrives, so one that has run another program
+since it connected matches as that program, or as none.
+
+### Levels
+
+| Level | For |
+|---|---|
+| none | Runs unasked. |
+| `alone` | `user`: runs unasked while no other person is logged in at a desktop or a terminal, or when the person asking is an administrator; otherwise the line does not decide, and an administrator's password answers. `greeter`: runs unasked while nobody is logged in; otherwise the request is refused. |
+| `confirm` | The person asking answers for themselves: a click at their own desktop, their password anywhere else. |
+| `password` | The person asking types their own password; at their own desktop, a person with no password clicks instead. |
+
+### How a request is judged
+
+privd tries the action's `allow` lines in order, as of the moment the
+request arrives:
+
+1. A line naming `user` decides for any person: unasked, asked, or for
+   `alone` as the table above says.
+2. A line naming `admin` decides for an administrator. For a person who is
+   not one, it decides nothing but marks the request as one an
+   administrator may answer.
+3. `greeter alone` decides for the greeter: unasked while nobody is logged
+   in, and refused otherwise.
+4. Any other line whose principal matches runs the request unasked.
+
+When no line decides, a person whose request an administrator may answer is
+asked for an administrator's password; anyone else is refused. Who is
+logged in counts the people with a desktop or a console session, not the
+login screen and not the paired agent. When privd cannot read the accounts
+record, no requester is a person, and `alone` is judged as if someone else
+were logged in.
+
+### Where a person is asked
+
+A request is asked of the session whose login tag the requester's process
+carries, and of no other:
+
+| The requester's session | A question for the person themselves | An administrator's password |
+|---|---|---|
+| Their own desktop, in front and unlocked | A click for `confirm`, or for `password` from a person without one; their password otherwise | One of the administrators listed types their own |
+| Another uid's desktop, in front and unlocked | Their password; refused if they have none | One of the administrators listed types their own |
+| Their own console session, asking from its terminal | Their password at the requester's terminal, whatever the level; refused if they have none | Refused |
+| Anything else: behind, locked, the login screen, no session | Refused | Refused |
+
+The administrators listed are those the record names with a password, not
+counting the person asking, at most 32. With none, the request is refused
+before anyone is asked.
+
+Once a question is answered, privd judges the request again against the
+people as they stand then. It runs only if it would now run unasked, or
+would ask the same kind of question of the same person with the
+administrator who answered still listed.
+
+### Kept answers
+
+With `keep`, an answered request makes the next one run unasked for that
+many seconds when all of these match: the uid, the session's login tag and
+its eldest live task, the live task that started the requester, the action
+and where it was read from (the base, or an extension's activation), the
+kind of question, the whole command line and the working directory. An
+answer given by an administrator's password is kept only while that
+administrator could still answer. A requester carrying no login tag never
+keeps one. privd keeps at most 64 answers and forgets them all when it reads
+the extensions' actions again.
+
+### Rules for the words
+
+| Setting | Rule |
+|---|---|
+| `describe` | At most 72 characters, a lowercase first letter, no punctuation at the end: a verb phrase that completes "*App* wants to …". |
+| `detail` | At most 160 characters, a capital first letter and a full stop last. |
+| `verb` | One of: Add, Allow, Change, Connect, Continue, Copy, Delete, Erase, Format, Go back, Install, Keep, Log in, Mount, Open, Power off, Remove, Replace, Restart, Run, Save, Send, Set up, Share, Start, Trust, Turn off, Turn on, Unlock, Update, Use. |
+
+`describe` and `detail` also contain no `--`, no `...`, none of the words
+the desktop's glossary replaces (see [Desktop](/docs/architecture/desktop)),
+none of `requester`, `mechanism`, `principal`, `privd`, `slot`, `base`,
+`sealed` or `uid` (or the same with an `s`), and no capability's name, except
+as a first word that only starts with a capital. The policy is held to these
+rules as it parses, and an extension's declaration when it is installed.
+
+## What a mechanism starts with
+
+- argv: the program's file name, then the request's arguments.
+- Environment: `PATH=/bin:/sbin` (an extension's mechanism also has its
+  `bin`), `LANG=C.UTF-8`, `PRIV_ACTION` (the action's name) and `PRIV_UID`
+  (the requester's uid as the connection recorded it). Nothing else.
+- Working directory: `/`, or with `cwd` the directory the request sent,
+  refused if its path no longer leads to that directory when the mechanism
+  starts.
+- Descriptors 0, 1 and 2: the requester's three. A terminal or a socket is
+  never passed; the requester relays it through a pipe or a terminal of the
+  mechanism's own.
+- `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGPIPE` and `SIGTERM` at their default
+  dispositions.
+
+A program that is a mechanism checks `PRIV_ACTION` and acts only for that
+action, so argv that belongs to another action exits with status 127.
+
+## What a requester exits with
+
+| Status | When |
+|---|---|
+| The mechanism's own | It ran. |
+| 126 | The person refused, did not answer in time, or typed a wrong password. |
+| 127 | privd refused for any other reason, or could not be reached. |
+| 128 + *n* | The mechanism was killed by signal *n*, or the requester stopped waiting after a second signal. |
+
+The requester prints privd's reason after its own name, for example
+`bootctl: You aren't allowed to do this.`, and
+`<name>: waiting for you to allow this on the screen` once the question is on
+screen.
+
+## Refusals
+
+| Reason printed | Cause |
+|---|---|
+| You aren't allowed to do this. | No `allow` line names the requester. |
+| This needs an administrator's password, and no administrator has one. | Only an administrator could answer, and none has a password. |
+| Without a password, you can allow this only from your own desktop. | A person without a password asked from a desktop that is not theirs. |
+| This needs your permission. Unlock your desktop or use a terminal, then try again. | The requester's session is behind, locked, or none. |
+| This needs your password, and you haven't set one. | A console session asked a person who has no password. |
+| This needs an administrator's password, which only the desktop can ask for. | A console session needed an administrator's answer. |
+| This needs your permission, and no desktop is there to ask you. | No compositor is ready to show a question. |
+| Restart the desktop, then try again. | The desktop speaks another version of the consent channel. |
+| Another request is waiting. Try again in a moment. | Eight questions are waiting, or four of this uid's. |
+| You just refused a request. Try again in a moment. | The person refused a request from this uid less than five seconds ago. |
+| You didn't allow this. | The person pressed Cancel or Escape. |
+| Nobody answered in time. | 120 seconds passed. |
+| Wrong password. | The password typed was wrong. |
+| The request was withdrawn. | The requester sent a signal before the mechanism started. |
+| The question closed before it was answered. Try again. | The desktop went behind or locked, the compositor went away, or privd began to drain. |
+| Nothing ran, because the app that asked changed after it asked. | The requester exited, ran another program or mapped code from elsewhere. |
+| The system is being updated. Try again in a moment. | privd is draining for a new base. |
+| This computer doesn't offer that. | No such action, or a `medium` action off the medium. |
+| That can't be asked with those arguments. | The arguments fit no shape. |
+| This runs in your current folder, and none came with it. | A `cwd` action got no directory. |
+| This runs in no folder, and one came with it. | An action without `cwd` got a directory. |
+| Your current folder no longer exists. | The directory sent has been removed. |
+| What came as your current folder isn't a folder. | The descriptor sent is not a directory. |
+| The folder this was asked in moved while you were asked. Try again. | Its path leads elsewhere by the time the mechanism starts. |
+| Something like this is running already. Try again once it's done. | The action's `exclusive` group is busy. |
+| Something started before the system was updated is still running. Try again once it's done. | A mechanism the previous privd started still runs, and the action is `exclusive`. |
+| The command is too long to show in full, so it can't be allowed. | The command line or directory exceeds 320 bytes once escaped. |
+| Who can allow this changed while you were asked. Try again. | Judged again after the answer, the request no longer qualifies. |
+| The account that asked no longer exists. | A `uid requester` action for a uid the record no longer names. |
+| The extension that runs this has changed. Try again. | The extension's activation changed between the question and the start. |
+| Too many requests are waiting. Try again in a moment. | The connection limits below are reached. |
+| That request couldn't be read. | A malformed frame; the connection ends. |
+| The answer came back incomplete. Try again. | A password answer arrived without its password or its administrator. |
+| Can't check the password right now. Try again in a moment. | `/sbin/authcheck` could not decide. |
+| Something went wrong. Try again in a moment. | Any other failure; privd's log says which. |
+
+## Limits
+
+| Limit | Value |
+|---|---|
+| Connections per uid and program | 8 |
+| Connections per uid, other than uid 0 running a base program and the paired agent | 32 |
+| Connections of those uids together | 128 |
+| A reply left unread | 5 seconds, then the connection is closed |
+| Questions waiting behind the one on screen | 8, at most 4 of one uid's |
+| A question unanswered | 120 seconds from when it is sent to the desktop |
+| Requests from a uid just refused | refused for 5 seconds |
+| Command line and directory shown | 320 bytes each, escaped |
+| Dialog input ignored after it appears, moves focus or changes shape | 750 ms |
+| Wait before a person's next password check after a wrong one | 2 seconds, doubling with each, at most 60 seconds, for as long as privd runs |
+| `keep` | at most 900 seconds; 64 answers |
+| Request frame | 64 KiB, at most 256 arguments |
+
+## Request protocol
+
+A requester connects to the `AF_UNIX` socket `/run/privd`. Each frame is a
+kind byte, a four-byte big-endian length and that many bytes of fields; each
+field is a one-byte key length, the key, a four-byte big-endian value length
+and the value. Numbers are decimal text.
+
+| Kind | Name | From | Fields |
+|---|---|---|---|
+| `0x01` | `REQUEST` | requester | `id`, `action`, one `arg` per argument, `cwd=1` if the request sends a directory, `terminal=1` if its standard input is a terminal |
+| `0x02` | `SIGNAL` | requester | `id`, `signo`: one of `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGTERM` |
+| `0x03` | `SECRET` | requester | `id`, `secret`: what was typed at a `PROMPT` |
+| `0x10` | `STARTED` | privd | `id`, `pid` |
+| `0x11` | `EXITED` | privd | `id`, and `code` or `signal` |
+| `0x12` | `DENIED` | privd | `id`, `reason`, `person=1` when the person refused or did not answer |
+| `0x13` | `ASKING` | privd | `id`, `app`: the name the dialog shows |
+| `0x14` | `PROMPT` | privd | `id`, `about`: the question in words, `prompt`: `Password for <name>: ` |
+
+A `REQUEST` carries standard input, output and error, then the working
+directory when `cwd=1`, as `SCM_RIGHTS`; a different number of descriptors is
+refused. The requester chooses `id`, any number but 0, and every reply names
+it, so a requester sharing an inherited connection passes over replies to
+earlier requests; a reply with `id` 0 is about the connection itself. A
+connection serves one request at a time and any number in turn.

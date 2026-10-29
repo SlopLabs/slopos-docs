@@ -1,24 +1,27 @@
 ---
 title: "Boot"
-description: "What happens between pressing the power button and seeing the SlopOS desktop, and how to tell from the log how far a boot got."
+description: "What happens between pressing the power button and reaching a SlopOS session, and how to tell from the log how far a boot got."
 ---
 
 import { BootSequence } from '@/components/diagrams/boot-sequence';
 
-When SlopOS boots, every stage between the firmware and the desktop leaves a
-line in the log, so a boot that stops partway tells you which stage it reached
-and usually why. On an installed system you also get a fallback: the disk
-holds two copies of the system, and a new version that fails to come up is
-replaced by the old one at the next reset, so an update can't leave you with a
-machine that won't start. This page walks through the stages in order, says
-what you see on screen and in the log at each one, and explains the two ways
-SlopOS boots: live, entirely from memory, and installed on a disk.
+When SlopOS boots, every stage between the firmware and the first session
+leaves a line in the log, so a boot that stops partway tells you which stage
+it reached and usually why. The screen says nothing you have to read: from
+the firmware's logo to the desktop it stays black, with one ring of twelve
+segments on it that lights up as the kernel works. On an installed system you
+also get two fallbacks. The disk keeps two kernels and two copies of the
+userland, so a new kernel that crashes, or a new userland the kernel can't
+run, gives way to the old one at the next boot. This page walks through the
+stages in order, says what you see on screen and in the log at each one, and
+explains the two ways SlopOS boots: live, from memory, and installed on a
+disk.
 
 None of the pieces are new. The firmware interface is UEFI. The boot loader is
 [Limine](https://github.com/limine-bootloader/limine-protocol/blob/trunk/PROTOCOL.md),
 an existing loader with its own small protocol for handing a kernel what it
-needs. The kernel command line and the base image packed as a cpio archive
-work the way Linux's do, and the two boot slots use the
+needs. The kernel command line and the userland packed as a cpio archive
+work the way Linux's do, and the kernel slots use the
 [Boot Loader Interface](https://systemd.io/BOOT_LOADER_INTERFACE/) that
 systemd defined and Limine implements.
 
@@ -41,20 +44,27 @@ do the parts that have to happen before the kernel is even in memory.
 ## Firmware and Limine
 
 The firmware (UEFI; OVMF when SlopOS runs under QEMU) checks the hardware and
-starts the boot loader from the disk or the ISO.
-Limine then reads its configuration, loads three things into memory and jumps
-to the kernel:
+starts the boot loader from the disk or the USB stick. Limine then reads its
+configuration, loads these into memory and jumps to the kernel:
 
 - the kernel itself, `kernel.elf`;
-- the *base image*, a cpio archive holding the system's programs and
-  libraries (`/bin`, `/sbin`, `/lib` and a few more directories);
+- the *base*, the read-only userland: one archive (a cpio archive in the
+  `newc` format) holding the system's programs, libraries and data. An
+  installed disk keeps two bases, the current one and the one that ran
+  before it, and every boot entry loads both;
+- on the install medium, a third archive, the medium itself, which the
+  installer copies from;
 - the *kernel command line*, a line of `key=value` options that changes how
   this boot behaves.
 
 Limine also gives the kernel a map of the machine's memory, the screen's
-framebuffer, the location of the firmware's hardware tables (ACPI), and a way
-to start the other CPU cores. The configuration has no timeout, so no menu
-appears: Limine boots its default entry straight away.
+framebuffer, the location of the firmware's hardware tables (ACPI), a way to
+start the other CPU cores, and the GUID of the disk it loaded the kernel from.
+A configuration without a menu, which is what the live ISO and the
+development machine's boot disk have, is marked quiet, so Limine prints
+nothing at all unless something fails. An installed disk shows a menu for
+five seconds instead, listing both kernel slots and any other system the
+firmware knows how to start.
 
 ## What the kernel sets up, in order
 
@@ -67,29 +77,38 @@ calls.
 Then it runs its setup steps in four phases. The serial log announces each
 one (`BOOT: phase early_hw`, and so on).
 
-1. **Early hardware** (`early_hw`). The serial port is set up properly first, so that
-   everything after it can log, and the banner `SlopOS Kernel Started!`
-   appears. The kernel then reads what Limine handed over and parses the
-   command line.
-2. **Memory** (`memory`). The kernel turns on the CPU's memory protections (described in
-   [User mode and kernel mode](/docs/architecture/privilege-separation)),
-   builds its allocator for physical memory from Limine's map, and sets up its
-   own address space. After this phase the kernel can allocate memory.
-3. **Devices** (`drivers`). The kernel finds and programs the interrupt controllers,
-   starts the other CPU cores, and starts the clocks: it uses the HPET, a
-   high-precision timer, to measure how fast the CPU's local timer runs, and
-   then sets every core's local timer to interrupt 100 times a second, which
-   drives the scheduler. The
-   framebuffer comes up here, and with it the splash screen and its progress
-   bar. Then the kernel walks the PCI bus, finds each device and starts the
-   driver that claims it ([Drivers](/docs/architecture/drivers) explains
-   how). If the command line asks for them, the kernel's own tests run at the
-   end of this phase.
-4. **Services** (`services`). The kernel creates the scheduler's data structures and the
-   idle task, picks the root filesystem (next section), applies any extra
-   mounts the command line asks for, and loads `/sbin/init`, the first
-   program. The log line `USERLAND: launched /sbin/init as task <n>` means
-   the kernel has reached this point.
+1. **Early hardware** (`early_hw`). The serial port is set up properly first,
+   so that everything after it can log, and the banner `SlopOS Kernel
+   Started!` appears. The kernel then reads what Limine handed over, chooses
+   which base to boot (see [below](#choosing-the-base)) and parses the command
+   line.
+2. **Memory** (`memory`). The kernel turns on the CPU's memory protections
+   (described in [User mode and kernel mode](/docs/architecture/privilege-separation)),
+   builds its allocator for physical memory from Limine's map, and sets up
+   its own address space. The pages of the base it chose not to boot are
+   handed to the allocator here, before anything could read them. After this
+   phase the kernel can allocate memory.
+3. **Devices** (`drivers`). The kernel finds and programs the interrupt
+   controllers, sets this core's clock speed policy
+   ([CPU frequency](/docs/architecture/cpu-frequency)), starts the other CPU
+   cores (each sets its own speed as it comes up), and starts the clocks: it
+   uses the HPET, a high-precision timer, to measure how fast the CPU's local
+   timer runs, and then sets every core's local timer to interrupt 100 times a
+   second, which drives the scheduler. The framebuffer comes up here, and
+   with it the ring on screen. Then the kernel walks the PCI bus, finds each
+   device and starts the driver that claims it
+   ([Drivers](/docs/architecture/drivers) explains how). USB controllers go on
+   finding their devices in the background
+   ([USB](/docs/architecture/usb)). Once the disks are known, the kernel
+   finds the boot disk's crash partition, so that a panic from here on can
+   leave a record. If the command line asks for them, the kernel's own tests
+   run at the end of this phase.
+4. **Services** (`services`). The kernel creates the scheduler's data
+   structures and the idle task, sets up the base and the root filesystem
+   (next sections), applies any extra mounts the command line asks for,
+   serves the install medium if Limine carried one, and loads `/sbin/init`,
+   the first program. The log line `USERLAND: launched /sbin/init as task <n>`
+   means the kernel has reached this point.
 
 When the last phase is done the log prints `=== KERNEL BOOT SUCCESSFUL ===`,
 and every core enters the scheduler. From then on, the scheduler decides what
@@ -102,101 +121,200 @@ the missing one, for example
 `SlopOS requires HPET — ACPI HPET table not found or hardware unavailable`.
 [Hardware](/docs/status/hardware-requirements) lists what a machine needs.
 
+## Choosing the base
+
+The kernel and the base are built and installed separately, so a kernel can
+meet a base built against a different set of private system calls. Each base
+names the *base interface* it was built against, a number in the file
+`/usr/share/slopos/base-interface`, and each kernel serves a range of them.
+While it reads Limine's handoff, before memory is laid out, the kernel reads
+that file from each base it was given and boots the current one if it serves
+its interface, else the previous one:
+
+```text
+BOOT: base current (<n> bytes), interface <i>
+BOOT: base previous (interface <i>) not booted; its memory goes to the allocator
+```
+
+If the kernel serves neither, the boot stops at its `initramfs root` step
+with a line naming both, such as
+`BOOT: no base this kernel serves (interfaces <a>-<b>): current interface <i>, previous interface <j>`.
+So installing a new base that needs a newer kernel can't leave a machine that
+doesn't start: until the new kernel is there, the old kernel boots the old
+base. [Base system](/docs/architecture/base) explains the interface numbers,
+what a base holds and how a new one replaces the running one without a
+reboot.
+
 ## Choosing the root filesystem
 
 The *root filesystem* is the directory tree that starts at `/`. SlopOS can use
 either a disk or a filesystem in memory, and the `root=` option on the command
 line decides:
 
-- `root=initramfs` unpacks the base image into memory and uses that as `/`.
-  Nothing written to it survives a reboot. The kernel doesn't even look at the
-  machine's disks for a root, so a live system never touches another system
-  installed on the same machine.
-- `root=disk` insists on the first disk (or the one named), formatted as
-  ext4, and fails the boot without it.
-- `root=auto`, the default, uses the first disk if it can be mounted
-  read-write, and falls back to memory otherwise. When it falls back but a
-  disk is present, it mounts the disk at `/mnt`, read-only if the disk refused
-  writes.
+- `root=auto`, the default, uses the first disk that isn't a USB disk if it
+  can be mounted read-write (under QEMU that is `nvme0n1`), so a stick left in
+  a port never changes what boots. It falls back to memory otherwise, and
+  when a disk is present but refused writes, mounts it read-only at `/mnt`.
+- `root=disk` insists on the disk, and fails the boot without one.
+- `root=initramfs` unpacks the base into memory and uses that as `/`. Nothing
+  written to it survives a reboot. The kernel mounts no disk it wasn't asked
+  to with a `mount=` option, except the install medium's own, so a live
+  system never touches another system installed on the same machine.
+- `root=` followed by a device takes any spelling a mount accepts:
+  `nvme0n1p2`, `/dev/vda`, `PARTUUID=…`, `UUID=…` or `LABEL=…`. If the device
+  isn't there yet, the kernel waits for USB to finish finding its devices,
+  at most `usb.settle_ms` (five seconds by default), since it may be a stick.
+  A device that is still missing makes the boot fall back to memory, with a
+  line in the log saying so.
 
-Either way, the system's own programs come from the base image that Limine
-loaded, not from the disk. The kernel mounts the base image read-only over
-`/bin`, `/sbin`, `/lib`, `/usr/bin`, `/usr/share` and `/etc/ssl`, so the
-programs always match the kernel they were built with, and the disk holds
-everything else: home directories, settings, and on the development machine
-the toolchain and a checkout of the source. [Filesystem](/docs/architecture/filesystem) explains
-the base image and the mounts in detail, and
+Either way, the system's own programs come from the base that Limine loaded,
+not from the disk. The kernel mounts the base read-only over `/bin`, `/sbin`,
+`/lib`, `/usr/bin`, `/usr/share` and `/etc/ssl`, and no program can unmount
+it, so the programs always come from the base this kernel chose. The disk
+holds everything else: settings, home directories, software installed under
+`/usr/local` and on the development machine a checkout of the source.
+[Filesystem](/docs/architecture/filesystem) explains the mounts, and
 [Crash recovery](/docs/architecture/crash-recovery) explains what happens when
 the disk was not shut down cleanly.
 
-## From init to the desktop
+## Serving the install medium
+
+When the machine starts from the install medium (the live ISO, usually
+written to a USB stick), Limine also loads the medium's archive. The kernel
+serves it read-only at `/media/install`, beside the kernel and base it booted,
+and logs `INSTALL: the medium is at /media/install (<n> entries, <n> bytes)`.
+A medium built with the developer tools also carries them in a partition of
+its own, which Limine never loads. The kernel finds that partition on the
+disk whose partition table carries the medium's recorded disk GUID, after
+waiting for USB to settle, and mounts it read-only at `/media/payload`.
+Booted as a CD, as `just boot-live` attaches the ISO, the kernel has no way
+to read that partition, so the medium has no developer tools.
+[Installing SlopOS](/docs/self-hosting/installing) covers what the installer
+does with both.
+
+## From init to the session
 
 `init` is an ordinary program running in user mode, and everything after this
-point happens through system calls. It loads the console font and the saved
-keyboard layout, and then:
+point happens through system calls. It runs as uid 0 and holds every
+capability, which it hands out piece by piece to what it starts. In order, it:
 
-1. **Runs the Wheel of Fate.** A roulette wheel spins on the screen. On a
-   win, the boot carries on. On a loss, the machine reboots and you try
-   again. The wheel runs on every interactive boot unless the command line
-   says `roulette=skip`; test images never reboot on a loss.
-2. **Starts the compositor**, the program that owns the screen, and waits
-   until it reports that it is ready.
-3. **Starts the terminal**, which opens a window and runs the shell inside it.
+1. Loads the console font and runs `bootctl collect`, which saves any crash
+   record a previous boot left (see
+   [Diagnosing the kernel](/docs/development/diagnostics#the-kernel-panicked)).
+2. Lays out the root's directories and owners, writes the user database
+   from the accounts record (`users sync`), and shows the installed
+   [extensions](/docs/architecture/extensions).
+3. Starts [privd](/docs/architecture/privd), the program that runs what a
+   session may not, and waits until it is ready. On a machine paired for
+   [remote control](/docs/self-hosting/remote-control) it also starts
+   `remoted`.
+4. Applies the saved keyboard layout and runs the Wheel of Fate (next
+   section).
+5. Starts the login prompt on the console and puts a session on the screen:
+   the desktop of the person the accounts record logs in automatically, or
+   the login screen. A desktop is the compositor, then a terminal once the
+   compositor is ready. On a live boot from the install medium the desktop
+   opens the installer's welcome window in place of the terminal.
 
-After that, `init` stays running for the life of the system and reaps the
-programs it started when they exit.
-[Desktop and windowing](/docs/architecture/userland-windowing) describes what
-the compositor does.
+After that, `init` stays running for the life of the system. It starts
+privd, the sessions and the extensions' services again when they exit, at
+most five times a minute each, and re-executes itself when a new base
+changes it. [Init and services](/docs/architecture/init) describes all of it,
+and [Sessions and login](/docs/architecture/sessions) describes the login
+screen and switching between people.
+
+A test boot (`tests=on`) runs no wheel and starts no session: init runs the
+userland tests in a copy of itself and serves while they run.
+
+## The Wheel of Fate
+
+On every interactive boot, unless the command line says `roulette=skip`,
+init runs `/bin/roulette` before any session starts. It is a roulette wheel
+drawn on the boot screen's own ring: the twelve segments are pockets
+numbered like a clock's hours, so odd and even alternate. An odd number
+starts SlopOS; an even one restarts the machine for another spin.
+
+The program can't cheat, because it doesn't decide anything. It asks the
+kernel for a fate (the `roulette` system call), which the kernel draws from
+its random number generator and remembers for that task together with a
+token. The program then only shows the spin, landing on a pocket whose
+parity matches, and hands the token back (`roulette_result`). The kernel
+checks the token and, on an even fate, restarts the machine itself. A test
+boot never sets the flag that lets a loss restart the machine, so a test run
+can't be ended by the wheel.
 
 ## What you see on screen
 
 Until the device phase brings up the framebuffer, the screen shows whatever
-the firmware left there. Then the splash screen appears with a progress bar
-that advances as each setup step finishes. While the splash is up, pressing
-Esc switches to the kernel log instead, drawn on screen; the log is useful
-when a boot hangs before the desktop appears. The Wheel of Fate draws over
-the splash, and the desktop replaces it.
+the firmware left there, usually its logo on black. Then the boot screen
+appears: black, with the SlopOS logo near the bottom and the ring above it.
+The ring's segments light clockwise from the top, each one as its share of
+the setup steps completes, so a ring that stops partway tells you roughly how
+far the boot got. Pressing Esc shows the kernel log instead, drawn on screen,
+and pressing it again hides it; the log is the first place to look when a
+boot stops. Esc works this way until the desktop draws its first frame.
+
+The Wheel of Fate starts on the boot screen's last frame. The lit ring dims
+except for the top segment, a light runs round it five turns and more and
+slows to a stop, the pocket it stops on turns the theme's success or danger
+colour, its number fills the ring, and one line under it says what follows:
+`Odd · starting SlopOS` or `Even · restarting`. Then the screen fades to
+black and the session appears. The spin is timed by the clock, not by frames
+drawn, so a slow machine shows fewer frames of the same seven seconds rather
+than a longer spin. If the kernel log is on screen, the spin waits until you
+dismiss it. With no framebuffer at all, the wheel says its result on the
+console in words.
 
 Most of what matters is in the serial log, which `just boot-log` saves to
 `test_output.log`. These lines tell you what booted and how far it got:
 
 | Log line | What it tells you |
 |---|---|
-| `BOOT: kernel <path> (<n> bytes), build tag <tag>` | Which kernel file Limine loaded, and the build tag it was built with (also shown by `uname -v`) |
-| `BOOT: base <path> (<n> bytes)` | Which base image was loaded, for example `/boot/b/base.img` from slot b |
+| `BOOT: kernel <path> (<n> bytes), build tag <tag>` | Which kernel file Limine loaded, for example `/boot/b/kernel.elf` from slot b, and the build tag it was built with (also shown by `uname -v`) |
+| `BOOT: base current (<n> bytes), interface <i>` | Which of the two bases booted, and the interface it was built against |
 | `BOOT: LAPIC timer started ...` | The scheduler's timer is ticking on the first core |
 | `CLOCK: wall clock set from ...` | Where the date and time came from: the machine's clock chip or the boot loader |
+| `CRASH: records go to <partition> (<n> slots, <n> held)` | A panic from here on leaves a record on the boot disk |
 | `ROOTFS: ...`, `VFS: mounted / ...` | Which root filesystem was chosen |
+| `INSTALL: the medium is at /media/install ...` | This is a boot from the install medium |
 | `USERLAND: launched /sbin/init as task <n>` | The kernel reached userland |
 | `=== KERNEL BOOT SUCCESSFUL ===` | Every setup step finished |
 
 ## Two ways to boot
 
-**The live system** is an ISO image holding Limine, the kernel and the base
-image. It boots with `root=initramfs`, so it runs entirely from memory and
-needs no disk. This is what you boot from a USB stick on real hardware, and
-what `just boot-live` runs in QEMU. Nothing you do survives a reboot.
+**The live system** is an ISO image holding Limine, the kernel, one base and
+the install medium's archive (`just iso` builds it). It boots with
+`root=initramfs`, so it runs entirely from memory and needs no disk. This is
+what you boot from a USB stick on real hardware, and what `just boot-live`
+runs in QEMU. Nothing you do survives a reboot. Its desktop logs in by itself
+and opens the installer's welcome, which asks whether you want to try SlopOS
+or install it; [Installing SlopOS](/docs/self-hosting/installing) walks
+through that.
 
-**The installed system** lives on a disk with four partitions. The *EFI
-system partition*, the FAT partition every UEFI firmware reads, holds Limine
-and its configuration under `\EFI\SlopOS\`, so it can sit beside another
-operating system's boot loader on the same disk. A separate SlopOS boot
-partition holds two *slots*, `/boot/a` and `/boot/b`, each with its own
-kernel and base image. The root filesystem is an ext4 partition on the same
-disk, which each slot's command line names (the development machine keeps it
-on a separate disk instead), so your files survive reboots and updates. A
-small fourth partition is reserved for crash records.
+**The installed system** lives on a disk with four SlopOS partitions. The
+*EFI system partition* (ESP), the FAT partition every UEFI firmware reads,
+holds Limine and its configuration under `\EFI\SlopOS\`, so it can sit beside
+another operating system's boot loader on the same ESP. SlopOS's own boot
+partition holds two *slots*, each a directory with one kernel
+(`/boot/a/kernel.elf`, `/boot/b/kernel.elf`), and beside them the two bases
+every slot boots, `/boot/base/current.img` and `/boot/base/previous.img`. The
+root filesystem is an ext4 partition on the same disk, which the boot menu
+names by its partition GUID, so your files survive reboots and updates. A
+fourth, small partition holds crash records.
 
-The two slots are there so that installing a new system can't leave you with
-a machine that doesn't boot. Which slot boots is recorded in a firmware
-variable, not in Limine's configuration, and on a new disk it is slot a.
-`bootctl` writes the new kernel and base image into the other slot, then asks
-Limine to boot it *once*, on the next boot only. If the new system panics and
-the machine resets, Limine boots the old default again. If it comes up,
-`bootctl commit` makes it the default.
-[Installing a system](/docs/self-hosting/updating) walks through
-it, and [Development machine](/docs/self-hosting/development-machine) shows
-the setup `just boot` starts, where SlopOS rebuilds and installs itself.
+The two slots are there so that installing a new kernel can't leave you with
+a machine that doesn't boot. Which slot boots by default is recorded in a
+firmware variable, not in Limine's configuration, and after an install it is
+slot a. `bootctl` writes a new kernel into the other slot and asks Limine to
+boot it once. An installed system boots with `panic=reboot`, so if the new
+kernel panics, the machine resets onto the old default and the next boot
+saves the panic's record if the disk is an NVMe drive. If the new kernel comes up, `bootctl commit` makes
+it the default. A new base goes beside the old one in the same way, and runs
+without a reboot when the running kernel serves it.
+[Updating SlopOS](/docs/self-hosting/updating) walks through both, and
+[Development machine](/docs/self-hosting/development-machine) shows the
+setup `just boot` starts, where SlopOS rebuilds and installs itself; there
+the root is a disk of its own rather than a partition.
 
 ## Boot options that matter most
 
@@ -209,6 +327,9 @@ A few command-line options change the boot path:
   recipe adds it.
 - `panic=reboot` resets the machine after a kernel panic instead of halting
   it, which on an installed system hands control back to the default slot.
+  On bare metal the panic stays on screen for ten seconds first.
+- `usb.settle_ms=` sets how long the boot waits for a USB disk that `root=`
+  or a `mount=` names.
 
 When you build an ISO, `BOOT_CMDLINE` sets the whole line, for example:
 
@@ -216,17 +337,25 @@ When you build an ISO, `BOOT_CMDLINE` sets the whole line, for example:
 BOOT_CMDLINE='root=initramfs boot.debug=on' just boot-log
 ```
 
+A kernel can also carry options of its own, so that one built for an
+experiment brings them into a slot whose boot entry is fixed:
+`SLOPOS_BUILTIN_CMDLINE` at build time appends them after the loader's line,
+and the log says `BOOT: built-in command line appended: …`.
 [Boot options](/docs/abi/boot-options) lists every option and what it does.
 
 ## Shutting down and rebooting
 
 Halting and rebooting go through the same preparation: the kernel writes
-every cached change to the disks, stops its own I/O threads, and tells each
-device that power is going away, all while interrupts still work so that the
-disks can report back. Then it asks the firmware to power off or reset the
-machine, and falls back on the hardware's own mechanisms if the firmware
-ignores it. Only programs with the power permission can ask for either; see
-[Permissions](/docs/architecture/authority).
+every cached change to the disks, stops its own I/O threads, and then tells
+each device that power is going away. An NVMe drive gets its shutdown
+notification, each USB controller is reset once its sticks have flushed, and
+a network card stops writing to memory. All of this happens while interrupts
+still work, so the disks can report back. Then the kernel asks the firmware
+to power off or reset the machine, and falls back on the hardware's own
+mechanisms if the firmware ignores it. Apart from the wheel's restart, only
+a program holding the `Power` capability can ask for either; from a session, *Restart…* and *Power off…* in
+the system menu go through [privd](/docs/architecture/privd), and
+[Capabilities](/docs/architecture/authority) explains the rest.
 
 ## How it is tested
 
@@ -235,8 +364,12 @@ window and fails unless `/sbin/init` was launched within its time limit, so a
 change that breaks any step before userland fails there first. `just test`
 boots a test image whose kernel tests run at the end of the device phase and
 whose userland tests run from `init`. `just test-install` boots an installed
-system, installs a new kernel into the other slot, boots it once, commits it,
-and checks that a slot which panics is rolled back to the old one.
+disk, installs a kernel into the other slot, boots it once, commits it,
+checks that slots which panic or lock up roll back and leave a crash record,
+and replaces and rolls back the base, including one the kernel doesn't serve.
+`just test-installer` boots the install medium from a USB stick and installs
+from it, and `just test-usb` holds the USB part of the device phase to
+settling.
 
 ## For contributors
 
@@ -248,8 +381,9 @@ priority, so a new step must go in the phase whose earlier steps it relies on.
 A step that returns an error panics the boot with `Boot init step failed`,
 unless it was registered `optional`, in which case the boot logs the failure
 and continues. Every step receives a `BootCtx` token, so only boot code can
-call boot-only APIs. Device drivers are not steps; they bind through the PCI
-and platform driver registries during the probe step.
+call boot-only APIs. Device drivers are not steps; they bind through the
+driver registries during the PCI step. The ring counts every registered step,
+so a new step moves it a little.
 
 **Hardware the boot assumes.** The local APIC, the IOAPIC (found through the
 ACPI MADT) and the HPET are required, and the LAPIC timer must calibrate; boot
@@ -261,21 +395,37 @@ count. The legacy PIC is masked, and the PIT never generates interrupts.
 calibrated and don't arm their own timers until the timer-start step registers
 its callback with the scheduler, so every core ticks with a calibrated period.
 Each one sets up the same per-CPU tables and supervisor features as the
-bootstrap processor.
+bootstrap processor, and programs its own frequency registers, which only it
+can reach.
+
+**The base is chosen before memory exists.** The choice reads each base
+where Limine placed it, so it must not allocate; the unused base's whole
+pages are handed to the frame allocator when it is seeded, and nothing may
+keep a reference into them.
+
+**The boot screen.** The ring, the logo and where they sit are
+`slopos-splash-core`, shared by the kernel's splash and `/bin/roulette`, and
+measured in integers alone because the kernel is built soft-float. The kernel
+draws nothing of the wheel: its old drawing call, `roulette_draw`, answers
+`ENOSYS` and keeps its slot. `roulette_result` is the one call holding only
+the universal `Fate` capability that reaches the reboot primitive, which is
+why `scripts/gates/authority/` lists it.
 
 **Reset after a panic.** A reset after a panic (`panic=reboot`) skips the
 filesystem flush, whose locks the panicking CPU may hold, and skips UEFI
 `ResetSystem`, which is mapped only in the kernel master address space; it
-starts at the FADT reset register.
+starts at the FADT reset register. The crash record is written before that.
 
 **Boot media layout.** The boot disk's layout is stated once, in the
-`boot-core` crate, for the kernel, `bootctl` and the host's disk builder, so a
-change to it goes there. SlopOS's partitions carry type GUIDs of their own, so
-a Linux on the same disk doesn't mount them. Each slot is a Limine entry named
-`slopos-<slot>` that appends `slot=<name>` to the shared command line. The
-configuration names no `default_entry`: `LoaderEntryDefault` chooses the slot,
-and no commit writes the ESP. Limine is pinned at v12.9.1 and fetched by
-`scripts/ensure_limine.sh` on the first image build.
+`boot-core` crate, for the kernel, `bootctl`, the installer and the host's
+disk builder, so a change to it goes there. SlopOS's partitions carry type
+GUIDs of its own, so a Linux on the same disk doesn't mount them. Each slot
+is a Limine entry named `slopos-<slot>` that loads the slot's kernel and both
+bases, as the modules `initramfs` and `initramfs-previous`; Limine fails an
+entry whose module it can't open, so a disk always holds both bases. The
+configuration names no `default_entry`: `LoaderEntryDefault` chooses the
+slot, and no commit writes the ESP. Limine is pinned at v12.9.3 and fetched
+by `scripts/ensure_limine.sh` on the first image build.
 
 ## Further reading
 
@@ -289,7 +439,7 @@ and no commit writes the ESP. Limine is pinned at v12.9.1 and fetched by
   program, which is most of what the device phase is doing.
 - [*Ramfs, rootfs and initramfs*](https://docs.kernel.org/filesystems/ramfs-rootfs-initramfs.html),
   from the Linux kernel documentation. How Linux uses a cpio archive as its
-  first root filesystem, the idea SlopOS's base image follows.
+  first root filesystem, the idea SlopOS's base follows.
 - [*The Boot Loader Interface*](https://systemd.io/BOOT_LOADER_INTERFACE/),
   from systemd. The EFI variables `bootctl` uses to boot a slot once and to
   learn which entry booted.
@@ -303,11 +453,14 @@ and no commit writes the ESP. Limine is pinned at v12.9.1 and fetched by
 |---|---|
 | `boot/limine_entry.s`, `kernel/src/main.rs` | The kernel's entry point |
 | `boot/src/early_init.rs` | Early setup, the phase runner, the command line |
-| `boot/src/boot_memory.rs`, `boot/src/boot_drivers.rs`, `boot/src/boot_services.rs` | The steps of each phase, root selection, launching `init` |
-| `boot/src/limine_protocol.rs` | Limine requests and the boot log's `BOOT:` lines |
+| `boot/src/limine_protocol.rs`, `boot/src/base.rs` | Limine requests, the `BOOT:` lines, choosing the base |
+| `boot/src/boot_memory.rs`, `boot/src/boot_drivers.rs`, `boot/src/boot_services.rs` | The steps of each phase, root selection, the install medium, launching `init` |
 | `boot/src/smp.rs` | Starting the other cores |
 | `boot/src/shutdown.rs` | Halt, power-off and reboot |
-| `userland/src/apps/init_process.rs` | What `init` does |
+| `splash-core/`, `video/src/splash.rs` | The boot screen's ring and logo |
+| `fate-core/`, `userland/src/apps/roulette.rs` | The Wheel of Fate |
+| `userland/src/apps/init/` | What `init` does |
+| `boot-core/src/layout.rs` | The partitions, slots, bases and the medium's paths |
 | `scripts/build_iso.sh`, `scripts/build_bootdisk.sh` | The two boot media |
 
 [Boot options](/docs/abi/boot-options) is the reference for the command line.

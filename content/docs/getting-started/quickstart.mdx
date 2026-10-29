@@ -7,25 +7,27 @@ By the end of this page you will have SlopOS built from source and running in
 a QEMU window on your machine.
 
 SlopOS can boot in two ways. The *live ISO* is a CD image that runs the whole
-system from memory and keeps nothing when you close it. The *development
-machine* is a virtual machine with a disk that keeps what you write, and
-carries a compiler and a copy of the source so you can build SlopOS inside
-SlopOS. Start with the live ISO: it builds faster and needs nothing from you.
+system from memory and keeps nothing when you close it; it is also the
+*install medium*, the image you would write to a USB stick to install SlopOS
+on a real disk. The *development machine* is a virtual machine with a disk
+that keeps what you write, and a copy of the source, so you can build SlopOS
+inside SlopOS. Start with the live ISO: it needs nothing from you beyond the
+host tools.
 
 ## What you need
 
 A Linux or macOS machine with QEMU (the emulator SlopOS runs in), `rustup`,
 `just` (a command runner: `just boot` runs the recipe named `boot` in the
 repository's `justfile`), Go 1.22 or later, an LLVM toolchain of version 18 or
-later, and a handful of disk-image tools. One command per platform installs
-them:
+later with CMake and Ninja, `make`, `pkg-config`, and a handful of disk-image
+tools. One command per platform installs them:
 
 <Tabs items={['macOS', 'Debian/Ubuntu', 'Arch']}>
 <Tab value="macOS">
 
 ```bash
 brew install rustup qemu xorriso e2fsprogs just go python git curl zstd \
-  dosfstools mtools util-linux llvm lld cmake ninja openssl
+  dosfstools mtools util-linux llvm lld cmake ninja pkg-config openssl
 ```
 
 The build looks every tool up on `PATH`, so add Homebrew's `e2fsprogs`,
@@ -37,7 +39,8 @@ linked.
 
 ```bash
 sudo apt install qemu-system-x86 xorriso e2fsprogs python3 git curl zstd \
-  dosfstools mtools fdisk golang-go clang lld llvm cmake ninja-build openssl
+  dosfstools mtools fdisk golang-go clang lld llvm cmake ninja-build make \
+  pkg-config openssl openssh-client
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install just
 ```
@@ -47,15 +50,19 @@ cargo install just
 
 ```bash
 sudo pacman -S rustup qemu-full xorriso e2fsprogs python git curl zstd \
-  dosfstools mtools util-linux just go clang lld llvm cmake ninja openssl
+  dosfstools mtools util-linux just go clang lld llvm cmake ninja make \
+  pkgconf openssl openssh
 ```
 
 </Tab>
 </Tabs>
 
-Not every recipe needs every tool. Booting needs QEMU, xorriso, e2fsprogs and
-Python; the development machine adds dosfstools, mtools, `sfdisk` and zstd;
-the test suite adds Go and LLVM. [Building and
+The LLVM tools are needed even to boot. Every SlopOS system carries the
+e2fsprogs tools (`mke2fs`, `e2fsck` and the rest), cross-compiled for SlopOS
+from their release tarball with your clang, and that build needs the C++
+runtime the build also makes with clang, CMake and Ninja. The development
+machine adds dosfstools, mtools, `sfdisk` and zstd; the test suite adds Go;
+`openssl` and `ssh-keygen` are for the host-side tests. [Building and
 testing](/docs/getting-started/build-test-recipes) says which recipe needs
 what.
 
@@ -66,11 +73,11 @@ git clone https://github.com/SlopLabs/slopos.git
 cd slopos
 ```
 
-The repository has no submodules. The bootloader (Limine), the virtual
-machine's firmware (OVMF) and a few other pinned inputs download on first use
-into `third_party/`.
+The repository has no submodules. The boot loader (Limine), the virtual
+machine's firmware (OVMF), the LLVM sources and the e2fsprogs tarball download
+on first use into `third_party/`, each checked against a pinned SHA-256 sum.
 
-## 2. Install the toolchain
+## 2. Install the Rust toolchain
 
 ```bash
 just setup
@@ -93,24 +100,47 @@ the `slopos` toolchain.
 just boot-live
 ```
 
-The first run compiles the kernel and every program, packs them into
-`builddir/slop.iso`, and opens a QEMU window.
+The first run downloads the LLVM sources, builds the C++ runtime and
+e2fsprogs for SlopOS, then compiles the kernel and every program and packs
+them into `builddir/slop.iso`. That takes a while once; later runs rebuild
+only what changed. Then a QEMU window opens.
 
-The first thing you see is the Wheel of Fate: a roulette wheel that decides
-whether this boot may continue. An odd number lets the system boot. An even
-number reboots the machine and the wheel spins again. It is a joke that the
-project keeps, and it is harmless, but you will usually want to skip it:
+The screen stays black but for the SlopOS logo near the bottom and a ring of
+twelve segments above it, which light up clockwise as the kernel finishes its
+boot steps. Press Esc during the boot to see the kernel's log instead, and Esc
+again to go back.
+
+When the ring is full, the Wheel of Fate plays on it: the segments become
+numbered pockets, a light runs round them and slows down, and stops on a
+number. An odd number starts SlopOS. An even number restarts the machine, and
+the wheel spins again on the next boot. It is a joke the project keeps, and it
+is harmless, but you will usually want to skip it:
 
 ```bash
 ROULETTE=0 just boot-live
 ```
 
-After the wheel (or without it) the kernel starts the first program,
-`/sbin/init`, which brings up the desktop. Everything runs from memory, so
-nothing you change survives closing the window.
+Then the desktop appears. It has logged you in as `user`, the first person on
+the machine, who is an administrator and has no password. Because the live
+ISO is also the install medium, the first window is the installer's welcome,
+*Welcome to SlopOS*, with two choices: *Try SlopOS* closes it and leaves you
+at the desktop, where the dock along the bottom starts the terminal and the
+other apps; *Install SlopOS* starts installing onto a disk of the machine.
+`just boot-live` attaches no disk, so choose *Try SlopOS* here;
+[Installing SlopOS](/docs/self-hosting/installing) covers a real install.
 
-If you have no display, or you are on SSH, add `VIDEO=0`: QEMU then opens no
-window and the system's console appears in your terminal.
+Everything runs from memory, so nothing you change survives closing the
+window.
+
+If you have no display, or you are on SSH, add `VIDEO=0`. QEMU then opens no
+window and the system's console appears in your terminal, at a prompt:
+
+```text
+slopos login:
+```
+
+Type `user`, then press Enter at `Password:` (the first person has none), and
+you get a shell.
 
 ## 4. Boot the development machine
 
@@ -118,13 +148,23 @@ window and the system's console appears in your terminal.
 just boot-fast
 ```
 
-This is `just boot` with the wheel skipped. It boots an optimised kernel from
-its own boot disk, with 4 GB of memory and a persistent root filesystem at
-`fs/assets/ext2-persist.img`. That disk holds the compiler at `/usr/local` and a
-clone of your checkout at `/src/slopos`, and what you write to it is still
-there next time. The first run takes longer, because it builds that disk.
-[Development machine](/docs/self-hosting/development-machine) covers working
-inside it.
+This is `just boot` with the wheel skipped. It boots an optimised kernel and
+the system's programs (its *base*) from a boot disk it rebuilds on every run,
+with 6 GB of
+memory and a persistent root filesystem at `fs/assets/ext4-persist.img`. The
+first run builds that disk and puts a clone of your checkout at
+`/src/slopos`; after that, what you write to it is still there next time.
+Before QEMU starts, the recipe prints what to type in the guest:
+
+```text
+boot: in the guest: cd /src/slopos; git pull; scripts/selfhost.sh install; for a kernel, scripts/selfhost.sh install-kernel; bootctl reboot
+```
+
+The desktop logs you in as `user` and opens a terminal. To build SlopOS
+inside it you also need a compiler on the disk, which `just toolchain`
+cross-builds once on your machine (hours of CPU) and every later `just boot`
+installs at `/usr/local`. [Development
+machine](/docs/self-hosting/development-machine) covers working inside it.
 
 ## Check that it worked
 
@@ -135,14 +175,18 @@ just boot-log
 ```
 
 It boots for 15 seconds, saves everything the kernel printed to
-`test_output.log`, and exits non-zero unless the log shows that `/sbin/init`
-started.
+`test_output.log`, and exits non-zero unless the log shows that the first
+program started:
+
+```text
+USERLAND: launched /sbin/init as task <n>
+```
 
 ## If something goes wrong
 
-Missing tools, firmware downloads and a disk the build refuses to touch are
-covered in [Troubleshooting](/docs/getting-started/troubleshooting). SlopOS
-also needs a particular kind of virtual (or real) machine;
+Missing tools, downloads and a disk the build refuses to touch are covered in
+[Troubleshooting](/docs/getting-started/troubleshooting). SlopOS also needs a
+particular kind of virtual (or real) machine;
 [Hardware](/docs/status/hardware-requirements) lists it, and [QEMU
 options](/docs/getting-started/qemu-options) lists what the wrapper gives
 QEMU.

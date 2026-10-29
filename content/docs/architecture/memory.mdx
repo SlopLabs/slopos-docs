@@ -85,6 +85,19 @@ library, and they all share one copy. When the last process unmaps a file,
 its frames stay cached, so a compiler that loads the same libraries on every
 run finds them already in RAM.
 
+### Making memory executable
+
+A program can also map memory as code: with `PROT_EXEC` on a mapping, or by
+`mprotect` on memory it already has, which is how a loader or a just-in-time
+compiler works. That is allowed, but it changes one thing. The kernel records
+which program each process runs, so that privd can tell who is asking it for
+something ([Privileged actions](/docs/architecture/privd)). Once a process
+maps code that came from anywhere but the [base](/docs/architecture/base)
+(or, for an extension's program, its own image), the record can no longer
+vouch for what the process runs, so the kernel drops it before that code can
+run. The program itself carries on unaffected; privd simply treats it as an
+unknown program until its next `exec`.
+
 ### Sharing memory between programs with memfd
 
 To share memory that isn't a file, a program calls `memfd_create`, which
@@ -92,8 +105,7 @@ returns a file descriptor for an anonymous block of memory. It sizes the block
 with `ftruncate`, maps it, and passes the descriptor to another process over a
 Unix socket, which maps the same frames. The desktop works this way: every
 window's pixels live in a memfd that the application draws into and the
-compositor reads (see
-[Desktop and windowing](/docs/architecture/userland-windowing)).
+compositor reads (see [Windowing](/docs/architecture/userland-windowing)).
 
 A memfd can be sized only once, and its frames are allocated at that moment.
 They count against the limits of the process that sized it. If that process
@@ -169,7 +181,10 @@ paging, copy-on-write, memfd, reclaim, TLB flushing and the OOM killer. See
 whether it is in use: `UNUSED` (owned by the allocator), `BUSY` (one thread
 building or tearing it down) or a live count of typed `Frame<M>` handles.
 Frames a program or device can write are `UFrame<M>`, which allow byte copies
-and atomic word access but never a Rust reference.
+and atomic word access but never a Rust reference. The first MiB of physical
+memory never reaches the allocators, because firmware is known to write there
+after it has handed the machine over; Linux keeps it back on x86 for the same
+reason.
 
 **Kernel allocation.** Kernel code allocates only through
 `slopos_ostd::mm::heap` (`KBox`, `KVec`, `KArc` and friends). Every
@@ -182,18 +197,27 @@ ELF exceeds 2 KiB.
 the per-process VM lock hands out, so there is one writer at a time. Entries
 are relaxed atomics because the processor sets accessed and dirty bits
 concurrently. `CursorMut::map` returns the frame in the error if the map is
-refused, so nothing frees it twice.
+refused, so nothing frees it twice. The kernel's own half has one writer
+outside OSTD, `slopos_mm::kernel_mappings`, and a build check
+(`check_kernel_pml4_writer.sh`) refuses a second.
 
 **TLB flushing.** Unmapped frames wait in quarantine until every CPU that
 might cache the old translation has flushed it; mapping a previously empty
 page needs no shootdown, because x86 doesn't cache missing translations.
-There is no kernel page-table isolation (KPTI): the kernel half stays mapped,
+`fork` flushes the CPUs running the parent's other threads before it releases
+the parent's address space: a sibling still holding a writable translation
+would otherwise write into the frame the child now shares. There is no
+kernel page-table isolation (KPTI): the kernel half stays mapped,
 supervisor-only, in every process's table.
 
 **User access.** `copy_from_user` and `copy_to_user` keep preemption off
 while they hold the address-space reference, so a fault that needs the
-address space exclusively waits for them. Vectored I/O revalidates each
-segment as it goes, so a concurrent `munmap` becomes an error.
+address space exclusively waits for them. A copy that finds a page absent or
+copy-on-write populates it and tries again, up to a bounded number of
+rounds, because a sibling thread's `fork` can mark the fresh page
+copy-on-write again in between; a valid buffer must not fail with `EFAULT`
+for that. Vectored I/O revalidates each segment as it goes, so
+a concurrent `munmap` becomes an error.
 
 **Reclaim.** Taking a reference on a parked file page set unparks it, so
 reclaim can't free a frame a fault is about to map. How regions are charged

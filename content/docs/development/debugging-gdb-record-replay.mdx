@@ -36,7 +36,10 @@ just boot-debug
 This is `just boot` with a few changes: it uses the debug build of the
 kernel, skips the Wheel of Fate, and has QEMU listen for GDB on TCP port 1234
 and for monitor commands on the socket `/tmp/slopos-monitor.sock`. (Setting
-`QEMU_DEBUG=1` on any other boot recipe turns on the same two.)
+`QEMU_DEBUG=1` on any other boot recipe turns on the same two.) The GDB port
+listens on every network interface of your machine, and whoever reaches it
+can read and change the guest's memory, so don't leave a debug boot running
+on a network you don't trust.
 
 When something goes wrong, use a second terminal. To get a stack trace from
 every CPU and let the machine carry on:
@@ -76,23 +79,16 @@ lists the rest.
 
 ## Stop the kernel before it starts
 
-To break on something early in boot, QEMU has to start with the CPUs paused,
-so that GDB can set breakpoints before any kernel code runs.
-`scripts/qemu_dbg.sh` does that, using the same CPUs and accelerator as a
-normal run (four CPUs, KVM where available). Build the disk image and a live
-image first, then start it:
+`just boot-debug` starts the machine running, so a breakpoint you set after
+attaching only catches code that runs later. To break on something early in
+boot, use a recorded run (see [Go backwards from a crash](#go-backwards-from-a-crash)):
+its replay starts with the CPU halted before the firmware runs, so GDB can
+set breakpoints before any kernel code does. Record once, start the replay,
+and at the GDB prompt set the breakpoint before you continue:
 
 ```bash
-just build && just iso
-scripts/qemu_dbg.sh builddir/slop.iso fs/assets/ext2.img
-```
-
-QEMU waits for GDB on port 1234 (set `GDB_PORT` to change it), and the
-kernel's serial output goes to `builddir/dbg-serial.log`. Then attach and set
-a breakpoint:
-
-```bash
-gdb -q builddir/kernel-dev.elf -ex 'target remote :1234'
+just rr-record
+just rr-replay
 ```
 
 ```
@@ -106,17 +102,12 @@ which isn't possible before the kernel's memory is set up and may be
 write-protected afterwards; a hardware breakpoint is a CPU register and has
 no such problem. If GDB can't tell which of several Rust functions with the
 same name you mean, break on a file and line instead
-(`hbreak exception.rs:43`).
+(`hbreak early_init.rs:<line>`).
 
-`scripts/gdb/inspect_fault.gdb` is a ready-made session for one common case,
-a program killed by a fault you don't understand. It runs to the first
-program fault and prints the fault, the bytes actually in memory at the
-faulting instruction next to the bytes the program file says should be
-there, and how the faulting address is mapped:
-
-```bash
-gdb -q -batch -x scripts/gdb/inspect_fault.gdb
-```
+The replay runs the test kernel on one CPU under QEMU's software emulation,
+so this catches anything that happens the same way there. A problem that
+only appears with several CPUs, or with real timing, needs `just boot-debug`
+and the [diagnostic console](/docs/development/diagnostics) instead.
 
 ## The helper commands
 
@@ -230,6 +221,6 @@ the stack pointer.
   emulated clock with another, which recording decouples, so `rr-record`
   skips them.
 - **An instruction faults that the program file says is fine.** Compare the
-  bytes in memory with the program file, which `inspect_fault.gdb` does for
-  you: if they differ, something overwrote the program's code, and the replay
-  can find out what.
+  bytes in memory (`x/16xb <address>` in GDB) with the same address in the
+  program file (`objdump -d`): if they differ, something overwrote the
+  program's code, and the replay can find out what.

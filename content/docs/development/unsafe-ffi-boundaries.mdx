@@ -39,6 +39,13 @@ shows where each kind of low-level code goes:
 | Access device registers, I/O ports, DMA buffers, PCI configuration | OSTD's device and memory APIs |
 | Build a large struct without putting it on the stack | `Init<T, E>` and `#[derive(SlotFields)]` ([The trusted core](/docs/verification/ostd-trusted-core#building-large-values-in-place)) |
 
+Outside OSTD, one file holds anything of the kind: the kernel binary's own
+`kernel/src/main.rs`, which declares the global allocator (Rust requires
+that in the binary's crate) and places the base-interface note, the record
+that says which [base interfaces](/docs/architecture/base) the kernel serves,
+in a linker section of its own, because the note describes the kernel file.
+Nothing else is exempt.
+
 If the API you need already exists in OSTD, use it and stop here.
 
 ## Add an unsafe primitive to OSTD
@@ -81,6 +88,7 @@ If the API you need already exists in OSTD, use it and stop here.
      uphold something the compiler will not check. Express it — a guard, a
      capability token, a closure-scoped borrow, a witness type — or mark the
      function 'unsafe fn' so the obligation is visible where it is taken on.
+     Re-run with SAFE_CONTRACT_BASELINE=0 to list them.
    ```
 
    Marking the function `unsafe fn` is only an option if its callers are all
@@ -123,10 +131,10 @@ depends on the function. Wrap it in a safe OSTD function with its own
 ## Add an entry to a linker table
 
 The kernel keeps several tables that the linker assembles from entries spread
-across many crates: boot steps (one table per boot phase), PCI and platform
-drivers, tests, saved test state, kernel console commands and resource-charge
-audits. At run time OSTD reads each one back as a slice. These are called
-*registries*.
+across many crates: boot steps (one table per boot phase), PCI, platform
+and USB drivers, tests, saved test state, kernel console commands and
+resource-charge audits. At run time OSTD reads each one back as a slice.
+These are called *registries*.
 
 To add an entry, use `registry_entry!` with the registry's name. You never
 write a section name yourself:
@@ -139,8 +147,9 @@ slopos_ostd::registry_entry! {
 ```
 
 In practice you'll rarely call it directly. Most registries have their own
-macro that wraps it, such as `pci_driver!` for drivers (see
-[Add a driver](/docs/development/adding-a-driver)) and the test macros (see
+macro that wraps it, such as `pci_driver!` and `usb_driver!` for drivers
+(see [Add a driver](/docs/development/adding-a-driver)), `kcommand!` for the
+diagnostic console and the test macros (see
 [Write tests](/docs/development/adding-tests)). The entry's type has to
 declare, through the `RegistryEntry` trait, which registries it belongs to,
 and the macro refuses a static whose type doesn't.

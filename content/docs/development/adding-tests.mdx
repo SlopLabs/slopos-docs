@@ -4,17 +4,18 @@ description: "Add a kernel or userland test to SlopOS, run just the tests you ca
 ---
 
 By the end of this page you will have written a test that runs inside the
-kernel and one that runs as a program on SlopOS, run only those tests, and
-know how to read what the harness prints when one fails. The end of the page
-covers the tests that run on your own machine without booting anything, the
-long-running checks, and what CI runs on top of `just test`.
+kernel and one that runs as a program on SlopOS, chosen who that program runs
+as, run only those tests, and know how to read what the harness prints when
+one fails. The end of the page covers the tests that run on your own machine
+without booting anything, the long-running checks, and what CI runs on top of
+`just test`.
 
 ## What you need first
 
 A working build and a passing `just test`; see
 [Quickstart](/docs/getting-started/quickstart). `just test` builds a test
-version of the kernel, boots it under QEMU, runs every registered test inside
-it, and exits 0 if all of them passed.
+version of the kernel and base, boots them under QEMU, runs every registered
+test, and exits 0 if all of them passed.
 
 ## Choosing where a test goes
 
@@ -23,13 +24,13 @@ your machine takes seconds; one that needs a boot takes minutes.
 
 | Kind | Runs | Use it for |
 |------|------|-----------|
-| Host test | On your machine, with `cargo test` | Logic that doesn't need the kernel: parsers, protocols, on-disk formats |
+| Host test | On your machine, with `cargo test` | Logic that doesn't need the kernel: parsers, protocols, on-disk formats, policy files, layouts |
 | Kernel test | Inside the booted kernel | Kernel code, and anything that needs the kernel's memory, tasks or devices |
-| Userland test | As a program on the booted system | System calls and libraries as a real program sees them |
+| Userland test | As a program on the booted system | System calls, libraries, services and the desktop as a real program sees them |
 
 That's why so much of SlopOS sits in small crates whose names end in `-core`
-(`ext4-core`, `nvme-core`, `net-core` and others): code there can be tested
-on the host.
+(`ext4-core`, `usb-core`, `priv-core`, `installer-core` and many others):
+code there can be tested on the host.
 
 ## 1. Write a kernel test
 
@@ -68,7 +69,7 @@ A test's full name is its module path plus the function name:
 That is the name you filter on and the name you'll see in failures.
 
 Tests run in alphabetical order of their full names, and some tests rely on
-it. The test that mounts the test filesystem is named `test_ext2_aaa_init` so
+it. The test that mounts the test filesystem is named `test_ext4_aaa_init` so
 that it runs before anything that writes files, and the lock-order tests live
 in a module called `zz_lockdep_tests` so that they run last.
 
@@ -79,13 +80,25 @@ Three flags change how a test is treated. Pass them as
 |------|--------|
 | `FLAG_EXPECTED_PANIC` | The test is supposed to panic; a panic counts as a pass and is marked `EXPECTED_PANIC` |
 | `FLAG_UNCAPTURED` | The test's log goes straight to the console instead of being kept for its failure report. Use it for long tests, whose report would otherwise keep only their first few kilobytes of log |
-| `FLAG_EXPLICIT` | The test ends the machine, so it runs only when a filter names it in full, never through a wildcard |
+| `FLAG_EXPLICIT` | The test ends the machine or needs the host to do something, so it runs only when a filter names it in full, never through a wildcard |
+
+A kernel test normally runs in the kernel phase, before any program starts.
+Add `kind = Userland` to run it in the userland phase instead, sorted among
+the userland tests, for a check that needs init and the services up:
+
+```rust
+slopos_testing::stest!(name = init_is_told_apart_by_its_task_id, flags = 0, kind = Userland);
+```
 
 ## 2. Write a userland test
 
-A userland test is a program. The kernel starts it after the kernel tests
-have finished, and the program reports each of its cases. This is
-`userland/src/bin/tests/keymap_test.rs`, cut down to two of its five cases:
+A userland test is a program. On a test boot, init starts a copy of itself
+(`/sbin/init --run-tests`) that asks the kernel to run the userland phase,
+so init keeps serving while the tests run: privd answers requests and a test
+can ask for a desktop. The kernel then starts each registered program in
+turn, and the program reports each of its cases to the kernel, which prints
+them with the other results. This is `userland/src/bin/tests/keymap_test.rs`, cut down to two
+of its five cases:
 
 ```rust
 use slopos_userland as _;
@@ -115,9 +128,14 @@ fn main() {
 
 Each case is a function that returns `true` for a pass. `test_harness::run`
 runs them in order, reports each one, and exits with the number that failed.
+A program's own standard error doesn't reach the log the harness reads, so a
+case that fails should say why with `test_harness::note("...")`: the note
+travels with the case's result and appears on its line.
+`test_harness::run_with_progress` also prints a line as each case starts,
+which tells you which case was running if the program hangs.
 
 A new test program needs four one-line additions so that it is built, put on
-the test disk, and run:
+the test system, and run:
 
 1. A `[[bin]]` entry in `userland/Cargo.toml`:
 
@@ -130,16 +148,59 @@ the test disk, and run:
 2. A `--bin keymap_test` argument, and the matching copy into `builddir/`,
    in `scripts/build_userland.sh`.
 3. The name in `BASE_TEST_PROGRAMS` in `scripts/lib/base.sh`, which puts the
-   program on the test disk as `/bin/keymap_test`.
+   program in the tests base as `/bin/keymap_test`.
 4. A registration in `core/src/utests.rs`:
 
    ```rust
    crate::utest!(name = utest_keymap, bin = "/bin/keymap_test");
    ```
 
-`utest!` also takes `argv = &["keymap_test", "--flag"]` to pass arguments, and
-`uncaptured` for a long-running program, with the same meaning as the kernel
-flag above.
+`utest!` also takes `argv = &["keymap_test", "--flag"]` to pass arguments
+(one program can be registered several times with different arguments),
+`uncaptured`, with the same meaning as the kernel flag above, and `explicit`,
+which is `FLAG_EXPLICIT` plus `uncaptured`, for a test a host script drives.
+
+### Choosing who the test runs as
+
+By default a userland test runs as uid 0 holding every capability. That is
+the right default for a test of a privileged program, but it hides any check
+that an ordinary program would fail. A test of an unprivileged path, or of
+what a person can do at their desktop, says so:
+
+```rust
+crate::utest!(name = utest_apps, bin = "/bin/apps_test", caps = none, uid = 1000);
+crate::utest!(name = utest_mount, bin = "/bin/mount_test", caps = MOUNT);
+```
+
+`caps = none` gives the program only the universal capabilities every program
+holds; `caps = MOUNT` (any combination of the constants in `slopos_abi::caps`)
+adds exactly those. `uid = 1000` runs it as the first person, and the uid is
+its gid too. [Capabilities](/docs/architecture/authority) explains what each
+capability allows, and [Users and file permissions](/docs/architecture/users)
+what a uid does and doesn't.
+
+### Answering the desktop from a test
+
+Some behaviour only exists once a person is at the desktop: privd asking for
+consent, the lock screen, a window's keys. A test boot starts no desktop by
+itself, so a test that needs one asks init to restart the sessions and waits
+for one to come in front, then types into it:
+
+- `test_key(keycode, codepoint, pressed)` hands one key to whoever holds the
+  keyboard input, as if a keyboard had sent it. It needs the `TestHarness`
+  capability and answers `ENOSYS` on any boot that isn't running the tests,
+  so no system a person uses has a keyboard a program can type on.
+- `userland/src/bin/tests/support/asking.rs` asks privd from a child process
+  as a given uid and session, waits until the question is on screen, and runs
+  the keys you give it (`tab_and_enter`, `escape`, `type_text` and `key`),
+  waiting out the moment the dialog ignores input after it appears. Its
+  result is a line such as `ran 0` or `denied by the person …`.
+- `userland/src/bin/tests/support/sessions.rs` reads the session table and
+  waits until a session is in front.
+
+A test program includes either file with `#[path = "support/asking.rs"]`;
+`privd_test.rs` is the fullest example. [Privileged actions](/docs/architecture/privd)
+describes the dialog the keys answer.
 
 ## 3. Run only your tests
 
@@ -149,7 +210,7 @@ commas, matched against the full test names. `*` matches anything.
 ```bash
 just test 'slopos_drivers::tests::xe_logic_tests::*'   # one file of kernel tests
 just test '*utest_keymap*'                             # one userland test
-just test '*ext2_aaa*,slopos_fs::*'                    # the fs tests, with the mount first
+just test '*ext4_aaa*,slopos_fs::*'                    # the fs tests, with the mount first
 ```
 
 <Callout type="warning">
@@ -157,7 +218,7 @@ The filter is a positional argument. `just test FILTER='mm::*'` passes the
 text `FILTER=mm::*` through as the pattern, which matches nothing you meant.
 </Callout>
 
-If your tests create or write files, include `'*ext2_aaa*'` in the filter, so
+If your tests create or write files, include `'*ext4_aaa*'` in the filter, so
 that the test that sets up the test filesystem still runs first.
 
 Other ways to run the suite:
@@ -165,8 +226,10 @@ Other ways to run the suite:
 ```bash
 just test-rerun-failed          # only the tests that failed last time
 just test-verbose 'mm::*'       # also print the log of tests that passed
+just test-quiet                 # print only failures and the summary
 just test-userland-only         # skip the kernel tests
 just test-raw                   # the raw serial output, unparsed
+just test-elf builddir/guest-tests.elf   # the suite on a kernel built elsewhere
 ```
 
 [Building and testing](/docs/getting-started/build-test-recipes) lists every
@@ -192,7 +255,7 @@ ok 25 - slopos_core::utests::utest_keymap # time_ms=18
 ```
 
 The two `ok` numbers count separately because kernel tests and userland tests
-run in two phases.
+run in two phases. A case's note, when it set one, follows a `#` on its line.
 
 `just test` reads that stream and shows a progress bar. When a test fails, it
 prints a block for it at the end with the phase, the test's source file and
@@ -200,8 +263,8 @@ line, how it ended (`Fail`, or a panic), and the log the test wrote while it
 ran. That log is where the assertion macros' messages appear, such as
 `ASSERT_EQ: the leader's blocked pending set - expected …, got …` or
 `TEST FAIL: a7a8 must identify as a supported display`. For a userland test,
-the block also lists every case with a pass or fail mark, so you see which
-case failed even if the program's log was too long to keep.
+the block also lists every case with a pass or fail mark and its note, so you
+see which case failed and why even if the program's log was too long to keep.
 
 After every complete run, the names of the failed tests are written to
 `builddir/last-fail.list`, which is what `just test-rerun-failed` reads.
@@ -215,10 +278,12 @@ just test-host
 ```
 
 This runs `cargo test` on the crates that build for your machine: the
-`*-core` crates, plus `abi`, `gfx`, `font`, `initramfs`, `kallsyms` and the
-kernel's trusted core (`slopos-ostd`). Write these as ordinary Rust
-`#[test]` functions. The trusted core's tests are the same ones Miri runs
-(see below), run natively here so a broken assertion shows up in seconds.
+`*-core` crates, `abi`, `gfx` and `font`, the build tools that have tests
+(`initramfs`, `kallsyms`, `extension` and `icons`), and the kernel's trusted
+core (`slopos-ostd`). Write these as ordinary Rust `#[test]` functions. The
+trusted core's tests are the same ones Miri runs (see below), run natively
+here so a broken assertion shows up in seconds. The TLS crate's tests talk to
+OpenSSL and `ssh-keygen`, so both must be on your `PATH`.
 
 `just check-tests-host` runs the Go tests of the test harness itself.
 
@@ -231,13 +296,26 @@ that cover what you changed.
 | Recipe | Checks |
 |--------|--------|
 | `just test-persist` | A file written and `fsync`ed in one boot is there in the next |
-| `just check-fs-image` | The disk the test suite wrote passes `e2fsck`, and was cleanly unmounted |
+| `just check-fs-image` | The disk the test suite wrote passes `e2fsck`, was cleanly unmounted, and keeps the ownership map |
 | `just test-rude-exit` | A boot that ends abruptly leaves a journal that the host's `e2fsck` replays correctly. [Crash recovery](/docs/architecture/crash-recovery) explains why this matters |
+| `just test-usb` | Both of QEMU's USB controller models with sticks, a hub, keyboards, a mouse, a tablet and a network adapter, pulled out and plugged back in while the system runs. [USB](/docs/architecture/usb) |
 | `just test-capacity` | A large volume mounts, can be walked, and can be written |
-| `just test-install` | On one disk laid out as on real hardware: registering SlopOS with the firmware, installing a kernel into a boot slot, booting it once, committing it, and rolling back from one that panics, without changing the firmware's partition |
-| `just test-install-guest` | SlopOS builds and installs its own kernel |
-| `just test-toolchain` | The compilers on the self-hosting disk build a series of programs |
+| `just test-install` | On one disk laid out as on real hardware: registering SlopOS with the firmware, installing a kernel into a boot slot, booting it once, committing it, rolling back from slots that crash, and installing and rolling back a base. [Updating SlopOS](/docs/self-hosting/updating) |
+| `just test-installer` | The installer, run from a USB stick and from a CD: onto a blank disk, beside another system and over an existing partition, then each installed disk booted on its own, and the rescue shell. [Installing SlopOS](/docs/self-hosting/installing) |
+| `just test-remote` | A machine driven through the broker: commands, file transfers, a base and a kernel installed remotely. [Remote control](/docs/self-hosting/remote-control) |
+| `just test-toolchain` | The compilers and tools on the self-hosting disk build a series of programs |
+| `just test-install-guest` | SlopOS builds its own kernel and base from the current commit, installs and boots them |
 | `just test-selfhost` | SlopOS builds itself from the current commit, and the host checks the result |
+
+`test-install-guest`, `test-selfhost` and (unless you set
+`INSTALLER_PAYLOAD=0`) `test-installer` need the cross-built toolchain from
+`just toolchain`; see [The toolchain](/docs/self-hosting/toolchain).
+
+One more recipe boots the live system but checks nothing: `just ui-shots`
+saves a picture of every screen of the desktop, the installer and each app
+under `builddir/ui-shots/` for you to look at after a change to how
+something looks. The layout checks that do fail live in `appkit_test`, which
+`just test` runs.
 
 For the code that the proofs and Miri cover (`slopos-ostd/` and
 `verification/`), also run:
@@ -255,13 +333,16 @@ explain what each one catches.
 A passing `just test` is necessary but not enough. CI runs four jobs in
 parallel:
 
+- **ci**: `just fmt`, the full test boot, the checks that read its log, then
+  `check-fs-image`, `test-persist`, `test-rude-exit`, `test-usb` and
+  `test-toolchain`.
 - **gates**: `just test-host`, a kernel build, every check in
   `just check-framekernel-gates`, an offline build from the vendored
-  dependencies, and a build of the release kernel with its own checks.
-- **ci**: `just fmt`, the full test boot, then several checks that read its
-  log, then `check-fs-image`, `test-persist`, `test-rude-exit` and
-  `test-toolchain`.
-- **toolchain**: builds the compilers and C++ runtime that SlopOS ships.
+  dependencies, a build of the release kernel with its own checks, and the
+  codegen-backend and linker checks with the alternatives installed.
+- **toolchain**: builds the tests userland and the libraries the
+  self-hosted tools need, and checks the C library's exports, the C++
+  runtime, the LLVM port and the compiler cross-build against them.
 - **ostd-verify**: `just check-miri` and `just verify`.
 
 The checks that read the test log hold the line on numbers that should only
@@ -270,9 +351,9 @@ move on purpose:
 | Check | Fails when |
 |-------|-----------|
 | Test count | Fewer tests are planned than the baseline in `scripts/check_test_count.sh` |
-| Lock order | The lock-order checker (see [Diagnosing the kernel](/docs/development/diagnostics#a-lock-problem)) reported a violation, or tracks more lock types or orderings than the caps in `scripts/gates/lockdep/` |
+| Lock order | The lock-order checker (see [Diagnosing the kernel](/docs/development/diagnostics#a-lock-problem)) wasn't active, reported a violation, or registered lock types beyond the counts in `scripts/gates/lockdep/` |
 | CPU spread | A CPU that is online can't be given tasks |
-| Authority | A system call can reach a power-off or reboot function without the `Power` permission |
+| Authority | A system call can reach a power-off or reboot function without being classified `Power` or listed with a reason |
 
 To grade a local run the way CI does, capture the raw log once and run the
 checks on it:
@@ -281,6 +362,7 @@ checks on it:
 just _build-run-tests
 set -o pipefail
 builddir/run_tests --raw --no-color 2>&1 | tee builddir/ci-test.log
+scripts/check_authority_reachability.sh --variant tests builddir/kernel-tests.elf
 scripts/check_test_count.sh       --log builddir/ci-test.log
 scripts/check_lockdep_headroom.sh --log builddir/ci-test.log
 scripts/check_sched_spread.sh     --log builddir/ci-test.log
@@ -290,14 +372,17 @@ Two more checks read the same log but aren't CI steps yet:
 `check_quota_headroom.sh` (resource accounts stay under their caps) and
 `check_fs_throughput.sh` (the filesystem doesn't issue more disk writes per
 megabyte than it used to). Run them when you touch resource accounting or the
-filesystem's write path.
+filesystem's write path. [Safety gates](/docs/verification/tcb-discipline)
+lists every check, including the ones that don't read a test log.
 
 ## What usually goes wrong
 
-- **The test count check fails after you added tests.** That's expected:
-  the baseline only goes up on purpose. Measure the new count with
+- **You added tests and the baseline stayed where it was.** The test count
+  check only fails when the count drops, so nothing makes you raise it, but
+  you should: measure the new count with
   `TEST_COUNT_BASELINE=0 scripts/check_test_count.sh` and raise the baseline
-  in the script in the same commit.
+  in the script in the same commit, so a later change that deletes your
+  tests fails.
 - **A lock, quota or throughput check fails after a real change.** A new
   lock, lock ordering or resource account moves a recorded number. Treat the
   failure as a measurement: regenerate the recorded data with the script's
@@ -305,6 +390,13 @@ filesystem's write path.
   message what moved it. Never edit `scripts/gates/` by hand to make a run
   pass.
 - **A filtered run fails in a test that passes in the full suite.** It
-  probably writes files and your filter left out `*ext2_aaa*`.
+  probably writes files and your filter left out `*ext4_aaa*`.
+- **A userland test passes as uid 0 and the feature fails for a person.**
+  The test ran holding every capability. Register it, or a second copy of it
+  with an argument, with `caps = none, uid = 1000`.
 - **A long test's failure report has no useful log.** The report keeps only
-  the start of each test's log. Mark the test uncaptured, or print less.
+  the start of each test's log. Mark the test uncaptured, print less, or put
+  the reason in a case's note.
+- **A test that needs the desktop times out.** A test boot starts no session
+  until one is asked for; ask init to restart the sessions first and wait for
+  one in front.
