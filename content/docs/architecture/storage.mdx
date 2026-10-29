@@ -146,7 +146,7 @@ they always agree about which partition is which.
 A disk SlopOS is installed on can share its EFI system partition (the small
 FAT partition the firmware starts boot loaders from) with another operating
 system, and adds partitions of its own: a boot partition holding the
-[boot slots](/docs/self-hosting/installing-a-system), the ext4 root unless
+[boot slots](/docs/self-hosting/updating), the ext4 root unless
 the root is a disk of its own, and a small crash partition reserved for a
 record of the last panic, which nothing writes yet. These carry partition
 types that belong to SlopOS rather than the standard Linux ones, so a Linux
@@ -185,7 +185,7 @@ Reading or writing a disk directly bypasses every file permission on it, so
 it is restricted to programs that hold the `Mount`
 [permission](/docs/architecture/authority) or run as part of the system. The
 boot manager uses this to update the boot slots on its boot partition (see
-[Installing a system](/docs/self-hosting/installing-a-system)).
+[Installing a system](/docs/self-hosting/updating)).
 
 ## When a disk stops answering
 

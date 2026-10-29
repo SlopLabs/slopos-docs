@@ -1,4 +1,14 @@
 {
   "title": "Reference",
-  "pages": ["syscalls", "slopring", "window-protocol", "ktap-test-output", "boot-options"]
+  "pages": [
+    "syscalls",
+    "slopring",
+    "window-protocol",
+    "privd-actions",
+    "extension-images",
+    "interfaces",
+    "ktap-test-output",
+    "boot-options",
+    "glossary"
+  ]
 }

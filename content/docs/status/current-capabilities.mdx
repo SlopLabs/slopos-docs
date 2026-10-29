@@ -58,7 +58,7 @@ The system is installed into one of two boot slots, so a new version that
 fails to boot falls back to the one that worked. The boot slots live on a
 partition of their own and the boot loader in its own folder on the EFI system
 partition, so the layout can share a disk with another operating system
-([Installing a system](/docs/self-hosting/installing-a-system)).
+([Installing a system](/docs/self-hosting/updating)).
 
 ## Network
 
@@ -107,7 +107,7 @@ proofs cover selected parts of it ([Proofs](/docs/verification/verus-status)).
 | Async I/O | SlopRing submission and completion rings | [SlopRing](/docs/abi/slopring) |
 | Disks | NVMe, virtio-blk, GPT partitions | [Disks](/docs/architecture/storage) |
 | Filesystem | ext4 root with a journal | [Filesystem](/docs/architecture/filesystem) |
-| Updates | A/B boot slots with fallback | [Installing a system](/docs/self-hosting/installing-a-system) |
+| Updates | A/B boot slots with fallback | [Installing a system](/docs/self-hosting/updating) |
 | Network | IPv4, TCP, UDP, DHCP, DNS, Unix sockets, TLS 1.3 | [Networking](/docs/architecture/networking) |
 | Userland | C library, C++ library, shell, coreutils | [Userland](/docs/architecture/userland) |
 | Desktop | Compositor, terminal, editor, file manager, image viewer, system monitor | [Desktop and windowing](/docs/architecture/userland-windowing) |
