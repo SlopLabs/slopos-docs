@@ -30,7 +30,7 @@ const STAGES: Stage[] = [
   },
   {
     title: 'init',
-    detail: 'the first program: it saves crash records and starts privd and the services',
+    detail: 'the first program: it saves crash records and starts privd; services and the session wait for the wheel',
     seen: 'USERLAND: launched /sbin/init in the log',
     user: true,
   },

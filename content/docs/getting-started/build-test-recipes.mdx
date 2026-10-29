@@ -258,7 +258,7 @@ base the guest installed survives guest reboots but not the next `just boot`.
 
 | Recipe | What it does |
 |--------|--------------|
-| `just check-fs-image [image]` | Hold an image to `e2fsck -fn` and to being at rest (clean, nothing to replay); with `--map`, the default for the test image, also to the ownership map |
+| `just check-fs-image [--map] [image]` | Hold an image, by default the test image, to `e2fsck -fn` and to being at rest (clean, nothing to replay); with `--map`, or when it names no image, also to the ownership map |
 | `just check-fs-throughput` | Fail if a write costs more transactions or device requests per MiB than recorded |
 | `just check-quota-headroom` | Fail if a resource account nears its cap or anything was denied |
 | `just check-lockdep-headroom` | Fail unless the lock-order checker booted active with room in its pools |

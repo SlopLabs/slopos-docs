@@ -256,10 +256,15 @@ what Rust's standard library uses on SlopOS. Four edits:
    ```
 
 4. Tell the header generator which header declares it: add `"sigpending"` to
-   the `signal.h` list in `slibc/build/decls.rs`. The files in
-   `slibc/include/` are generated from that list, so don't edit them by hand.
-   The build fails if a function has no header, or a header names something
-   the library doesn't define.
+   the `functions` list of the `signal.h` entry in `slibc/build/decls.rs`.
+   The files in `slibc/include/` are generated from that table, so don't edit
+   them by hand. That list names functions the `libc` crate declares for
+   SlopOS (the fork in `toolchain/libc/0001-slopos-libc.patch`, which slibc's
+   build reads as its contract), and the build fails if one has no header or
+   a header names one the crate does not declare. A C function the `libc`
+   crate does not declare goes in the header's `extra` list instead, written
+   as a Rust signature; the build checks either kind against what slibc
+   exports.
 
 `just build` rebuilds slibc and the programs, and the new prototype appears
 in `slibc/include/signal.h`.
@@ -416,11 +421,15 @@ just test '*ext4_aaa*,*libc_abi*'
 
 The second filter includes `*ext4_aaa*` because the test that mounts the test
 filesystem (`test_ext4_aaa_init`) must run before any test that writes files.
-When they pass, the raw log (`just test-raw`) has a line like this for the
-kernel test:
+To see the kernel test's own result line, run the first filter with the
+runner's `--raw` flag:
+
+```bash
+builddir/run_tests --raw --filter 'slopos_core::syscall::tests_build_floor_signal::*'
+```
 
 ```
-KTAP	ok 392 - slopos_core::syscall::tests_build_floor_signal::test_sigpending_reports_the_blocked_pending_signals # time_ms=11
+KTAP	ok 47 - slopos_core::syscall::tests_build_floor_signal::test_sigpending_reports_the_blocked_pending_signals # time_ms=11
 ```
 
 [Write tests](/docs/development/adding-tests) covers filters, failures and
@@ -476,9 +485,11 @@ Finally, add the call to [System call ABI](/docs/abi/syscalls).
   through the kernel's wait functions. The architecture page on
   [scheduling and waiting](/docs/architecture/scheduler-wait-protocol) shows
   the pattern.
-- **A blocking call returns the wrong error after a signal.** A call with a
-  timeout that it doesn't write back returns `EINTR` when a signal interrupts
-  it, as on Linux.
+- **A call with a timeout starts its whole wait again after a signal.** A
+  call whose timeout it does not write back must return `EINTR`, not
+  `ERESTARTSYS`, when a signal interrupts it, as on Linux. Add its number to
+  `TIMEOUT_BEARING` in `core/src/syscall/dispatch.rs`, where a debug build
+  asserts that.
 
 Read next: [System calls](/docs/architecture/syscalls) for how a call is
 dispatched and why capabilities are attached to the table, and Linux's
