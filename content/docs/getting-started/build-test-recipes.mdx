@@ -156,15 +156,17 @@ tests](/docs/development/adding-tests) explains where a new test belongs.
 
 `just test` is one boot. The checks below each boot a machine of their own,
 because what they test spans reboots, needs devices plugged in and pulled out,
-or takes hours. CI runs `test-persist`, `test-rude-exit` and `test-usb` after
-every test run; the others are run by hand.
+or takes hours. CI runs `test-persist`, `test-rude-exit`, `test-usb` and
+`test-toolchain` (which, with no toolchain built, checks only the clone on the
+self-hosting root) after every test run; the others are run by hand.
 
-| Check | What it needs |
-|-------|---------------|
-| `just test-persist`, `test-rude-exit`, `test-usb`, `test-install`, `test-remote` | What `just test` needs |
-| `just test-installer` | `just toolchain` first, or `INSTALLER_PAYLOAD=0` to install without the toolchain |
-| `just test-toolchain` | Nothing more, but without `just toolchain` it only checks the seeded clone; with one, `sshd` on `PATH` or at `/usr/sbin/sshd`, and internet access for the rungs that reach GitHub and crates.io |
-| `just test-selfhost`, `test-install-guest`, `bench-selfhost` | `just toolchain` first, and (except `bench-selfhost`) no uncommitted changes, because the guest builds `HEAD` |
+| Check | What it needs beyond `just test` |
+|-------|----------------------------------|
+| `just test-persist`, `test-rude-exit`, `test-usb` | Nothing |
+| `just test-install`, `test-remote` | The boot-disk tools: dosfstools, mtools, `sfdisk` and zstd |
+| `just test-installer` | The boot-disk tools, and `just toolchain` first, or `INSTALLER_PAYLOAD=0` to install without the toolchain |
+| `just test-toolchain` | `git`, `openssl` and `ssh-keygen` to stage its fixtures; with a toolchain built, also `sshd` (on `PATH` or at `/usr/sbin/sshd`) and internet access for the rungs that reach GitHub and crates.io |
+| `just test-selfhost`, `test-install-guest`, `bench-selfhost` | `just toolchain` first, and for the first two no uncommitted changes, because the guest builds `HEAD` |
 
 Each says what it is waiting for and where its log is. [Write
 tests](/docs/development/adding-tests) describes what each one grades.

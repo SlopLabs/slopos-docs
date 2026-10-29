@@ -23,7 +23,9 @@ an existing loader with its own small protocol for handing a kernel what it
 needs. The kernel command line and the userland packed as a cpio archive
 work the way Linux's do, and the kernel slots use the
 [Boot Loader Interface](https://systemd.io/BOOT_LOADER_INTERFACE/) that
-systemd defined and Limine implements.
+systemd defined and Limine implements. A quiet boot screen with the log one
+key away is what Plymouth gives most Linux distributions; SlopOS draws its
+own from the kernel.
 
 ## Why booting takes several stages
 
@@ -443,6 +445,9 @@ by `scripts/ensure_limine.sh` on the first image build.
 - [*The Boot Loader Interface*](https://systemd.io/BOOT_LOADER_INTERFACE/),
   from systemd. The EFI variables `bootctl` uses to boot a slot once and to
   learn which entry booted.
+- [*Plymouth's README*](https://gitlab.freedesktop.org/plymouth/plymouth/-/raw/main/README.md).
+  The boot screen most Linux distributions show: one image instead of the
+  boot messages, which come back when you press Esc.
 - [*boot(7)*](https://man7.org/linux/man-pages/man7/boot.7.html), the Linux
   manual page. A compact overview of the same sequence on Linux, from firmware
   to `init`, for comparison.

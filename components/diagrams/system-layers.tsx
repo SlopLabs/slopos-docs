@@ -10,8 +10,8 @@ type Band = {
 const USER_BANDS: Band[] = [
   {
     name: 'Programs',
-    note: 'ordinary programs, each in its own memory',
-    parts: ['shell', 'terminal', 'compositor', 'editor', 'cat, ls, curl ...'],
+    note: 'ordinary programs, each in its own memory, each running as some user',
+    parts: ['init', 'privd', 'compositor', 'shell', 'terminal', 'apps', 'cat, ls, curl ...'],
   },
   {
     name: 'C library',
@@ -24,7 +24,7 @@ const KERNEL_BANDS: Band[] = [
   {
     name: 'Kernel',
     note: 'safe Rust only',
-    parts: ['processes and scheduling', 'memory', 'permissions', 'filesystem', 'network', 'drivers'],
+    parts: ['processes and scheduling', 'memory', 'capabilities and users', 'filesystem', 'network', 'drivers and USB'],
   },
   {
     name: 'Trusted core',
@@ -37,7 +37,7 @@ const KERNEL_BANDS: Band[] = [
 const HARDWARE: Band = {
   name: 'Hardware',
   note: '',
-  parts: ['CPUs', 'memory', 'disks', 'network card', 'screen', 'keyboard'],
+  parts: ['CPUs', 'memory', 'disks', 'network card', 'screen', 'keyboard', 'USB devices'],
 };
 
 const SUMMARY =

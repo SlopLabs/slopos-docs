@@ -1,23 +1,43 @@
 ---
-title: "Installing a system"
-description: "How the development machine installs a new kernel next to the old one, boots it once, and keeps it only if you say so."
+title: "Updating SlopOS"
+description: "How you install a new base or a new kernel on a running SlopOS machine, try it, keep it, and go back if it fails."
 ---
 
 import { BootSlotTimeline } from '@/components/diagrams/boot-slots';
 
-When you build SlopOS inside the [development machine](/docs/self-hosting/development-machine),
-you install the result next to the system you are running, and the running
-system stays untouched. The new system boots once. If it works, one command
-makes it the default. If it doesn't, the next boot brings back the old one.
-With the `panic=reboot` boot option that fallback is automatic: a kernel that
-crashes resets the machine, and the machine comes back on the old system.
+A SlopOS system is a kernel and a [base](/docs/architecture/base), the
+read-only bundle of every program SlopOS ships, and you update the two
+separately. A new base usually takes over at once, without a reboot, and the
+base it replaced is kept so that `bootctl base rollback` can bring it back. A
+new kernel needs a reboot, so it is tried more carefully: it goes into the
+spare *slot* next to the kernel you are running, boots once, and becomes the
+default only when you say so. Until then any reset, a crash included, brings
+back the kernel that booted before. Neither kind of update touches your files
+on the root disk.
 
-The idea is the *A/B update*. Android and ChromeOS update this way: the device
-keeps two copies of the system, called slots A and B, runs from one, writes the
-update into the other, and can go back to the old slot if the new one fails.
-The "boot it once, then decide" step is the same as Linux's `grub-reboot` and
-systemd-boot's automatic boot assessment. SlopOS uses the boot loader
-variables that systemd defined for the latter.
+When you build SlopOS inside the
+[development machine](/docs/self-hosting/development-machine), two commands
+do all of this:
+
+```sh
+cd /src/slopos
+scripts/selfhost.sh install          # build and install the base
+scripts/selfhost.sh install-kernel   # build the kernel and try it once
+```
+
+This page explains what they do, what can go wrong, and how to go back.
+
+## Where it comes from
+
+Keeping two copies of the system, running from one and updating the other,
+is the *A/B update* that Android and ChromeOS use: the boot loader falls back
+to the old slot if the new one fails. Booting a new kernel once and falling
+back unless told otherwise is what FreeBSD's `nextboot` does, and systemd-boot's
+*automatic boot assessment* is a more general version that counts boot
+attempts. SlopOS tells its boot loader what to boot through the UEFI variables
+systemd defined for that, the *Boot Loader Interface*. The rule for which old
+base to keep comes from FreeBSD's kernel install, as
+[Base system](/docs/architecture/base#where-it-comes-from) explains.
 
 ## Why a kernel needs a safe way to be replaced
 
@@ -28,36 +48,48 @@ running system left to fix it from. The same goes for an update interrupted
 halfway: a machine that loses power while its kernel file is half written may
 not boot at all.
 
-So an update needs three things:
+So a kernel update needs three things:
 
-- The old system stays intact on disk until the new one has proven itself.
-- Trying the new system doesn't commit you to it.
-- Writing the new system can't leave a half-written file behind.
+- The old kernel stays intact on disk until the new one has proven itself.
+- Trying the new kernel doesn't commit you to it.
+- Writing it can't leave a half-written file behind.
 
-## What a system is
+A base is easier, because the kernel keeps running underneath it: a broken
+base still leaves a kernel that can boot the previous one, and a running
+system from which to roll back. That is why a base is switched at once and a
+kernel is tried first.
 
-On SlopOS a *system* is a kernel plus the *base*, a single archive holding the
-programs, the C library and the data they read (everything under `/bin`,
-`/sbin`, `/lib`, `/usr/bin`, `/usr/share` and `/etc/ssl`). The two are built and
-installed together. The kernel mounts its base read-only over the root disk, so
-the programs that boot are always the ones built with that kernel, and your
-files on the root disk are never part of an install.
-[Filesystem](/docs/architecture/filesystem) explains how the base is mounted.
+## What gets updated where
+
+| | Kernel | Base |
+|---|---|---|
+| On the boot partition | One per slot: `/boot/a/kernel.elf`, `/boot/b/kernel.elf` | Two, shared by every slot: `/boot/base/current.img` and `previous.img` |
+| Installed with | `bootctl install <slot> <kernel.elf>` | `bootctl base install <base.img>` |
+| Takes effect | At the next reboot, once, until you commit it | At once, when the running kernel serves it; otherwise at the next boot |
+| Going back | Don't commit, and reboot | `bootctl base rollback` |
+| In the guest | `scripts/selfhost.sh install-kernel` | `scripts/selfhost.sh install` |
+
+The two are tied by the *base interface*, a number for SlopOS's own system
+calls: a base names the one it was built against, and a kernel serves a range
+of them. [Base system](/docs/architecture/base#how-a-kernel-decides-whether-it-can-run-a-base)
+explains how a kernel chooses which base to boot. `bootctl` checks both
+numbers before it writes anything, so it never leaves a disk where the kernel
+that boots by default can run neither base.
 
 ## The boot disk
 
 The firmware starts the machine from a small FAT32 partition called the *EFI
 system partition* (ESP). A computer that already runs another OS has one, and
 other boot loaders (GRUB, Windows) keep their files on it too. So SlopOS keeps
-its share of the ESP to one directory, and puts its systems on a partition of
-its own. A SlopOS disk has these partitions:
+its share of the ESP to one directory, and puts its kernels and bases on a
+partition of its own. A SlopOS disk has these partitions:
 
 | Partition | Format | What it holds |
 |-----------|--------|---------------|
-| ESP | FAT32 | The boot loader, Limine, and its menu, both in `\EFI\SlopOS\` |
-| SlopOS boot | FAT32, 1 GiB | The two slots: `/boot/a/kernel.elf`, `/boot/a/base.img`, `/boot/b/kernel.elf`, `/boot/b/base.img` |
+| ESP | FAT32 | The boot loader, Limine, its menu, and the licence and notices its binaries must carry, all in `\EFI\SlopOS\` |
+| SlopOS boot | FAT32, 1 GiB | A kernel per slot, `/boot/a/kernel.elf` and `/boot/b/kernel.elf`, and beside them the two bases in `/boot/base/` |
 | SlopOS root | ext4 | `/`, unless the root is a disk of its own |
-| SlopOS crash | raw, 4 MiB | Reserved for the record of the last crash (not written yet) |
+| SlopOS crash | raw, 4 MiB | [Crash records](/docs/development/diagnostics#the-kernel-panicked): what a panicking kernel leaves for the next boot |
 
 The three SlopOS partitions are marked with partition type IDs that belong to
 SlopOS, not the standard Linux ones, so a Linux installed on the same disk
@@ -69,23 +101,24 @@ boots when it has no other entry. On a shared ESP that path belongs to
 whoever was there first, and SlopOS leaves it alone.
 
 The boot menu has one entry per slot, `slopos-a` and `slopos-b`. Each loads
-that slot's kernel and base from the boot partition and adds `slot=a` or
-`slot=b` to the kernel's command line. The menu doesn't say which slot is the
+that slot's kernel and both bases. The menu doesn't say which slot is the
 default; a firmware variable does (see [below](#how-the-boot-loader-is-told-what-to-boot)),
-and with none set Limine boots the first entry, slot `a`. When the system is
-up, the boot log names the base it booted with, in a line starting
-`BOOT: base`.
+and with none set Limine boots the first entry, slot `a`. A system the
+[installer](/docs/self-hosting/installing) put on a disk shows the menu for
+five seconds; the development machine's boot disk shows none. When the
+system is up, the boot log names the kernel and the base it booted:
 
-On the development machine the root stays a separate disk image, because the
-host grows and refreshes it between sessions; the boot disk carries the ESP,
-the boot partition and the crash partition. Every `just boot` rebuilds the
-boot disk from the host's build, with the same system in both slots and slot
-`a` as the default. Reboots inside the guest keep it, so what you install
-survives until you quit QEMU.
+```text
+BOOT: kernel <path> (<n> bytes), build tag <tag>
+BOOT: base current (<n> bytes), interface <i>
+```
 
-## Installing, trying and committing
+The kernel's path ends in `/boot/<slot>/kernel.elf`, which is how you, and
+the crash records, can tell which slot booted.
 
-<BootSlotTimeline />
+## Updating the base
+
+### Installing a base
 
 In the guest, from the clone:
 
@@ -94,82 +127,266 @@ cd /src/slopos
 scripts/selfhost.sh install
 ```
 
-This builds the kernel and the base, then uses `bootctl`, the program that
-manages the boot partition:
+This builds the userland, packs it into a base image
+(`builddir/initramfs.cpio`) and the apps into a tree, then runs
 
 ```sh
-bootctl spare                     # prints the slot that isn't the default, here b
-bootctl install b builddir/kernel-release.elf builddir/initramfs.cpio
+bootctl base install /src/slopos/builddir/initramfs.cpio
+```
+
+`bootctl` is the program that manages the boot partition, and installing a
+base needs privileges you don't hold yourself, so it asks privd to run it
+(see [below](#who-may-change-what-boots)). On the desktop, a dialog asks you
+first. Then `bootctl` writes the base and reports what became of it:
+
+```text
+wrote <n> bytes to /boot/base/previous.img, read back
+wrote <n> bytes to /boot/base/current.img, read back
+base installed: interface <i>, build tag <tag>; the system runs it now (generation 2)
+```
+
+The last line says the new base is running already: programs you start from
+now on are the new ones, privd and any other service the base changed start
+again from it, and anything else you had open keeps running the old version
+until you restart it. [Base system](/docs/architecture/base#what-restarts-after-a-switch)
+lists what restarts by itself. If the compositor or the terminal changed,
+the desktop's system menu offers *Restart desktop…*.
+
+After the base, the script installs the apps (the editor, the file manager
+and the others) into `/usr/local`, if the `libc.so` they were built against is
+the one running; otherwise it prints the command to run once the new base
+does. [Installed software](/docs/architecture/software) explains why.
+
+### What `bootctl` checks before it writes
+
+`bootctl base install` refuses an image that:
+
+- isn't a base by the rules every base must pass
+  ([Base system](/docs/architecture/base#how-a-base-is-checked-before-it-is-used));
+- together with the base it would keep beside it, takes more than half the
+  machine's memory, since every boot loads both;
+- would leave a kernel that matters serving neither base on the partition.
+  Three kernels matter: the default one, which a failed try falls back on;
+  the running one; and one armed to boot once.
+
+Then it decides which base to keep. The rule is that `previous.img` always
+holds the base that last ran. So the current base moves to `previous.img`
+only when it is the one running, which `bootctl` tells by comparing its
+manifest with the running base's. If you install two bases in a row without
+running the first, the second replaces the first in `current.img`, and the
+base you are actually running stays in `previous.img`.
+
+You can name the image's SHA-256 after its path, and `bootctl` then installs
+those bytes or nothing:
+
+```sh
+bootctl base install /tmp/base.img <sha256 in hex>
+```
+
+That matters when the file was put there by another program, which could
+replace it between the moment it was staged and the moment `bootctl` reads
+it. [Remote control](/docs/self-hosting/remote-control) installs this way.
+
+### When the new base runs
+
+A base runs at once when both of these hold:
+
+- the system booted from the boot partition `bootctl` just wrote, and
+- the running kernel serves the base's interface.
+
+Otherwise it stays installed, and the next boot of a kernel that serves it
+takes it. The last line of the output says which:
+
+```text
+base installed: interface 13, build tag -; slopos-a's kernel serves base interfaces 10-12, so only a boot of one that serves 13 takes it
+```
+
+That is the case where a base needs a newer kernel. [Below](#a-base-that-needs-a-newer-kernel)
+shows the order to install them in.
+
+### Going back to the previous base
+
+```sh
+bootctl base rollback
+```
+
+This swaps the two bases: the previous one becomes current, and the one you
+were running becomes previous, so you can roll forward again the same way. It
+runs at once under the same two conditions as an install, and says so:
+
+```text
+rolled back to the base previous held: interface <i>, build tag <tag>; the system runs it now (generation 3)
+```
+
+If the base is so broken that you can't get to a shell to type this, boot
+the [install medium](/docs/self-hosting/installing) and run the same command
+from its rescue shell, naming the installed disk's boot partition with
+`bootctl --boot /dev/<partition> base rollback`. A base rolled back that way
+takes over at the installed system's next boot.
+
+### What a base update doesn't protect against
+
+A base is not tried once and committed the way a kernel is. If the new base
+passes every check, installs and then misbehaves, it stays the current base
+for every slot until you roll it back. And the two files are each written
+safely, but not as a pair: if the power goes between the two writes, both
+files hold the same image. `bootctl` writes them in the order that leaves the
+default kernel a base it can run in that case, but you may lose the second
+base.
+
+## Updating the kernel
+
+<BootSlotTimeline />
+
+### Installing, trying and committing
+
+In the guest, from the clone:
+
+```sh
+scripts/selfhost.sh install-kernel
+```
+
+This builds the kernel, then runs three `bootctl` commands:
+
+```sh
+bootctl spare                                    # prints the slot that isn't the default, here b
+bootctl install b /src/slopos/builddir/kernel-release.elf
 bootctl oneshot slopos-b
 ```
 
-`install` copies the kernel and base into the spare slot. `oneshot` asks the
-boot loader to boot that slot on the next boot only. Now try it:
+`install` copies the kernel into the spare slot. It refuses the slot that
+boots by default, and a kernel that serves neither base on the partition,
+which it can tell from a note inside the kernel file without booting it.
+`oneshot` asks the boot loader to boot that slot on the next boot only, with
+no menu. You should see:
+
+```text
+wrote <n> bytes to /boot/b/kernel.elf, read back
+installed slot b (entry slopos-b), serving base interfaces <min>-<max>
+next boot: slopos-b, once, without the menu
+selfhost: bootctl reboot tries slopos-b once; bootctl commit there keeps it
+```
+
+Now try it:
 
 ```sh
 bootctl reboot
 ```
 
-The machine boots the new system. Look around, run your tests. If you are happy,
-make it the default:
+The machine boots the new kernel. Look around, run your tests. If you are
+happy, make it the default:
 
 ```sh
 bootctl commit
 ```
 
 `commit` asks the boot loader which entry it booted and makes that entry the
-default, by setting a firmware variable. It doesn't write the ESP at all. From
-now on slot `b` boots every time, and the next install goes into slot `a`.
+default by setting a firmware variable. It doesn't write the ESP at all, and
+it prints `default: slopos-b`. From now on slot `b` boots every time, and the
+next kernel goes into slot `a`.
 
 `bootctl status` shows where things stand: the entry that booted, the
-default, any boot that is armed, and the size of each slot's kernel and base.
+default, any boot that is armed, both bases with the one running marked, and
+each slot's kernel with how its last boot went:
 
-### What happens if the new system fails
+```text
+boot: /dev/nvme1n1p2
+booted: slopos-b
+default: slopos-b
+oneshot: -
+entries: slopos-a slopos-b
+base current: interface <i>, build tag <tag>, <n> bytes, running
+base previous: interface <i>, build tag <tag>, <n> bytes
+slot a: kernel <n> bytes, last boot came up
+slot b: kernel <n> bytes, last boot came up
+```
 
-If you never run `bootctl commit`, the new system never becomes the default.
-The boot loader cleared the one-time request as soon as it acted on it, so the
-next boot, for whatever reason, is the old default.
+### What happens if the new kernel fails
 
-That covers a system that boots but misbehaves: reboot and you are back.
-A kernel that crashes needs one more thing. By default a SlopOS kernel that
-panics prints its report and halts. With `panic=reboot` on the
-kernel command line it resets the machine instead, which lands on the old
-default with no one at the keyboard. The development machine's slots don't set
-that option, so on a plain `just boot` you restart QEMU yourself after a
-crash; [Boot options](/docs/abi/boot-options) describes `panic=reboot`.
+If you never run `bootctl commit`, the new kernel never becomes the default.
+The boot loader cleared the one-time request as soon as it acted on it, so
+the next boot, for whatever reason, is the old default.
 
-Rollback doesn't undo anything outside the boot disk. Files the new system
-wrote to the root disk stay written. Since the root disk holds no system
-programs, that is usually what you want.
+That covers a kernel that boots but misbehaves: reboot and you are back. A
+kernel that crashes needs one more thing. By default a SlopOS kernel that
+panics prints its report and halts. With `panic=reboot` on the kernel command
+line it resets the machine instead, which lands on the old default with no
+one at the keyboard. A system the installer put on a disk boots with
+`panic=reboot` unless you told the installer otherwise; the development
+machine's boot disk doesn't, so after a panic
+there you restart QEMU yourself. [Boot options](/docs/abi/boot-options)
+describes the option.
+
+A kernel that panics also leaves a *crash record* on the crash partition:
+its report and the end of the kernel log. At the next boot, the fallback
+boot, `bootctl collect` (which init runs at every boot) moves it to
+`/var/log/crash/` and notes the slot it came from, so `bootctl status`
+reports it:
+
+```text
+slot b: kernel <n> bytes, last boot crashed: /var/log/crash/<record>.txt
+```
+
+Installing a kernel into a slot clears that slot's record.
+[Diagnostics](/docs/development/diagnostics#the-kernel-panicked) explains
+crash records.
+
+Rolling back a kernel doesn't undo anything outside the boot partition. Files
+the new kernel's boot wrote to the root disk stay written, and a base
+installed during that boot stays installed.
+
+### A base that needs a newer kernel
+
+When a change touches both the kernel and SlopOS's own system calls, the new
+base needs the new kernel. Install the base first: `bootctl install` refuses
+a kernel that serves neither base on the partition, so the new base has to be
+there before the kernel that needs it.
+
+1. `scripts/selfhost.sh install` writes the new base as current and moves the
+   running one to previous. The running kernel doesn't serve the new base, so
+   nothing changes yet, and the output says so.
+2. `scripts/selfhost.sh install-kernel` puts the new kernel into the spare
+   slot and arms one boot of it.
+3. `bootctl reboot` boots the new kernel, which serves the new base and boots
+   it.
+4. `bootctl commit` keeps the new kernel.
+
+If the new kernel fails at step 3, the next boot lands on the old default
+kernel. It doesn't serve
+the new base, so it boots the previous one, and the machine comes back
+exactly as it was before step 1.
 
 ## How the boot loader is told what to boot
 
 The boot loader and the running system talk through *UEFI variables*: small
 named values the firmware keeps in non-volatile memory, which both the boot
 loader and the OS can read and write. systemd's
-[Boot Loader Interface](https://systemd.io/BOOT_LOADER_INTERFACE/) defines a set
-of them, and `bootctl` uses three that Limine implements:
+[Boot Loader Interface](https://systemd.io/BOOT_LOADER_INTERFACE/) defines a
+set of them, and `bootctl` uses these, which Limine implements:
 
 | Variable | Written by | Meaning |
 |----------|------------|---------|
 | `LoaderEntryOneShot` | `bootctl oneshot` | Boot this entry on the next boot only. The boot loader deletes it when it acts on it |
+| `LoaderConfigTimeoutOneShot` | `bootctl oneshot` | How long that one boot's menu waits. `bootctl` sets `menu-disabled`, so a tried boot runs with no one at the keyboard |
 | `LoaderEntrySelected` | The boot loader | The entry that booted this time. `bootctl commit` reads it |
 | `LoaderEntryDefault` | `bootctl commit`, `bootctl set-default` | The entry to boot when nothing else is asked for |
+| `LoaderEntries` | The boot loader | Every entry the menu offers |
+| `LoaderDevicePartUUID` | The boot loader | The ESP it was started from, which is how `bootctl` finds the right disk and its boot partition |
 
-The boot loader also reports which partition it was started from
-(`LoaderDevicePartUUID`), which is how `bootctl` finds the right disk and its
-boot partition. `oneshot` stores its variable as non-volatile, so it survives
-the reset.
+`oneshot` writes the timeout before the entry, and puts the old timeout back
+if the entry can't be written: a timeout left behind alone only skips one
+menu, but an entry left behind without it would wait at the menu. Both
+variables are stored non-volatile, so they survive the reset.
 
 Choosing the default through a variable rather than by editing the menu file
-means a commit never touches the ESP, so the menu stays byte for byte as it was
-installed. That matters later for Secure Boot, where the boot loader checks the
-menu against a hash recorded when it was signed.
+means a commit never touches the ESP, so the menu stays byte for byte as it
+was installed.
 
 These variables are shared by every boot loader on the machine that follows
 the same interface. If another loader left a default that names no SlopOS
 entry, `bootctl install` refuses to go on until `bootctl set-default` names
-one, because it can't tell which slot is safe to overwrite.
+one, because it can't tell which slot is safe to overwrite. `set-default`
+itself only accepts a slot whose kernel serves a base on the partition.
 
 ## Writing the boot disk safely
 
@@ -178,66 +395,109 @@ one, because it can't tell which slot is safe to overwrite.
 the file's directory entry to point at them with a single small write, then
 frees the old contents. A crash before the switch leaves the old file, a crash
 after it leaves the new one, and either way the only damage is some unused
-space that `fsck.fat` reclaims.
+space that `fsck.fat` reclaims. It reads every file back after writing it and
+compares it with what it meant to write.
 
-It also refuses to install into the slot that is currently the default, so the
-system that boots by default is never the one being written. It writes the base
-before the kernel and reads each file back to compare it. And if a one-time
-boot was already armed for the slot, it clears that first, so a failed install
-can't leave a half-written slot armed to boot.
+Around that, it keeps the files that matter out of harm's way:
+
+- It refuses to install a kernel into the slot that is the default, so the
+  kernel that boots by default is never the one being written.
+- If a one-time boot was already armed for the slot it is writing, it clears
+  that first, so a failed install can't leave a half-written slot armed to
+  boot.
+- Writing both bases, it first writes over the image the default kernel
+  doesn't need, and from the first write on it ignores the termination
+  signals a requester could send it, so no one can cut the pair short on
+  purpose.
 
 ## Who may change what boots
 
 A program that can rewrite the boot partition decides what the machine runs
-next, so the kernel gives that ability to `/bin/bootctl` and not to programs in
-general. SlopOS grants privileges to programs by their path, and `bootctl`
-gets two ([Permissions](/docs/architecture/authority) explains how that works):
+next, so no ordinary program can. `bootctl` needs three
+[capabilities](/docs/architecture/authority): `RawBlock`, to write the raw
+boot partition; `Power`, to read and write the boot loader's variables and to
+reboot; and `BaseUpdate`, to make a new base run at once. You don't hold
+them, so `bootctl` asks privd, the program that runs privileged actions on
+the session's behalf, to run the same command for you as one of its actions
+([Privileged actions](/docs/architecture/privd) explains how). privd runs at
+most one of the commands that change what boots at a time.
 
-- **Mount** lets it write the raw boot partition. Ordinary programs can't
-  write a raw disk at all, and nobody can while the partition is mounted.
-- **Power** lets it reboot and read and write the boot loader's variables. Even
-  then, the kernel only allows the Boot Loader Interface's variables and
-  SlopOS's own. Without that limit, a program allowed to reboot could also
-  rewrite the firmware's settings or its Secure Boot keys.
+| Command | Who may run it, and how |
+|---------|-------------------------|
+| `status`, `spare` | Any person, without being asked |
+| `install`, `clone`, `base install`, `base rollback`, `set-default` | An administrator, after allowing it in a dialog |
+| `oneshot`, `commit` | An administrator, without being asked |
+| `reboot` | An administrator; any person while nobody else is logged in |
 
-A third privilege, **BootEntry**, reaches the firmware's own boot list
-(`Boot####`, `BootOrder`, `BootNext`, `BootCurrent`) so that SlopOS can add an
-entry for itself, and nothing else in the firmware's settings. The kernel
-checks every write against the format the firmware expects, because the
-firmware reads these variables at every power on, before anything could repair
-a bad one. It is meant for the installer; today only the install test holds it.
+A person who isn't an administrator can still ask for the actions an
+administrator may run, and privd then asks for an administrator's password.
+uid 0 running a base program, and a [remote host paired](/docs/self-hosting/remote-control)
+with the machine, run all of them without being asked.
+[privd actions](/docs/abi/privd-actions) lists each one exactly.
 
-The grants are safe to give by path because `/bin/bootctl` comes from the
-read-only base, which no program can replace.
+Even with `Power`, the kernel only lets a program reach the Boot Loader
+Interface's variables and SlopOS's own. Without that limit, a program allowed
+to reboot could also rewrite the firmware's settings or its Secure Boot keys.
+A fourth capability, `BootEntry`, adds the firmware's own boot list
+(`Boot####`, `BootOrder`, `BootNext`, `BootCurrent`) so that the installer can
+register SlopOS with the firmware, and nothing else in the firmware's
+settings. The kernel checks every write against the format the firmware
+expects, because the firmware reads these variables at every power on, before
+anything could repair a bad one.
+
+## On the development machine
+
+On the development machine the root stays a separate disk image
+(`fs/assets/ext4-persist.img`), because the host grows and refreshes it
+between sessions; the boot disk carries the ESP, the boot partition and the
+crash partition. Every `just boot` rebuilds the boot disk from the host's
+build, with the same kernel in both slots, the same base as both current and
+previous, and no default set, so slot `a` boots. Reboots inside the guest
+keep the boot disk and the firmware variables, so what you install survives
+until you quit QEMU. `just boot` reminds you of the loop as it starts:
+
+```text
+boot: in the guest: cd /src/slopos; git pull; scripts/selfhost.sh install; for a kernel, scripts/selfhost.sh install-kernel; bootctl reboot
+```
+
+To keep what the guest built for longer than one QEMU session, copy it off the
+root with `just export-file`
+([Development machine](/docs/self-hosting/development-machine)).
 
 ## How it is tested
 
 - `just test-install` builds one disk in the full layout (ESP, boot, root and
   crash partitions) and, across the reboots of one QEMU, registers a firmware
   entry for SlopOS, copies slot `a` into `b`, boots `b` once, commits it, then
-  boots once into a slot whose kernel deliberately panics under
-  `panic=reboot` and checks that the reset lands on the committed default.
-  Afterwards the host checks that the ESP is unchanged byte for byte and that
-  the root partition passes `e2fsck`.
+  boots once into a slot whose kernel panics under `panic=reboot` and one
+  that takes the kernel's lockup abort, and checks each time that the reset
+  lands on the committed default and the crash record reaches
+  `/var/log/crash/`. It then installs a base that runs at once and is still
+  there after a reboot, rolls it back, which runs at once too, and installs
+  one naming an interface the kernel doesn't serve, which the next boot
+  passes over for previous. Afterwards the host checks that the ESP is
+  unchanged byte for byte, that each slot holds its kernel alone, and that the
+  root partition passes `e2fsck`.
 - `just test-install-guest` does the same with a system the guest built
-  itself: it runs `scripts/selfhost.sh install tests` as a person would,
-  boots the result, checks that it is the build it just made, has it push a
-  commit the host fetches, and compares the installed slot byte for byte with
-  what the guest built. It needs a built toolchain, a clean working tree and
-  `DEV_QEMU_MEM=8G`.
+  itself: it runs `scripts/selfhost.sh install tests` and `install-kernel
+  tests` as a person would, boots the result, checks that it is the build it
+  just made, has it push a commit the host fetches, and compares the
+  installed kernel and base byte for byte with what the guest built. It needs
+  `just toolchain` and a working tree with no uncommitted changes.
+- `just test-remote` installs a base that runs at once and then a kernel into
+  the spare slot, boots and commits it, all through privd as the paired
+  remote host.
+- `just test-installer` installs SlopOS onto three kinds of disk from the
+  install medium, then boots each one and takes the same install, try and
+  commit loop there.
 
 ## What isn't done
 
-All of this runs in QEMU. The disk layout is the one meant for real computers,
-but installing SlopOS on one needs more:
-
-- An installer. Today the host builds every disk, and the guest has no tools
-  to format or partition one, nor can its FAT writer create the long file
-  names under `\EFI\SlopOS\`.
-- A record of a crash that survives the reset. The crash partition exists, but
-  nothing writes to it yet, so on a machine with no serial console
-  `panic=reboot` erases the only report.
-- Secure Boot signing. The layout allows it; the signing isn't planned.
+- A base has no trial boot (see [above](#what-a-base-update-doesnt-protect-against)).
+- `LoaderEntryDefault` belongs to the whole machine, so another boot loader
+  that deletes it moves SlopOS's default back to Limine's first entry.
+- Nothing signs Limine or the kernels for Secure Boot, so SlopOS boots only
+  with Secure Boot turned off.
 
 See [Known limitations](/docs/status/known-limitations) and
 [Roadmap](/docs/status/roadmap).
@@ -245,32 +505,36 @@ See [Known limitations](/docs/status/known-limitations) and
 ## For contributors
 
 `bootctl` writes FAT32 through `fat-core`, a `no_std` crate with no `unsafe`
-code. A replaced file's new clusters and their FAT chain are written first; the
-switch is one 32-byte directory entry, inside one sector, so the disk can't
-tear it. Keep that order if you change the writer.
+code. A replaced file's new clusters and their FAT chain are written first and
+flushed; the switch is one 32-byte directory entry, inside one sector, so the
+disk can't tear it. Keep that order if you change the writer.
 
 User space reaches UEFI variables through two system calls, `efivar_get` and
-`efivar_set`. Both need the Power privilege and reach only the Boot Loader
-Interface's GUID (`4a67b082-0a4c-41cf-b6c7-440b29bb8c4f`) and SlopOS's
-(`5a1b0b05-5105-4e57-a11e-0000000000a1`); with BootEntry
-(`TASK_FLAG_INSTALL`) they also reach `Boot####`, `BootOrder`, `BootNext` and
-`BootCurrent` under the EFI global GUID, each write held to non-volatile,
-boot-and-runtime access and the variable's format. Firmware runtime services
-are mapped only in the kernel's own address space and are not reentrant, so
-every call runs on one dedicated kernel thread, one request at a time, while the
-calling task sleeps. On a BIOS boot both calls return `ENODEV`.
+`efivar_set`. Both need `Power` and reach only the Boot Loader Interface's
+GUID (`4a67b082-0a4c-41cf-b6c7-440b29bb8c4f`) and SlopOS's
+(`5a1b0b05-5105-4e57-a11e-0000000000a1`); with `BootEntry` they also reach
+`Boot####`, `BootOrder`, `BootNext` and `BootCurrent` under the EFI global
+GUID, each write held to non-volatile, boot-and-runtime access and the
+variable's format. Firmware runtime services are mapped only in the kernel's
+own address space and are not reentrant, so every call runs on one dedicated
+kernel thread, one request at a time, while the calling task sleeps. On a
+BIOS boot both calls return `ENODEV`.
 
 `boot-core` describes the disk once, as data: the partition type GUIDs and
 sizes, the GPT reader the kernel's partition probe uses, load options and
-device paths, the boot variables' formats and the Limine menu. The kernel,
-`bootctl` and the host's disk builder (through `tools/bootdisk`) all read it
-from there, so change the layout in `boot-core` and nowhere else.
+device paths, the boot variables' formats, the Limine menu, the base's rules
+and the kernel's interface note. The kernel, `bootctl`, the installer and the
+host's disk builder (through `tools/bootdisk`) all read it from there, so
+change the layout in `boot-core` and nowhere else.
 
 ## Further reading
 
-- [*A/B system updates*](https://source.android.com/docs/core/ota/ab),
+- [*A/B (seamless) system updates*](https://source.android.com/docs/core/ota/ab),
   Android's documentation. The clearest description of two slots and falling
   back to the old one, at the scale of a phone.
+- [*nextboot(8)*](https://man.freebsd.org/cgi/man.cgi?query=nextboot&sektion=8),
+  FreeBSD. Boot an alternate kernel once, and return to the previous
+  configuration at the next reboot: the same try-once idea in one man page.
 - [*Automatic Boot Assessment*](https://systemd.io/AUTOMATIC_BOOT_ASSESSMENT/),
   systemd. A more general version of "try once, then commit", which counts
   boot attempts instead of allowing exactly one.
@@ -280,15 +544,20 @@ from there, so change the layout in `boot-core` and nowhere else.
 - [*Disk format*](https://www.chromium.org/chromium-os/developer-library/reference/device/disk-format/),
   ChromeOS. How ChromeOS lays out two kernel and root partitions and marks
   one as successfully booted.
+- Reference: [*Boot Manager*](https://uefi.org/specs/UEFI/2.10/03_Boot_Manager.html),
+  chapter 3 of the UEFI specification, for `Boot####`, `BootOrder`,
+  `BootNext` and the removable-media path.
 
 ## In the source
 
 | Where | What |
 |-------|------|
-| `userland/src/apps/bootctl.rs` | `bootctl`: slots, one-time boots, commit |
-| `userland/src/boot_disk.rs` | Finding the boot disk; registering the firmware entry |
-| `boot-core/` | The disk layout, GPT, boot variables and Limine menu, host-tested |
-| `scripts/selfhost.sh` | The guest's build and install command |
+| `userland/src/apps/bootctl.rs` | `bootctl`: kernels, bases, one-time boots, commit, crash records |
+| `userland/src/boot_disk.rs` | Finding the boot disk; the loader's variables; registering the firmware entry |
+| `boot-core/` | The disk layout, GPT, boot variables, Limine menu, base rules and kernel note, host-tested |
+| `fat-core/` | The FAT32 writer and its copy-on-write replace |
+| `scripts/selfhost.sh` | The guest's build and install commands |
 | `scripts/build_bootdisk.sh`, `tools/bootdisk/` | Building the boot disk on the host |
 | `core/src/efivar.rs` | The kernel side of the variable system calls and what each may reach |
+| `assets/privd/actions` | The `org.slopos.boot.*` and `org.slopos.base.*` actions |
 | `userland/src/bin/tests/install_test.rs` | The install, commit and rollback test |

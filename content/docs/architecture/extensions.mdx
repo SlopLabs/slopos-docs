@@ -1,0 +1,469 @@
+---
+title: "Extensions"
+description: "How software that is not part of the base gets daemons, privileged helpers and commands, installed by the computer's owner and checked on every read."
+---
+
+import { ExtensionStack } from '@/components/diagrams/extension-stack';
+
+An *extension* is system software that does not ship in the base, packed as
+one read-only image. Once the computer's owner installs it, it can do what
+system software does on other systems: run a daemon from boot, as a user of
+its own, holding the capabilities it was granted, on network ports or sockets
+that init keeps for it; offer privileged helpers that apps ask
+[privd](/docs/architecture/privd) for, as they ask for the base's; put
+commands on everyone's `PATH` and apps in the dock; and keep the computer's
+settings for it in `/etc/<name>`. It appears, read-only, at `/opt/<name>`.
+
+You can rely on a few things. Every block of an extension is checked against
+a hash before any program reads it. An extension gets exactly what the owner
+approved, never more than the base allows any extension, and never anything
+that could change the base, the boot chain, the extensions themselves, the
+screen and keyboard, or who a process is. Nothing it ships can replace a base
+command, and its programs reach SlopOS through `libc.so` alone, the interface
+that only grows. Each extension keeps its previous image for rollback, can be turned off by itself,
+and the whole set can be skipped for one boot with `extensions=off`.
+
+What isn't promised: an extension is trusted with what it is granted, and some
+grants (raw disk access, mounting, reading and writing every file) amount to
+the whole computer. Extensions cannot depend on each other or share
+libraries, there is no repository and nothing updates them automatically, and
+the kernel checks no signature itself: a base program does, before it asks
+the kernel to show an image.
+
+This page explains why the base alone is not enough, how an extension goes
+in and appears, and what its services, actions, commands and settings can
+do. [Package an extension](/docs/development/packaging-an-extension) walks
+through building and installing one, and
+[Extension images](/docs/abi/extension-images) is the exact format.
+
+## Where it comes from
+
+None of the parts is new. systemd's
+[system extension images](https://www.freedesktop.org/software/systemd/man/latest/systemd-sysext.html)
+add read-only images beside an immutable `/usr`. The tree of SHA-256 hashes
+that follows an extension's filesystem, checked as each block is read, is
+Linux's [dm-verity](https://docs.kernel.org/admin-guide/device-mapper/verity.html)
+tree, laid out byte for byte as `veritysetup` writes it. Android's
+[APEX](https://source.android.com/docs/core/ota/apex) packages are
+dm-verity-backed ext4 images whose updates must be signed by the same key as
+the copy already on the device, which is the rule SlopOS applies to signed
+updates. An extension ships privileged actions the way a program ships
+[polkit](https://polkit.pages.freedesktop.org/polkit/polkit.8.html) action
+files, its services take their sockets the way a systemd service does
+through `LISTEN_FDS`, its settings are edited the way `sudoedit` edits a
+file, and its signatures are the ones `ssh-keygen -Y sign` makes.
+
+What is SlopOS's own is how the pieces meet the rest of the system: the
+kernel attests an extension's programs as the extension's, the owner grants
+capabilities rather than a vendor, and an image goes in and out while the
+system runs.
+
+## Why the base is not enough
+
+The [base](/docs/architecture/base) is the read-only userland that every
+kernel slot boots. Adding a daemon to it would tie the daemon's releases to
+the system's and grow an image the kernel keeps in memory. The usual
+alternative on Unix is a package that a root process unpacks into `/usr` or
+`/opt`. That cannot work on SlopOS, for three reasons:
+
+- **Power comes from what a program is, not where it lives.** privd lets an
+  action be asked for by a particular program, and a peer on a socket can
+  learn which program connected. Both rest on the kernel attesting that the
+  bytes running are the bytes some trusted image holds. A file in a writable
+  directory can be swapped by whoever writes there, so trusting it by its
+  path would hand its power to them.
+- **uid 0 holds no power by itself.** On SlopOS a process's
+  [capabilities](/docs/architecture/authority) are what count. "Root
+  dropped a file there" proves nothing, so an install has to say exactly
+  what it grants, and something has to hold it to that.
+- **The owner decides, not a vendor.** No signing key is built in. The
+  person who owns the computer approves an extension, or trusts a key to
+  approve updates on their behalf, within limits they set.
+
+So an extension keeps three things apart: the *measurement* (the hash that
+names the image's bytes), the *authority* that vouched for those bytes (a
+person's approval or a trusted key's signature) and the *grant* (the
+capabilities, users and commands it gets).
+
+## How it works
+
+### The image
+
+An extension is a single file: an ext4 volume, then a tree of SHA-256 hashes
+over the volume's 4 KiB blocks. The hash of the tree's top block is the
+image's *root*, and it names the image: change any byte and the root
+changes. The volume holds what will appear under `/opt/<name>` (`bin/`,
+`libexec/`, `lib/` and `share/`) and three files under `/.extension/`:
+
+- `release` names the extension and its version, a number updates are
+  ordered by;
+- `declare` says what it asks for: its users, services, actions, commands,
+  apps and directories;
+- `manifest` lists every other file with its hash and mode, so the whole tree
+  is held to one list.
+
+Every compiled program in it is linked dynamically against the base's
+`libc.so` and the libraries in its own `lib/`. Install refuses a program that
+binds a function neither of those exports, and a statically linked one,
+which would carry its own copy of the C library and bypass the interface
+that only grows. Shell scripts need nothing.
+
+### Installing an extension
+
+`/bin/extctl` installs extensions. Here is what happens when the owner
+installs one called `hello`, whose daemon `hellod` runs as its own user and
+whose command `hello` goes on the `PATH`:
+
+1. **Read and check, as the person.** `extctl install hello.ext` opens the
+   image, computes its root, reads its declaration and works out the grant:
+
+   ```text
+   grant - unasked - users hello commands hello
+   ```
+
+   It then checks the request against the store as it stands, so the person
+   is only ever asked about something that would go in.
+2. **Ask.** `extctl` asks privd for the action
+   `org.slopos.extension.install`. The command line privd runs names the
+   image's root and the grant in full, so that is what the person approves:
+
+   ```text
+   /bin/extctl install hello.ext 3f9c…e1 name hello grant - unasked - users hello commands hello
+   ```
+
+   An administrator approves it when privd asks; a person who is not an
+   administrator needs an administrator's password.
+3. **Check again, as the mechanism.** privd runs `extctl` again as uid 0
+   holding two capabilities, `ExtensionUpdate` and `Seal`. It reads the
+   image itself and refuses it if it is not the root that was approved or
+   asks for anything the grant line does not say. It holds the image to the
+   rules every install keeps:
+
+   - the name is valid, not reserved for the system, and not a person's;
+   - the version is above every version installed before (the same version
+     only with the same bytes);
+   - every capability asked for is inside the *base's ceiling*
+     (`/usr/share/slopos/privd/extensions`, sealed in the base), and none is
+     one that could change the base, the boot chain, the extensions, the
+     seats, another process's signals or who a process is;
+   - every program binds only what `libc.so` and the image's own libraries
+     export;
+   - no other installed extension declares the same command or user.
+4. **Store.** The image is copied into the store, sealed, and read back whole
+   against its root, so damage on the way in is found now rather than at
+   some later read. A new record says what was installed and what it was
+   granted, and gives `hello` a uid.
+5. **Show.** `extctl` asks the kernel to activate the image at `/opt/hello`
+   (next section). Then it writes the user database, links
+   `/opt/bin/hello`, and tells init, which starts `hellod`.
+
+The terminal says what happened:
+
+```text
+hello 1 installed; it runs as activation 3
+```
+
+A second way in needs no question. The owner can trust an Ed25519 SSH key
+with `extctl key add`, giving it two limits: a *ceiling* of capabilities its
+extensions may hold, and a `user` ceiling for what their unasked actions may
+hold (below). An image packed with a *sidecar*, a three-line file naming the
+extension, its version and its root, and signed with that key goes in with
+`extctl install-signed` without asking anyone, as long as it fits both
+ceilings and the base's. Updates signed by the key that installed an
+extension go in the same way. Any other update is a first install: the
+person approves it, and from then on the record names no key. A signed
+update does not turn back on an extension the person turned off, and does
+not bring back one the person removed.
+
+**Versions only go up.** The record keeps a *version floor*, the highest
+version ever installed. An older version is refused, and so is the same
+version with other bytes. `extctl rollback hello` makes the previous image
+current again and lowers the floor to it, but the version it left is refused
+to signed installs until a newer one goes in, so an update withdrawn for a
+fault cannot come back unasked. Removing an extension keeps its record,
+floor and uids.
+
+### How an image appears under /opt
+
+The kernel call `ext_activate(name, fd, digest)` shows the image that `fd`
+reads at `/opt/<name>`, trusting the caller that `digest` is its root. Only a
+process holding `ExtensionUpdate` may make it, and in practice `extctl` is
+the only caller, run by init at boot or by privd as an action's mechanism.
+
+<ExtensionStack />
+
+The kernel reads the image where it lies, through a device that checks every
+block against the tree on its way in, as dm-verity does. A block that does
+not match fails the read that meets it with `EIO`, and the kernel log says
+so:
+
+```text
+EXT: image block 812 fails its tree
+```
+
+So the store's file can be damaged or replaced and still no byte the root
+does not vouch for reaches a program. Above the device, the volume is served
+by an ext4 instance of its own, read-only. Before showing it, the kernel walks
+the whole tree once and refuses anything a path could not name on its own,
+such as a file at two names. That walk is also how the kernel can later tell
+a peer which file of the extension it is running.
+
+The mount at `/opt/<name>` is read-only and pinned: no unmount takes it away
+and no mount covers it, so `/opt/hello/bin/hello` is always the image's file.
+Each activation is numbered, never reusing a number within a boot, and the
+number is part of every inode it serves. So a program started from one image
+is told apart from the same path in the next.
+
+Replacing an extension with a new image swaps the mount in one step. Whatever
+still uses the old one (an open file, a mapping, a program running from it)
+keeps it, and the kernel frees it once nothing does, as it does for a
+replaced base generation. The kernel holds at most 32 activations at once,
+counting those still held after being replaced, so with all of them in use
+an extension can be turned off but not updated until one is freed. The log
+records each step:
+
+```text
+EXT: activation 3 is hello
+EXT: hello deactivated
+EXT: activation 3 freed
+```
+
+Activation is not a one-time check. At every boot init runs
+`extctl activate-all`, before privd and the services start, and that holds
+each enabled extension's stored image to its record, to its key if a key
+installed it, to the base's ceiling and to the running `libc.so` again.
+`enable` and `rollback` do the same, and so does trusting or removing a key,
+for the extensions that key installed. An extension that no longer fits (its
+key was removed, a ceiling was lowered, a new base's ceiling is smaller) is
+stopped, and its record says why.
+
+### Services
+
+An extension gets users of its own. The record gives the extension's name and
+each user it declares a uid between 100 and 999, the lowest one no record
+holds, and keeps it for good, even after removal, so files the extension left
+keep their owner. The user database lists installed extensions' users after
+the people, each with a group of its own and its home at `/var/lib/<name>`.
+An extension never runs as uid 0, and never as a person except for its
+session services.
+
+Init runs each service an enabled extension declares
+([Init and services](/docs/architecture/init) covers the general rules):
+
+- **As its user, with its grant.** The service holds the capabilities it
+  declares, cut to what the extension was granted and to the base's ceiling,
+  in a login tag of its own, so init can find and end everything it starts.
+- **On sockets init holds.** A `listen tcp 7000` line makes init bind port
+  7000 before the first start and keep it across restarts, so no other
+  program can take the port while the service is down. The sockets arrive
+  from file descriptor 4 on, counted in `LISTEN_FDS` and named in
+  `LISTEN_FDNAMES`. Descriptor 3 is a readiness pipe:
+  writing to it or closing it tells init the service is up.
+- **With its output kept.** Standard output and error go to
+  `/var/log/<name>/<service>.log`, written by a copy of init running as the
+  extension's user, never as uid 0. At 256 KiB the log becomes
+  `<service>.log.1`.
+- **Restarted as it asks.** `restart on-failure`, the default, starts it
+  again unless it exited with status 0; `always` and `never` do what they
+  say. Restarts count against init's budget of five a minute. A service
+  declared `after` another starts once that one has said it is ready, or has
+  run for thirty seconds.
+
+A *session service* runs as the first person instead, while their desktop
+session runs, and ends with it.
+
+When an extension changes, init restarts only what the change touches: a
+service whose declaration, user, grant, program, libraries or files it
+`reads` changed. Everything else keeps running on the image it started from,
+and the sockets pass from the old service to the new one.
+
+### Actions
+
+An extension can declare privileged actions that apps ask privd for. One
+called `greet` in `hello` is `ext.hello.greet` to privd. Its mechanism is a
+program of the extension, run as the extension's first user, holding the
+capabilities the action declares, cut to the grant, the base's ceiling and
+what privd can hand out. Its
+`allow` lines are privd's own (`admin` and `user` at a level, `paired`, or
+`program <path>`), with two differences: an extension's action never allows
+`root`, and its `program` principal may name one of the extension's own
+programs, which matches only while that exact image's program is running.
+The question privd shows names the extension.
+
+An action that runs without asking anyone (it allows `user` with no level or
+`alone`, `admin` with no level, a `program`, or `paired`) hands its
+capabilities to every person's processes. So a first install's grant line
+lists such actions after `unasked`, and a key's `user` ceiling limits what
+they may hold together. privd reads the running extensions' actions when it
+starts, and again whenever init tells it the set has changed.
+
+### Commands, apps and settings
+
+**Commands.** For each `command` an extension declares, `extctl` keeps a link
+in `/opt/bin` to `/opt/<name>/bin/<command>`. `/opt/bin` comes last on the
+default `PATH` (`/bin:/sbin:/usr/local/bin:/opt/bin`), so an extension's
+command never shadows a base tool or software in
+[`/usr/local`](/docs/architecture/software). Two extensions declaring the
+same command are refused at install.
+
+**Apps.** The dock reads an extension's app entries from
+`/opt/<name>/share/slopos/apps` before the base's, `/usr/local`'s and the
+person's own, so an extension adds apps but replaces none. It shows only
+the apps the extension declares.
+
+**Settings.** An extension that declares `config` gets `/etc/<name>`, a
+sealed directory of sealed files that everyone can read and only a holder of
+`Seal` can change. Its defaults ship in the image; `/etc/<name>` holds what
+the computer changed. `extctl config edit <name> <file>` lets a person edit
+a copy in their own editor and installs it once they approve, the way
+`sudoedit` works. `extctl config apply` installs a file signed by the key
+that installed the extension, unasked, as long as its serial number is above
+the last one applied, so an old signed file cannot come back. Init restarts
+each service that `reads` a file that changed. A setting never widens a
+grant, and secrets belong in `/var/lib/<name>`, since `/etc/<name>` is
+readable by everyone.
+
+### The store
+
+Everything `extctl` keeps lives in `/var/lib/slopos/extensions`: the trusted
+keys as `keys.<n>`, and for each extension its record as `record.<n>` beside
+its current and previous images, each named by its root (`<root>.ext`, with
+`<root>.meta` and `<root>.meta.sig` when a key signed it).
+
+Nothing in the store is ever renamed or rewritten in place. A changed record
+or key list goes in as the next numbered generation, is sealed and read back,
+and only then are the older ones removed; readers believe the newest sealed
+generation. A writer cut off at any point therefore leaves the old state or
+the new one, never a store that has forgotten an extension's version floor.
+Writers take the lock file `/var/lib/slopos/extensions.lock`; readers take
+nothing, and anyone can read the store, which is how `extctl status` works
+without privileges.
+
+The seal is what protects it: a process that may override file permissions
+(`DacOverride`) but does not hold `Seal` cannot rewrite a record or plant a
+key, and anything unsealed in the store is not believed. The kernel keeps the
+store's directory, and each directory on the way to it, where it is: nothing
+can rename or remove them, and no mount can cover them. A filesystem in
+memory can set a seal but never take it off again, which a writer has to do
+to add a generation, so extensions need a disk root.
+
+## What it means in practice
+
+For the owner, everything goes through `extctl`, and the commands that change
+something are privd [actions](/docs/abi/privd-actions):
+
+| Command | What it does | Who is asked |
+|---|---|---|
+| `extctl status [<name>]` | Lists the trusted keys and each extension: enabled or not, running or not, its floor, uids and images | Nobody |
+| `extctl install <image>` | A first install, granting what the image declares | An administrator confirms |
+| `extctl install-signed <image>` | Installs or updates an image signed by a trusted key | Nobody, for an administrator |
+| `extctl key add <key.pub> ceiling <caps> user <caps>`, `key remove <fingerprint>` | Trusts or stops trusting a signing key | An administrator confirms |
+| `extctl enable`, `disable`, `remove`, `rollback <name>` | Turns an extension on or off, removes its images, or goes back to the previous one | An administrator confirms |
+| `extctl config edit <name> <file>` | Edits a settings file in `/etc/<name>` | An administrator confirms |
+| `extctl config apply <file>` | Installs a settings file the extension's key signed | Nobody, for an administrator |
+| `extctl build <dir> [<out-dir>]` | Packs a laid-out tree into an image and sidecar | Nobody |
+
+A person who is not an administrator needs an administrator's password for
+any command that changes something. A machine
+[paired](/docs/self-hosting/remote-control) with a host lets that host do
+all of it unasked.
+
+When an extension stops the system working properly, there are two ways
+back. Booting once with `extensions=off` on the kernel command line shows no
+extension at all (the kernel refuses `ext_activate` for that boot, so
+nothing in userland can override it). From the install medium's rescue
+shell, `extctl --root /mnt disable <name>` turns one off on a disk mounted at
+`/mnt`.
+
+For a developer, an extension is the way to ship anything that needs a
+daemon, a capability or a privileged helper without rebuilding the base.
+Ordinary apps don't need one: they install into `/usr/local` or `~/.local`
+as [installed software](/docs/architecture/software).
+
+## Differences from systemd-sysext
+
+| | systemd-sysext | SlopOS extensions |
+|---|---|---|
+| Where it appears | Merged into `/usr` and `/opt` with overlayfs | Mounted on its own at `/opt/<name>` |
+| Integrity | Verity data optional | A SHA-256 tree always, checked on every read |
+| Compatibility | `extension-release` must match the host's OS identity and version or extension level | Programs must bind only what the running `libc.so` exports |
+
+## How we know it works
+
+Three userland tests install extensions end to end through `extctl` and
+privd. `extension_test` covers first and signed installs, both ceilings, the
+version floor, rollback, a disabled extension staying disabled, key changes,
+the store's seals, and an image larger than an eighth of memory.
+`extension_service_test` runs a daemon as its user on sockets init holds,
+crashes it, updates it with and without a change to the daemon, and
+re-executes init underneath it. `extension_action_test` covers actions,
+principals, commands on `PATH`, app entries and settings. In the kernel,
+`fs::tests::extensions` flips a bit in an image and expects exactly the read
+that meets it to fail. On the host, the hash tree is checked against what
+`veritysetup` writes and the volume against `e2fsck` and `mke2fs`.
+
+## For contributors
+
+- **Every activation holds the grant to every ceiling.** The grant must sit
+  inside the key's ceiling and the base's, and outside `ceiling::NEVER`, at
+  install and at every activation, so that lowering a ceiling or removing a
+  key stops what no longer fits. A capability added to the base's ceiling
+  must not be one in `NEVER`, and a new capability that could change the
+  base, the boot chain or an identity belongs in `NEVER`.
+- **The image reader and the kernel's index must refuse the same shapes.**
+  `extctl` judges the tree `slopos_extension_core::volume::read` reads; the
+  kernel names programs in the tree `fs/src/extension/index.rs` builds. If
+  one accepts what the other refuses, the tree that was judged is not the
+  tree that runs.
+- **A mechanism reads what a request names without `DacOverride`.** So only
+  files uid 0 may read by their mode go in, and a request can never copy a
+  file only uid 0 may read into a place everyone reads.
+- **Read `SO_PEEREXTENSION` before `SO_PEERPROGRAM`.** A recorded identity
+  only ever lapses, so reading the label first means a lapse between the two
+  reads gives no program rather than a path that looks like the base's.
+- **Locks nest as the layers do.** An activation's lock comes before its
+  device's (`EXT_VERITY`), which comes before the filesystem holding the image
+  file. Nothing below a disk's filesystem may read an activation.
+- **Store writers never rename.** They lock, ignore the termination signals
+  privd relays, write a new generation, seal it through the descriptor that
+  wrote it and read it back before removing older ones.
+
+## Further reading
+
+- [systemd-sysext(8)](https://www.freedesktop.org/software/systemd/man/latest/systemd-sysext.html).
+  The closest relative on Linux: read-only extension images beside an
+  immutable `/usr`, and how their compatibility is checked.
+- [dm-verity](https://docs.kernel.org/admin-guide/device-mapper/verity.html),
+  in the Linux kernel's documentation. The hash tree an extension image
+  carries, and why a read that fails its hash fails outright.
+- [APEX file format](https://source.android.com/docs/core/ota/apex), from
+  the Android Open Source Project. Updatable system components as
+  dm-verity-backed ext4 images, accepted only from the key of the copy
+  already installed.
+- [polkit(8)](https://polkit.pages.freedesktop.org/polkit/polkit.8.html).
+  Mechanisms that ship their own actions and the levels at which a subject
+  may run them, the model for an extension's actions.
+- [sd_listen_fds(3)](https://www.freedesktop.org/software/systemd/man/latest/sd_listen_fds.html).
+  The socket-passing convention a service's `LISTEN_FDS` follows. SlopOS
+  starts the sockets at descriptor 4 and sets no `LISTEN_PID`, so a daemon
+  that calls `sd_listen_fds` itself will not find them.
+- [PROTOCOL.sshsig](https://raw.githubusercontent.com/openssh/openssh-portable/master/PROTOCOL.sshsig).
+  The signature format `ssh-keygen -Y sign` writes, and why its namespace
+  keeps a signature made for one purpose from passing for another.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `extension-core/` | The image, volume, declaration, grant, sidecar, record, keys and ceiling as data, and the install and activation checks (`admit.rs`); host-tested |
+| `verity-core/` | SHA-256 and the dm-verity hash tree, shared by the kernel and the tools |
+| `fs/src/extension/` | Activations: the verifying device, the path index, the pool of 32 |
+| `core/src/syscall/fs/base_handlers.rs` | `ext_activate` and `ext_deactivate` |
+| `userland/src/apps/extctl/` | `/bin/extctl` and the store |
+| `userland/src/apps/init/extensions.rs` | Running extensions' services |
+| `userland/src/activation.rs` | Reading what is shown at `/opt/<name>`, and the actions privd runs |
+| `assets/privd/extensions` | The base's ceiling |
+| `tools/extension/`, `scripts/build_extension.sh` | Packing and signing an extension on the host |
+
+[Extension images](/docs/abi/extension-images) lists the image format and the
+declaration grammar in full.

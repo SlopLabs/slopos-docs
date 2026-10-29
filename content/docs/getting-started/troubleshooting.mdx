@@ -15,23 +15,7 @@ that could not complete.
 | ``ensure_go: `go` not found in PATH`` or `ensure_go: found go X; need >= 1.22` | `just setup` checks Go but does not install it | Install Go 1.22 or later, then rerun `just setup` |
 | ``ensure_go: `go mod download` failed in tools/run_tests`` | The Go modules of the test runner could not be downloaded | Check network access, or fill the Go module cache from another machine |
 | `toolchain <channel> has no rust-src component` | The pinned nightly lacks its standard library sources | `rustup component add rust-src --toolchain <channel>`, then rerun `just setup` |
-| `the rustup rust-src component is not pristine` | See the next section | |
-
-## Setup says rust-src "is not pristine"
-
-The `slopos` toolchain is built from an untouched copy of the nightly's
-standard library sources. Older versions of SlopOS edited those sources in
-place, so a machine that once built them still has SlopOS files inside the
-rustup component, and the build refuses to start over them. Reinstalling the
-component restores the edited files but leaves the added ones, so you need
-both steps:
-
-```bash
-ch="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' rust-toolchain.toml)"
-rustup component remove rust-src --toolchain "$ch" && rustup component add rust-src --toolchain "$ch"
-find "$(rustc +"$ch" --print sysroot)/lib/rustlib/src" -name '*slopos*' -prune -exec rm -rf -- {} +
-just setup
-```
+| `cp -al failed` | The `slopos` toolchain is a hard-link copy of the pinned nightly, and the checkout is on another filesystem than `$RUSTUP_HOME` | Put the checkout on the same filesystem as `~/.rustup`, or point `RUSTUP_HOME` at one that is |
 
 ## Downloads fail or you are offline
 
@@ -41,11 +25,12 @@ or a local copy:
 
 | Input | Cached at | Override |
 |-------|-----------|----------|
-| Limine bootloader | `third_party/limine/` | Unpack the pinned release there, or set `LIMINE_URL`. `LIMINE_VERSION` and `LIMINE_TARBALL_SHA256` (empty skips the check) change the pin |
+| Limine boot loader | `third_party/limine/` | Unpack the pinned release there, or set `LIMINE_URL`. `LIMINE_VERSION` and `LIMINE_TARBALL_SHA256` (empty skips the check) change the pin |
 | OVMF firmware for the live ISO | `third_party/ovmf/` | `OVMF_BASE_URL`, a mirror of the pinned edk2 nightly |
 | OVMF firmware for boot disks | `third_party/ovmf-nv/` | `OVMF_NV_PKG_URL`, a copy of the pinned `edk2-ovmf` package |
 | `libc` crate for the `slopos` toolchain | `$CARGO_HOME/registry/cache` | Fill the cargo cache, or set `LIBC_URL` |
-| `llvm-project` sources (for `just test`) | `third_party/llvm-project-<version>.src.tar.xz` | Place the pinned tarball there, or set `LLVM_URL` |
+| `llvm-project` sources, for the C++ runtime every build needs | `third_party/llvm-project-<version>.src.tar.xz` | Place the pinned tarball there, or set `LLVM_URL` |
+| Source tarballs of the programs ported to SlopOS (e2fsprogs for every base; the rest for `just recipes`) | `third_party/recipes/<name>-<version>.<ext>` | Place the pinned tarball there, or set `<NAME>_URL`, such as `E2FSPROGS_URL` |
 
 A `third_party/limine` directory that holds a different Limine release is
 replaced with the pinned one. A directory named by `LIMINE_DIR` that holds a
@@ -56,22 +41,25 @@ or complete it.
 
 | Message | Install |
 |---------|---------|
+| `build_recipes: make is required to build e2fsprogs` or `build_recipes: pkg-config is required to build e2fsprogs` | `make` and `pkg-config` (`pkgconf` on Arch) |
 | `build_bootdisk: missing host tools:` followed by any of `sfdisk mkfs.fat mmd mcopy truncate dd` | util-linux or fdisk (`sfdisk`), dosfstools (`mkfs.fat`), mtools (`mmd`, `mcopy`), coreutils (`truncate`, `dd`) |
 | `mke2fs is required` or `debugfs is required` | e2fsprogs |
 | `resize2fs is not installed, so the image cannot be grown` | e2fsprogs |
 | `gen_verity: python3 is required` | Python 3 |
+| `qemu_run.sh: GIT_SSH_PEER needs sshd on PATH or at /usr/sbin/sshd` | OpenSSH's server; only `just test-toolchain` asks for it, once a toolchain is built |
 
-The first one only comes from `just boot` and the recipes that build a boot
-disk; the live ISO does not need those tools.
+The boot-disk tools are needed by `just boot` and the checks that build a boot
+disk; the live ISO does not need them.
 
-## `just test` cannot find LLVM
+## The build cannot find LLVM
 
-The test image includes a C++ runtime built from pinned LLVM sources. Building
-it needs `clang`, `clang++`, `ld.lld` and `llvm-ar` that all report the same
-LLVM version, 18 or later, plus `cmake` and `ninja`. The build looks for
-version 18 first (`clang-18`, `/usr/lib/llvm-18/bin`,
-`/usr/lib64/llvm18/bin`), then the unversioned tools, then any newer installed
-version.
+Every base carries programs cross-compiled for SlopOS with your clang, and the
+test image adds a C++ runtime built from pinned LLVM sources. Building them
+needs `clang`, `clang++`, `ld.lld` and `llvm-ar` that all report the same LLVM
+version, 18 or later, plus `cmake` and `ninja`. So `just boot-live` and
+`just boot` need them as much as `just test` does. The build looks for version
+18 first (`clang-18`, `/usr/lib/llvm-18/bin`, `/usr/lib64/llvm18/bin`), then
+the unversioned tools, then any newer installed version.
 
 | Message | Fix |
 |---------|-----|
@@ -83,25 +71,45 @@ Set `CLANG`, `CLANGXX`, `LD_LLD` and `LLVM_AR` to choose the tools yourself,
 for example a distribution's `-18` binaries. Upgrading the host compiler
 rebuilds the runtime on the next run.
 
+## Your persistent root is missing after an update
+
+The development machine's disk used to be `fs/assets/ext2-persist.img`. Since
+2026-10-28 it is `fs/assets/ext4-persist.img`, and a `just boot` that finds no
+file of that name builds a fresh one. If you have the old file, rename it and
+its two side files before you boot:
+
+```bash
+for f in fs/assets/ext2-persist.img fs/assets/ext2-persist.img.stamp fs/assets/ext2-persist.img.host; do
+  [ -e "$f" ] && mv "$f" "${f/ext2-persist/ext4-persist}"
+done
+```
+
+If a `just boot` already built a fresh `ext4-persist.img`, move that one aside
+first. The next `just boot` then updates the old disk as usual, or stops with
+one of the messages in the next section.
+
 ## The build refuses to touch the persistent root
 
 `just boot` stops with a message that starts `preserve:`:
 
 ```text
 preserve: the image is damaged, or a boot left it dirty (see above)
-  fs/assets/ext2-persist.img holds whatever the guest wrote, so this build stops here.
-  Fix it:     e2fsck -fy 'fs/assets/ext2-persist.img'
-  Discard it: rm -f 'fs/assets/ext2-persist.img' 'fs/assets/ext2-persist.img.stamp'
+  fs/assets/ext4-persist.img holds whatever the guest wrote, so this build stops here.
+  Fix it:     e2fsck -fy 'fs/assets/ext4-persist.img'
+  Discard it: rm -f 'fs/assets/ext4-persist.img' 'fs/assets/ext4-persist.img.stamp'
 ```
 
 The development machine's disk holds whatever you did inside it, so the build
 never deletes it. Before each boot it updates the programs on that disk, and
 it stops when it cannot do that safely: the image is damaged or was not shut
-down cleanly, it cannot be grown or converted to the current format, or it
-carries an old kind of integrity trailer.
+down cleanly, it cannot be grown, it falls short of the ext4 features every
+SlopOS volume has, or it carries a kind of integrity trailer the build would
+not keep.
 
-To keep your work, run the `Fix it:` command. `e2fsck -fy` repairs the
-filesystem, and may throw away what it cannot repair. To start over instead:
+To keep your work, run the `Fix it:` command when there is one. `e2fsck -fy`
+repairs the filesystem, and may throw away what it cannot repair. When the
+message names `just reset root` instead, or the repair did not help, start
+over:
 
 ```bash
 just reset root
@@ -129,16 +137,21 @@ Everything looks normal, but nothing written to `/` is kept.
 Shut the guest down, then check and repair the disk on the host:
 
 ```bash
-just check-fs-image fs/assets/ext2-persist.img
-e2fsck -fy fs/assets/ext2-persist.img
+just check-fs-image fs/assets/ext4-persist.img
+e2fsck -fy fs/assets/ext4-persist.img
 ```
 
 If the repair loses what you needed, `just reset root` gives you a fresh disk.
 
-## Boot keeps rebooting at the Wheel of Fate
+A write under `/bin`, `/sbin`, `/lib`, `/usr/bin`, `/usr/share` or `/etc/ssl`
+fails on every boot, which is a different thing: those directories belong to
+the read-only base. Software you add goes under `/usr/local` or `~/.local`
+([Installed software](/docs/architecture/software)).
 
-This is the Wheel of Fate doing its job: an even number reboots the machine
-and spins again. Skip it:
+## Boot keeps restarting at the Wheel of Fate
+
+This is the Wheel of Fate doing its job: an even number restarts the machine
+and the wheel spins again. Skip it:
 
 ```bash
 ROULETTE=0 just boot-live
@@ -146,6 +159,13 @@ just boot-fast
 ```
 
 Test boots never spin it.
+
+## A long check stops before it boots
+
+| Message | Fix |
+|---------|-----|
+| `FAIL: no toolchain at builddir/slopos-toolchain/install — run just toolchain` | `just test-selfhost`, `test-install-guest`, `bench-selfhost` and `test-installer` need the cross-built toolchain: run `just toolchain`, or for `test-installer` set `INSTALLER_PAYLOAD=0` |
+| A `FAIL:` line ending `commit or stash first` | `just test-selfhost` and `test-install-guest` build `HEAD` in the guest, so the working tree must have no uncommitted changes |
 
 ## QEMU stops with "the git peer cannot serve the path"
 
@@ -183,7 +203,8 @@ QEMU_DISPLAY=sdl just boot-fast
 QEMU_DISPLAY=gtk just boot-fast
 ```
 
-`VIDEO=0` avoids the window entirely and puts the console in your terminal.
+`VIDEO=0` avoids the window entirely and puts the console in your terminal,
+where you log in as `user` with an empty password.
 
 If the wrapper warns that it `can't instantiate 'virtio-vga'`, your QEMU lacks
 its virtio-gpu display modules, and SlopOS falls back to a plain framebuffer.
@@ -192,7 +213,10 @@ On Arch and CachyOS install `qemu-hw-display-virtio-gpu` and
 
 ## The boot hangs or the screen stays blank
 
-Boot the live ISO without a window and read what the kernel printed:
+During the boot the screen shows only the logo and the ring. Press Esc to see
+the kernel's log in its place (`== SlopOS kernel log == (ESC toggles)`), and
+Esc again to go back. Or boot the live ISO without a window and read what the
+kernel printed:
 
 ```bash
 just boot-log
@@ -211,7 +235,8 @@ QEMU window, or send a serial BREAK, then a command key: `h` lists the
 commands and `t` prints every task. If even that gets no answer, boot with
 `just boot-debug` and run `just debug-bt` in another terminal; it writes every
 CPU's backtrace to `builddir/freeze-gdb.log`. [Diagnosing the
-kernel](/docs/development/diagnostics) covers both.
+kernel](/docs/development/diagnostics) covers both, and what a panic leaves
+behind on a boot disk.
 
 ## Tests fail
 
@@ -223,7 +248,7 @@ just test-verbose 'slopos_mm::*'
 just test-raw
 ```
 
-A filtered run whose tests create files must include `'*ext2_aaa*'`, because
+A filtered run whose tests create files must include `'*ext4_aaa*'`, because
 that test mounts the test disk for the tests after it.
 
 If a failure looks like memory corruption and still happens on one emulated

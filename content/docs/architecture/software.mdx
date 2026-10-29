@@ -1,0 +1,364 @@
+---
+title: "Installed software"
+description: "Where software that isn't part of the base lives, how it is installed and replaced, and why nothing you install can stand in for a system tool."
+---
+
+Everything SlopOS needs to boot, log you in and repair itself is in the
+[base](/docs/architecture/base), a read-only image that is replaced as a
+unit. Everything else, the toolchain, the editor and the other apps, and any
+program you build, lives in a *tree*: a directory of files installed under
+`/usr/local`, where everyone on the machine can run it, or under `~/.local`
+in your home, where only you will. Installing a tree again replaces exactly
+what its last install put there and keeps whatever you added beside it, and
+it refuses before writing anything if a file of yours is in the way. None of
+it needs a reboot.
+
+Two promises follow from where trees live. A program in `/usr/local` or
+`~/.local` can never take the place of a system tool you run by name,
+because the system's directories are searched first. And a library you put there is never loaded
+into a program that holds more power than you, because the loader does not
+look there for such a program. What SlopOS does not promise is a package
+manager: there are no dependencies, versions or repositories, only trees and
+the manifests that record them.
+
+The page walks through how a tree is installed and recorded, who may write
+`/usr/local` and how that changes when a second person joins the machine,
+the apps that ship outside the base, and how programs and libraries are
+found.
+
+## Where it comes from
+
+The split itself is FreeBSD's: one base system maintained with the kernel,
+and everything else under `/usr/local`, which the Filesystem Hierarchy
+Standard describes as the administrator's own tree, safe from being
+overwritten when the system is updated. `~/.local`, with programs in
+`~/.local/bin`, is the per-user counterpart the XDG Base Directory
+specification and the UAPI group's file hierarchy name. The loader's rule
+is glibc's secure-execution mode carried one step further: glibc's loader
+ignores `LD_LIBRARY_PATH` for a program the kernel marks `AT_SECURE`, and
+SlopOS's also skips the directories people can write.
+
+## Why the base is not enough
+
+The base is sealed: no program can change a file in it, and it is replaced
+whole, by `bootctl base install` (see
+[Updating SlopOS](/docs/self-hosting/updating)). That is right for init,
+privd and the compositor, which the security model rests on, and wrong for an
+editor, which should be able to change on its own schedule. So programs that
+need nothing from the system but the C library leave the base.
+
+Leaving it raises two problems. First, a program built outside the base must
+keep working when the base changes underneath it. SlopOS answers that with
+one contract: such a program reaches the system only through `libc.so`,
+whose exported functions and structure layouts are only ever added to (see
+[Userland](/docs/architecture/userland#programs-outside-the-base)).
+
+Second, a directory everyone runs programs from must be one that only the
+system can write. While one person uses the machine, it does not matter who
+owns `/usr/local`. Once there are two, a `/usr/local` the first person can
+write is a place where they can replace a command the second runs. A shared
+group that may write it is no better, since everyone in the group can then
+plant code for everyone else. So SlopOS gives `/usr/local` to the system the
+moment a second person is added, and installs into it from then on go
+through privd.
+
+## How a tree is installed
+
+A tree has a name (lowercase letters, digits and `_`), a source directory and
+a destination. `/bin/tree-install` installs one:
+
+```text
+tree-install NAME TREE DEST
+```
+
+Here is a person installing a script of their own into `~/.local`:
+
+```sh
+$ mkdir -p hello/bin
+$ printf '#!/bin/sh\necho hello\n' > hello.sh
+$ install hello.sh hello/bin/hello
+$ tree-install hello hello $HOME/.local
+tree-install: installed hello at /home/user/.local (21 bytes copied)
+$ hello
+hello
+```
+
+`tree-install` first reads the source and writes down what it holds in a
+*manifest*: an `identity` line, which is a SHA-256 digest over every entry's
+kind, mode, path and contents, an `at` line naming the destination, and one
+line per entry, directories before what is in them. For a tree in someone's
+home the manifest is kept in `~/.local/share/slopos/trees/<name>`; for any
+other destination, in `/var/lib/slopos/trees/<name>`:
+
+```text
+$ cat ~/.local/share/slopos/trees/hello
+identity <64 hexadecimal digits>
+at /home/user/.local
+d - bin
+f 21 bin/hello
+```
+
+Installing the tree again compares the new manifest with the one recorded:
+
+1. If the recorded manifest has the same identity at the same destination,
+   and every entry it names is still there with the kind and size it
+   records, there is nothing to do: `tree-install: /home/user/.local already
+   holds this hello`. Contents are not read again, so a file you edited in
+   place is left as it is.
+2. Otherwise `tree-install` plans the whole install before touching anything.
+   Each file the old manifest names is removed; each directory it names is
+   removed if nothing else is left in it; then each entry of the new tree is
+   put in place. Anything already at a path the new tree needs, which the old
+   manifest does not name, is a conflict, and so is anything of a different
+   kind than the manifest says (a directory where it recorded a file, say). A
+   single conflict refuses the install with nothing written, and names every
+   path in the way.
+3. Before the first change, the manifest is rewritten as *unfinished*: an
+   identity of all zeros, listing both the old entries and the new. An
+   install cut short by a crash therefore leaves a manifest that names
+   everything it might have written, and the next install takes all of it
+   back.
+
+So two trees can share a destination (the toolchain and the apps both live
+in `/usr/local`), because each manifest names only its own files and a file
+one tree holds refuses the other's install of it. And whatever you put in
+`/usr/local/bin` by hand survives a reinstall of the toolchain, because no
+manifest names it.
+
+Every entry is installed writable by its owner alone, whatever the source's
+modes said, so a tree built under a lax umask never leaves a directory that
+others may write. A manifest is only believed if uid 0 or the person
+installing wrote it; one that anyone else wrote, or that does not parse, is
+treated as an unfinished install of the new tree, so a forged manifest cannot
+steer an install into removing files it never put there.
+
+## Who may write `/usr/local`
+
+Every root records which of the first person's trees they hold, in
+`/var/lib/slopos/owners` (see
+[Users and file permissions](/docs/architecture/users)). On a machine with
+one person, the record says `/usr/local` is theirs: they can copy programs
+there, and init hands them the apps' manifest so `tree-install apps DIR
+/usr/local` works as them. The manifests directory itself is uid 0's, so a tree of a new
+name goes into their own `~/.local` instead.
+
+### When a second person joins
+
+The `users add` that creates a second person (see
+[Users and file permissions](/docs/architecture/users)) first hands
+`/usr/local` to the system, and adds nobody if that fails:
+
+1. It writes a mark, `/var/lib/slopos/owners.sharing`, saying a hand-over has
+   begun.
+2. It closes the first person's home to others.
+3. It walks `/usr/local` and makes every entry uid 0's and writable by uid 0
+   alone. It changes each directory before listing it, so a program of the
+   first person's that is still running cannot slip a new name in behind the
+   walk. A file that has another name elsewhere, held by someone else, loses
+   only its name in `/usr/local`, since taking it would take another
+   person's file. A symbolic link stays only if following it passes through
+   directories only uid 0 may change and ends at something only uid 0 may
+   change.
+4. It records that the first person no longer holds `/usr/local`, then
+   removes the mark.
+
+If the machine stops partway, init finds the mark at the next boot and
+finishes the hand-over before anything runs as a person.
+
+Owners change in place, as `chown` does on any Unix, so a file the first
+person opened for writing before the hand-over stays writable through that
+descriptor until it is closed. A reboot closes every such descriptor, so the
+add tells the administrator to restart before the new person logs in, and
+`priv` (see [Privileged actions](/docs/architecture/privd)) only runs
+commands from `/usr/local/bin` on a boot that began with `/usr/local` already
+the system's. Init notes that at boot in `/run/slopos-local`.
+
+### Installing for everyone
+
+From then on, `tree-install` asked for `/usr/local` by anyone who does not own
+it asks privd for the action `org.slopos.software.install`. An administrator
+confirms it with a click, anyone else needs an administrator's password, and
+root and the paired agent are not asked at all (see
+[privd actions](/docs/abi/privd-actions)). privd then runs `tree-install`
+again as uid 0 holding no capability at all, which installs at `/usr/local`
+and nowhere else. It must not publish anything the person asking could not
+read, nor follow a link swapped in while it works, so it first copies the
+tree into `/var/lib/slopos/tree-install`, a directory only uid 0 enters:
+
+- it reaches the tree from `/` through directories, opening each entry
+  without following a link, and copies what it opened, so swapping a link in
+  during the copy reaches nothing;
+- it refuses an entry that not everyone may read, since what is installed
+  for everyone is everyone's to read;
+- it refuses a symbolic link that is absolute or climbs out of the tree, so
+  nothing installed can lead outside `/usr/local`.
+
+Then it installs from that copy by the rules above, and the result is uid
+0's. Because the copy and the install both count against one process's disk
+quota (256 MiB by default), a tree installed through privd can be at most
+half of that. One install
+runs at a time.
+
+## The apps outside the base
+
+The editor, the file manager, the image viewer and the widget gallery are
+the crate `slopos-apps` (`apps/`). They are built the way a person's own
+`cargo build` builds a program for SlopOS: against the target's standard
+library, linked dynamically against `libc.so`. Together with their app
+entries, icons and the editor's manual they form the tree `apps`, which every
+root holds at `/usr/local` beside the toolchain.
+
+Two checks keep them honest. After every userland build,
+`check_loose_programs.sh` fails an app that is statically linked, names a
+loader other than `/lib/ld-slopos.so.1`, does not list `libc.so` among the
+libraries it needs, or contains a `syscall` instruction of its own, since a
+system call made in place would bypass the one contract the base keeps. And
+`check_app_deps.sh` fails a crate under `apps/` that depends on anything but
+the toolkit (`slopos-appkit`), the editor's core and the image decoder, so no
+app reaches past the toolkit into the kernel's interface. The toolkit itself
+reaches the system only through `slopos-cabi`, a thin layer over functions
+`libc.so` exports.
+
+### App entries
+
+The dock (see [Desktop](/docs/architecture/desktop)) shows an app because a
+file says it exists: `share/slopos/apps/<id>.app`, a few `key=value` lines.
+
+```text
+id=org.slopos.editor
+name=Editor
+exec=/usr/local/bin/editor
+icon=org.slopos.editor.png
+```
+
+`id` must match the file name, `exec` is an absolute path, and `icon` names a
+PNG in the same share's `slopos/icons/`, beside which an `@2x` copy waits for
+displays that need one. `boot=medium` marks an app shown only when the system
+booted from the install medium. The dock reads the entries at the start of a
+session from each extension's share, then `/usr/share` (the base),
+`/usr/local/share` and `~/.local/share`, in that order, and an entry with the
+same id as an earlier one replaces it, as XDG data directories rank. So you
+can override the base's entry for an app with your own in
+`~/.local/share/slopos/apps`. The shell keeps no list of apps; `PATH` finds
+them.
+
+### How the apps and the toolchain reach a root
+
+| Way | Who installs | When |
+|---|---|---|
+| The host's image builders | `scripts/build_fs_image.sh`, as a host tree | Every `just boot` and test image |
+| The installer | `/bin/installer`, from the medium's `apps/` (and the toolchain from its payload) | Installing SlopOS onto a disk |
+| Init on a live boot | init, into the RAM root's `/usr/local` | Booting the install medium |
+| `scripts/selfhost.sh install` | `tree-install apps builddir/apps /usr/local`, as the person running it or through privd | Building the system in the guest |
+
+The last one installs the apps only when the running `libc.so` is the one
+they were just built against. Otherwise it prints the command to run once the
+new base is running, since a freshly built app may call a function the
+running library does not export yet.
+
+## How programs and libraries are found
+
+The command search path puts the system first. A program started with no
+`PATH` gets `/bin:/sbin:/usr/local/bin:/opt/bin`, the same list the shell
+exports, `execvp` uses and the tools that search `PATH` share. A person's
+session starts with their own directory added after the system's:
+
+```text
+PATH=/bin:/sbin:/home/user/.local/bin:/usr/local/bin:/opt/bin
+```
+
+So nothing on a writable disk shadows a base tool, your own programs come
+before everyone's, and the commands extensions provide (`/opt/bin`, see
+[Extensions](/docs/architecture/extensions)) come last.
+
+The loader (see [Userland](/docs/architecture/userland#the-loader)) looks for
+a library by name in this order:
+
+1. `LD_LIBRARY_PATH`, except under `AT_SECURE`;
+2. the requesting object's `RUNPATH`, or else the `RPATH`s of the chain that
+   loaded it;
+3. `/lib`, then `/usr/lib`;
+4. for a program of an extension, that extension's own `/opt/<name>/lib`;
+5. `$HOME/.local/lib`, then `/usr/local/lib`, only for a process that is
+   neither `AT_SECURE` nor running as uid 0.
+
+`AT_SECURE` is a flag the kernel sets for a program that starts with more
+power than the program that started it: one holding a gated
+[capability](/docs/architecture/authority), or running as other ids than its
+starter's. Skipping the last two directories for such a program, and for uid
+0, means a library a person can write never ends up inside a program that
+holds more than that person does. The loader reads `HOME` from the
+environment the process started with and uses it only if it is an absolute
+path.
+
+## What it means in practice
+
+- **Your own builds go in `~/.local`.** `tree-install NAME DIR $HOME/.local`
+  needs nothing from anyone. Your shell finds the program at once, since
+  `~/.local/bin` is already on your `PATH`, and the programs you start find
+  its libraries.
+- **Software for everyone goes in through privd** once the machine has two
+  people. Make the tree readable by everyone and keep its links relative.
+- **A reinstall is safe to repeat.** It does nothing when nothing changed, and
+  refuses rather than overwrite a file it did not put there; move that file
+  aside and run it again.
+- **An app follows `libc.so`.** Link programs you ship outside the base
+  dynamically, as `cargo build` does for SlopOS by default.
+
+## How we know it works
+
+`tree-core` plans installs as pure logic and is tested on the host with
+`just test-host`, including installs cut short and trees that share a
+destination. In the guest, `tree_install_test` runs `tree-install` as the
+first person does, and `apps_test --trees` takes a machine through the whole
+story: a second person makes `/usr/local` the system's, the first installs
+for everyone through privd and for themselves into `~/.local`, a tree with an
+unreadable file or a link out of itself is refused, and the second person
+runs everyone's programs but not the first person's own. `dl_test` holds the
+loader to its search order, and after the test run the host checks the root
+image's ownership with `check_fs_image.sh --map`.
+
+## For contributors
+
+- **The base keeps what the security model or a repair needs, and what makes
+  private system calls directly.** Anything else belongs in a tree. The lists
+  are in `scripts/lib/base.sh`.
+- **A program outside the base talks to `libc.so` alone.** If an app needs
+  something new from the system, export it from `libc.so` (and record it with
+  `check_libc_exports.sh --record`) and wrap it in `slopos-cabi`.
+- **Never trust a manifest you did not write.** Code that installs trees
+  must keep the rule that only uid 0's manifest, or the installer's own, is
+  believed.
+- **Nothing with power searches what people can write.** A new search path,
+  for commands or libraries, must leave out `/usr/local` and home
+  directories for a process that is `AT_SECURE` or uid 0's.
+
+## Further reading
+
+- [*XDG Base Directory Specification*](https://specifications.freedesktop.org/basedir/latest/).
+  Short. Defines `~/.local/bin`, `~/.local/share` and the precedence of data
+  directories the dock follows.
+- [*FHS 2.3: /usr/local*](https://www.pathname.com/fhs/pub/fhs-2.3.html).
+  The classic statement of what an administrator's local tree is for, and why
+  a system update must leave it alone.
+- [*FreeBSD hier(7)*](https://man.freebsd.org/cgi/man.cgi?query=hier&sektion=7).
+  The base-versus-`/usr/local` layout SlopOS's split follows.
+- [*UAPI.9: Linux File System Hierarchy*](https://uapi-group.org/specifications/specs/linux_file_system_hierarchy/).
+  The modern take on per-user directories, `~/.local/lib` among them.
+- [*ld.so(8)*](https://man7.org/linux/man-pages/man8/ld.so.8.html). How
+  glibc's loader searches for libraries and what secure-execution mode
+  switches off.
+
+## In the source
+
+| Path | What is there |
+|---|---|
+| `tree-core/` | Manifests and the install plan, host-tested |
+| `userland/src/tree.rs` | Scanning, staging and installing a tree in the guest |
+| `userland/src/apps/tree_install.rs` | `/bin/tree-install` |
+| `userland/src/root_layout.rs` | The owners record, the hand-over of `/usr/local`, the person's `PATH` |
+| `apps/` | The apps outside the base, their entries and icons |
+| `userland/src/app_entry.rs` | Reading app entries |
+| `slibc/src/ld_so/mod.rs` | The loader's search order |
+| `cabi/` | How the toolkit reaches `libc.so` |
+| `scripts/check_loose_programs.sh`, `scripts/check_app_deps.sh` | The two checks on apps |

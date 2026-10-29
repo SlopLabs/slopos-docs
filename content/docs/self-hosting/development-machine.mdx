@@ -9,7 +9,8 @@ C toolchain that runs on SlopOS, and a git clone of the checkout you booted
 from. Inside it you pull the host's commits, build the system, switch the
 running machine to the programs you just built, try a new kernel for one boot
 and keep it, and push your commits back to the host. You work as an ordinary
-person, `user`, and every change to the system itself asks you first.
+person, `user`, and the machine asks you before anything replaces its kernel
+or its base.
 
 An operating system that can build itself is called *self-hosting*. It is
 the most practical test of whether a system is complete: a compiler, a
@@ -80,20 +81,22 @@ You own your home, the clone at `/src` and, while you are the only person
 with an account, `/usr/local`. So building in the clone and installing
 software into `/usr/local` need nothing special. Changing the system itself
 does: writing the boot partition, replacing the running base, restarting the
-machine. Those programs ask *privd*, the privilege broker, to do the work, and
-privd asks you first. On the desktop that is a dialog you click. At the serial
+machine. The programs that do it (`bootctl` among them) ask *privd*, the
+privilege broker, to do the work, and before it installs a kernel or a base
+privd asks you. On the desktop that is a dialog you click. At the serial
 console a question can only be answered by typing your password, and `user`
 has none until you set one with `users passwd` from the desktop's terminal; so
 install from the desktop.
 [Privileged actions](/docs/architecture/privd) explains who may ask for what.
 
-There is no root shell to switch to. uid 0 holds no special power in SlopOS
+You never need to become root: uid 0 holds no special power in SlopOS
 ([Users and file permissions](/docs/architecture/users)). For work that needs
 more than you hold, such as mounting a disk or reading another person's
 files, put `priv` in front of the command (`priv mount <device> <directory>`),
-or run `priv -s` for a shell. `priv` runs the command as you, with a fixed set of extra capabilities
-(mounting, network and console settings, the clock, reading the kernel's
-diagnostics, and passing every file permission check), after you allow it.
+or run `priv -s` for a shell. `priv` runs the command as you, with a fixed
+set of extra capabilities (mounting, network and console settings, the
+clock, reading the kernel's diagnostics, and passing every file permission
+check), after you allow it.
 It never reaches the raw disks, the base or any sealed file, and it only runs
 commands from directories that only uid 0 can change. So it won't run the
 toolchain out of `/usr/local/bin` on this machine, because that directory is

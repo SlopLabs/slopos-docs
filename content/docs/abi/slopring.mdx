@@ -35,10 +35,13 @@ All three are SlopOS-only calls (see [System call ABI](/docs/abi/syscalls)).
   (`SLOPRING_SQ_TO_CQ`).
 - `ring_enter` returns `-EINTR` only if a signal interrupts the wait and it
   submitted nothing; otherwise it returns the submission count.
-- `ring_enter`'s `flags` are currently ignored. `SLOPRING_ENTER_GETEVENTS` is
-  reserved.
+- `ring_enter` defines no flag: any bit set in `flags` is `-EINVAL`.
 - Every call on a ring from a process other than the one that created it
   fails with `-EBADF`.
+- The operations a `ring_enter` submits or completes run as the task that
+  makes that call, which is always a task of the ring's process: `OP_OPENAT`
+  is checked against its file permissions, and `OP_CONNECT` attests it to an
+  `AF_UNIX` peer.
 
 ## Shared region
 
@@ -57,16 +60,13 @@ CQE array
 | `RingParams` field | Meaning |
 |---|---|
 | `sq_entries`, `cq_entries` | Queue sizes |
-| `flags` | Feature bits the kernel supports |
+| `_resv` | Reserved, 8 bytes, zero |
 | `sq_off_head`, `sq_off_tail`, `sq_off_mask`, `sq_off_dropped`, `sq_off_array` | Offsets of the submission queue's control words and array |
 | `cq_off_head`, `cq_off_tail`, `cq_off_mask`, `cq_off_overflow`, `cq_off_array`, `cq_off_flags` | Offsets of the completion queue's control words and array |
 | `region_addr`, `region_bytes` | Where the region is mapped, and its size |
 
-| Feature bit | Meaning |
-|---|---|
-| `SLOPRING_FEAT_SINGLE_MMAP` | The whole ring is one mapping (the only mode) |
-| `SLOPRING_FEAT_MULTISHOT` | `SLOPRING_SQE_MULTISHOT` is honoured |
-| `SLOPRING_FEAT_REG_BUFFERS` | Fixed and provided buffers are supported |
+`RingParams` is 80 bytes. The whole ring is one mapping; multishot
+operations and registered buffers are always available.
 
 Each control word has one writer. The kernel keeps its own copy of the indices
 it owns and trusts that copy, not the shared one. It reads and writes the
@@ -103,8 +103,9 @@ holds a Rust reference into memory the program can change.
 |---|---|---|
 | `SLOPRING_CQE_F_MORE` | 0 | More completions follow for this operation |
 | `SLOPRING_CQE_F_BUFFER` | 1 | The upper 16 bits carry a provided-buffer id |
-| `SLOPRING_CQE_F_BUF_MORE` | 2 | Reserved; not emitted |
 | `SLOPRING_CQE_F_NOTIF` | 3 | Final completion of `OP_SEND_ZC`: the buffer may be reused |
+
+Bit 2 is unused.
 
 ## Opcodes
 
@@ -120,19 +121,20 @@ holds a Rust reference into memory the program can change.
 | 7 | `OP_TIMEOUT` | Deadline for the current wait | `off` is nanoseconds; completes with `-ETIME` when it passes |
 | 8 | `OP_CANCEL` | Cancel in-flight operations | See below |
 | 9 | `OP_RECVFROM` | Receive a datagram and its source address | Source address written to `addr2` |
-| 10 | `OP_OPENAT` | Open a path and install a descriptor | `addr` is the path, `len` its length, `op_flags` the open flags; same path rules as `open` |
+| 10 | `OP_OPENAT` | Open a path and install a descriptor | `addr` is the path, `len` its length, `op_flags` the open flags. Checked as `open` is, against the permissions of the task calling `ring_enter`; a file it creates takes mode `0666` less that task's umask. A relative path is resolved against `/`, since a ring has no working directory |
 | 11 | `OP_CLOSE` | Close a descriptor | Completes at once |
 | 12 | `OP_SEND_ZC` | Send from a fixed buffer without copying | Requires `SLOPRING_SQE_FIXED_BUFFER`; otherwise `-EINVAL` |
-| 13 | `OP_CONNECT` | Connect a socket | `addr` is a `SockAddrIn` or `SockAddrUn`; one completion, `0` or a negated errno |
+| 13 | `OP_CONNECT` | Connect a socket | `addr` is a `SockAddrIn` or `SockAddrUn`; one completion, `0` or a negated errno. An `AF_UNIX` name must be absolute (`-EINVAL` otherwise); the peer is told the identity of the task whose `ring_enter` makes the attempt, taken again at each retry |
 
 - An opcode above 13 (`OP_MAX`), or one outside the ring's allowed set,
   completes with `-EPERM`.
 - Each ring has a set of allowed opcodes fixed at `ring_setup`; nothing can
   widen it later. `ring_setup` currently allows all fourteen.
 - Every opcode has a capability class fixed at compile time, like a system
-  call, and a compile-time check requires that none needs a capability beyond
-  the descriptors it names. A ring therefore carries no copy of its creator's
-  credentials. See [Permissions](/docs/architecture/authority).
+  call, and a compile-time check requires that none needs a gated capability.
+  A ring therefore carries no copy of its creator's capabilities; the one
+  opcode that resolves a path is checked as the task entering the ring. See
+  [Capabilities](/docs/architecture/authority).
 - Descriptors named in a submission are looked up in the creating process's
   descriptor table.
 
@@ -192,7 +194,7 @@ program refills, for one buffer group:
 | `ring_addr` | `u64` | Address of the buffer ring |
 | `ring_entries` | `u32` | Power of two, at most 32768 (`SLOPRING_PBUF_RING_MAX_ENTRIES`) |
 | `buf_group` | `u16` | Group id, 1 to 64 (`SLOPRING_MAX_BUF_GROUPS`); `-EEXIST` if already registered |
-| `flags` | `u16` | `SLOPRING_PBUF_RING_INC` (bit 0) reserved for incremental consumption |
+| `flags` | `u16` | Must be zero; anything else is `-EINVAL` |
 
 Each ring entry is an `IouringBuf` `{addr: u64, len: u32, bid: u16, resv: u16}`.
 The program publishes buffers by advancing a `u16` tail at byte offset 14 of

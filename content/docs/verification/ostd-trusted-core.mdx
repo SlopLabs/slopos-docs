@@ -16,7 +16,8 @@ code outside it.
 The idea and the name come from
 [Asterinas](https://asterinas.github.io/book/ostd/index.html), whose trusted
 crate is also called OSTD. [The framekernel](/docs/verification/framekernel)
-explains why the kernel is split this way.
+explains why the kernel is split this way, what the name stands for in each
+project, and what the split does and doesn't guarantee.
 
 ## What OSTD contains
 
@@ -31,7 +32,8 @@ up to the memory manager, a safe crate. Roughly:
 | Memory | Physical pages and who owns them, the page tables that give each program its view of memory, the kernel heap, and memory shared with devices |
 | Synchronisation | Spin locks, wait queues, intrusive linked lists, read-copy-update, per-CPU slots |
 | Tasks | The task object, the reference that owns it, putting tasks on and off queues, the context switch, saving floating-point state |
-| Processes and permissions | The process object, resource accounts, the permission masks described in [Permissions](/docs/architecture/authority) |
+| Processes | The process object, its user and group ids, its resource accounts, the capability mask described in [Capabilities](/docs/architecture/authority), and the identity a socket records for the process at its other end |
+| Screen and input | Which task holds the screen and the keyboard and pointer input (the *seats*), handed over by the kernel rather than taken |
 | User memory | Pointers into a user program's memory, and copying to and from it |
 | Linking | The macros that declare entry points called from assembly and tables that the linker assembles (see [Unsafe code and FFI](/docs/development/unsafe-ffi-boundaries)) |
 | Testing | Stand-ins for hardware so OSTD's own tests run on a normal computer and under [Miri](/docs/verification/kernmiri) |
@@ -102,8 +104,9 @@ takes a slice, so the length and the buffer can't disagree.
 
 What is left is the set of items that keep an obligation the type system
 can't track: `pub unsafe fn` and `pub unsafe trait`. Code outside OSTD can't
-call or implement them, apart from a short named list of traits; their counts
-are on [Safety gates](/docs/verification/tcb-discipline#where-unsafe-may-appear).
+call or implement them, apart from a short named list of traits;
+[Safety gates](/docs/verification/tcb-discipline#where-unsafe-may-appear)
+shows how to list them.
 
 ## What kernel code outside OSTD should use
 
@@ -115,7 +118,9 @@ When you write a safe kernel crate, a few habits follow from the above:
 - **Reach user memory through user pointers and slices** (`UserPtr`,
   `UserSlice`) and the copy helpers, never by casting an address.
 - **Change page tables only through a cursor** on the memory space
-  (`VmSpace`), which keeps the tables consistent.
+  (`VmSpace`), which keeps the tables consistent. The kernel's own tables
+  take a cursor in one module only (`mm/src/kernel_mappings.rs`), which a
+  gate enforces.
 - **Hold tasks by their owning reference** and move them onto queues only
   through OSTD's placement functions.
 - **Declare entry points, linker symbols and registered items** with OSTD's
@@ -170,16 +175,20 @@ For types where all-zero bytes are a valid value, the `Zeroable` trait and the
 
 This is a small in-house version of the in-place construction that
 Rust-for-Linux does with its `pin-init` crate, and OSTD depends on neither
-that crate nor `pinned-init`. It leaves out `Pin` support, because the kernel
-has no self-referential types and no `async`.
+that crate nor `pinned-init`. It leaves out pinned initialisation, because the
+kernel has no self-referential types and no `async`, and it has no
+`pin_init!`-style macros, whose per-field captures would build each field's
+value on the caller's stack first.
 
 ## How we know it works
 
 The trusted core is the part that has to be right, so it gets three kinds of
 checking on top of ordinary tests:
 
-- Every `unsafe` block carries a `// SAFETY:` comment naming the rule it relies
-  on, and the code is reviewed against those rules.
+- An `unsafe` block carries a `// SAFETY:` comment naming the rule it relies
+  on (a few one-instruction assembly blocks, such as the ones that turn
+  interrupts on and off, go without), and the code is reviewed against those
+  rules. Nothing checks the comments; review does.
 - OSTD's tests run under [Miri](/docs/verification/kernmiri), which reports
   undefined behaviour the moment it happens.
 - The parts where a bug would corrupt memory, such as page reference counts,

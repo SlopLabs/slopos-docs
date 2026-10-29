@@ -23,8 +23,10 @@ kernel. No existing network stack is linked in. We did read one closely:
 [smoltcp](https://github.com/smoltcp-rs/smoltcp), the embedded Rust TCP/IP
 stack, settled how our TCP connections represent their states. The side
 that programs see copies Linux, so code written against Linux sockets
-compiles and behaves the way you expect, down to details such as which
-sockets may share a port. The page walks through a packet's path, the cards,
+compiles and behaves the way you expect, down to details such as when a
+restarted server may take its port back. The receive path borrows Linux's
+NAPI scheme, and what a card accepts from the wire follows the host
+requirements of RFC 1122 and, where those leave a choice, Linux's default. The page walks through a packet's path, the cards,
 what programs can use, configuration, what the machine accepts from the
 wire, and encryption.
 
@@ -136,7 +138,7 @@ A few things behave in ways worth knowing:
   address and port, or one the wildcard address and one a specific address
   on the same port, only if every one of them set `SO_REUSEADDR`; the newest
   then receives. So no program can take over a port another holds. A bind to
-  port 0 picks a free port at once, as Linux does. A connected UDP socket
+  port 0 picks a free port at once. A connected UDP socket
   receives only datagrams from the address it connected to.
 - **`IP_TOS` marks your packets.** The type-of-service byte you set on a
   socket goes into the IPv4 header of every TCP segment and UDP datagram it
@@ -241,8 +243,9 @@ broadcasting it.
 ARP, the protocol that maps an IPv4 address to a card's hardware address,
 follows the rule its RFC gives: an ARP packet refreshes the entry of any
 sender the machine already knows, but creates a new entry only when the ARP
-was aimed at this card's own address. So a neighbour can't fill the table by
-announcing itself. A ping sent to a broadcast address goes unanswered, so the
+was aimed at this card's own address, and a card answers ARP requests only
+for its own address. So a neighbour can't fill the table by announcing
+itself. A ping sent to a broadcast address goes unanswered, so the
 machine can't be used to multiply someone else's traffic.
 
 ## Encryption (TLS)
@@ -362,8 +365,7 @@ driver for the same family.
   here. The socket API from a program's side, free and readable; its IPv4
   examples use the same calls SlopOS provides.
 - [`socket(7)`](https://man7.org/linux/man-pages/man7/socket.7.html),
-  [`tcp(7)`](https://man7.org/linux/man-pages/man7/tcp.7.html),
-  [`udp(7)`](https://man7.org/linux/man-pages/man7/udp.7.html) and
+  [`tcp(7)`](https://man7.org/linux/man-pages/man7/tcp.7.html) and
   [`unix(7)`](https://man7.org/linux/man-pages/man7/unix.7.html). The Linux
   manual pages for the behaviour SlopOS copies; `socket(7)` describes
   `SO_REUSEADDR`.
@@ -371,9 +373,26 @@ driver for the same family.
   specification, which gathers forty years of corrections into one document.
 - [smoltcp](https://github.com/smoltcp-rs/smoltcp). A small TCP/IP stack in
   Rust whose socket design influenced ours.
-- [*Monitoring and Tuning the Linux Networking Stack: Receiving Data*](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-receiving-data/)
-  from packagecloud. A detailed tour of Linux's receive path, including NAPI,
-  for comparison with the steps above.
+- [NAPI](https://docs.kernel.org/networking/napi.html) in the Linux kernel
+  documentation, the scheme behind "the interrupt only wakes the poll". Linux
+  can give each card's poll a thread of its own; SlopOS has one netpoll
+  thread for every card. For a longer tour of Linux's receive path, read
+  packagecloud's
+  [*Monitoring and Tuning the Linux Networking Stack: Receiving Data*](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-receiving-data/).
+- [RFC 1122](https://www.rfc-editor.org/rfc/rfc1122.txt), *Requirements for
+  Internet Hosts*. Section 3.3.4.2 defines the weak and strong host models;
+  section 3.2.1.3 lists the source addresses a host must not accept. Linux's
+  [IP sysctl](https://docs.kernel.org/networking/ip-sysctl.html)
+  documentation shows the same choices as knobs (`arp_ignore`, `arp_accept`,
+  `route_localnet`); in SlopOS they are fixed.
+- [RFC 2131](https://www.rfc-editor.org/rfc/rfc2131.txt) (DHCP), whose
+  section 4.1 is why a card accepts a DHCP offer sent straight to the address
+  it offers, and [RFC 826](https://www.rfc-editor.org/rfc/rfc826.txt) (ARP),
+  whose merge rule SlopOS's ARP follows.
+- [Redox's `rtl8168d`](https://gitlab.redox-os.org/redox-os/base/-/tree/main/drivers/net/rtl8168d),
+  an MIT-licensed driver for the same chip that runs as a user-space program,
+  and [Linux's Realtek drivers](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/net/ethernet/realtek),
+  where the chip's register facts were checked.
 
 ## In the source
 

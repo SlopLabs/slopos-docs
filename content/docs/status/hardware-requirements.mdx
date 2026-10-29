@@ -1,77 +1,107 @@
 ---
 title: "Hardware"
-description: "What you need to run SlopOS in QEMU, and what works on the one laptop it has run on."
+description: "What you need to run SlopOS in QEMU, and what has been tried on the one laptop it runs on."
 ---
 
+As of 2026-10-29, SlopOS commit `fa0f8f79`. The laptop results below were
+recorded between 2026-10-03 and 2026-10-11, on builds from that period; none
+has been repeated since.
+
 You run SlopOS in QEMU on a Linux or macOS computer. The only real machine it
-has run on is one Lenovo laptop, which boots the live ISO from a USB stick.
+has run on is one Lenovo laptop, where it is installed on the internal disk.
 
 ## What your computer needs
 
-QEMU emulates a whole PC, so the host needs QEMU itself, a few image tools and
-enough memory for the guest:
-
-| Host | Packages |
-|------|----------|
-| Arch | `qemu-full xorriso e2fsprogs just go` |
-| Debian or Ubuntu | `qemu-system-x86 xorriso e2fsprogs golang`, plus `just` |
-| macOS | `qemu xorriso e2fsprogs just go` from Homebrew |
-
-Go runs the test harness behind `just test`, and `openssl` is needed for the
-TLS tests in `just test-host`. `just setup` installs the pinned Rust nightly and
-the rest. The [Quickstart](/docs/getting-started/quickstart) walks through it.
+QEMU emulates a whole PC, so the host needs QEMU itself, the image tools, an
+LLVM toolchain (version 18 or later, with CMake and Ninja, because every
+SlopOS system carries programs cross-compiled with clang) and enough memory
+for the guest. The [Quickstart](/docs/getting-started/quickstart) has one
+install command per platform. Go runs the test harness behind `just test`, and
+`openssl` and `ssh-keygen` are needed for the TLS tests in `just test-host`.
 
 QEMU is much faster when it can use the processor's virtualisation support:
 KVM on Linux, HVF on macOS. Without it, QEMU falls back to emulating every
-instruction in software (TCG), which works but is slow.
+instruction in software (TCG), which works but is slow; a build inside the
+guest takes many times longer.
 
 ## Memory for each way of booting
 
 | What you boot | Guest memory | Change it with |
 |---------------|--------------|----------------|
-| Live ISO (`just boot-live`) | 512 MB | `QEMU_MEM` |
+| Live ISO (`just boot-live`, `boot-log`) | 512 MB | `QEMU_MEM` |
 | Test suite (`just test`) | 1 GB | `QEMU_MEM` |
-| Development machine (`just boot`, `just boot-fast`) | 4 GB | `DEV_QEMU_MEM` |
-| Self-hosted builds of the test kernel | 8 GB | `DEV_QEMU_MEM=8G` |
+| Development machine (`just boot`, `just boot-fast`) | 6 GB | `DEV_QEMU_MEM` or `QEMU_MEM` |
+| Self-hosting checks, `test-installer`, `test-install-guest` | 6 GB | `DEV_QEMU_MEM` or `QEMU_MEM` |
+| `test-install`, `test-capacity`, `ui-shots` | 2 GB | `QEMU_MEM` (`CAPACITY_QEMU_MEM` for `test-capacity`) |
+| `test-remote` | 1 GB | Fixed in the recipe |
 
 The guest gets 4 CPUs by default (`QEMU_SMP`, which must be a power of two).
-So the development machine wants a host with comfortably more than 4 GB free.
-Every QEMU setting is listed on [QEMU options](/docs/getting-started/qemu-options).
+The development machine runs at 6 GB because a link that maps more than an
+eighth of memory fails, and the debug tests kernel's link does at 4 GB
+([Known limitations](/docs/status/known-limitations#memory-and-scheduling)).
+So it wants a host with comfortably more than 6 GB free. Every QEMU setting is
+listed on [QEMU options](/docs/getting-started/qemu-options).
 
 ## The emulated machine
 
 QEMU presents a modern PC (the `q35` machine) with UEFI firmware (OVMF) and the
-Limine boot loader. Disks are NVMe, plus one virtio disk the tests still use;
-the network card and the display are virtio devices, and the keyboard and mouse
-are the classic PS/2 kind. The development machine boots from an NVMe disk
-holding two boot slots and keeps its files on another; the live ISO boots from
-an emulated CD with no disk at all. [Disks](/docs/architecture/storage) explains
-how those disks are laid out.
+Limine boot loader. Disks are NVMe, plus virtio disks and a USB stick in the
+test suite; the network card and the display are virtio devices, and the
+keyboard and mouse are the classic PS/2 kind. The test suite adds an xHCI USB
+controller, and `just test-usb` adds both of QEMU's xHCI models with sticks,
+keyboards, mice, a tablet, a hub and a USB network adapter. The development
+machine boots from an NVMe disk holding two boot slots and keeps its files on
+another; the live ISO boots from an emulated CD with no disk at all.
+[Disks](/docs/architecture/storage) explains how those disks are laid out.
+
+## What a real machine needs
+
+These come from the code, not from testing: only the laptop below has been
+tried.
+
+| Part | What SlopOS needs or drives |
+|------|-----------------------------|
+| Processor | x86-64 with a local APIC and an I/O APIC; the kernel stops at boot when it finds no I/O APIC. Hardware frequency control (Intel HWP) and core types are used where the CPU reports them |
+| Firmware | UEFI. Booting has been tried under UEFI only, and with Secure Boot off; nothing in the tree signs the loader for it |
+| Display | Intel integrated graphics of the Tiger Lake, Alder Lake and Raptor Lake generations that the driver's table lists; otherwise the firmware's framebuffer |
+| Disks | NVMe, and USB sticks and drives (Bulk-Only). SATA disks have no driver |
+| Network | Realtek RTL8168h and RTL8168M, and USB Ethernet adapters that speak CDC-ECM or CDC-NCM. Other Realtek versions are declined, naming their id in the log |
+| USB | xHCI controllers with MSI-X or MSI and 64-bit addressing; older USB controllers have no driver |
+| Keyboard and pointer | The i8042 (PS/2) keyboard and mouse, USB keyboards, mice and tablets, and an I²C-HID touchpad on the DesignWare I²C controller, found through the firmware's ACPI tables |
 
 ## The tested laptop
 
-The live ISO (`just iso`, written to a USB stick) boots a Lenovo laptop with an
-Intel Raptor Lake-P processor, with Secure Boot turned off. It runs from memory
-and does not touch the laptop's disk.
+A Lenovo laptop with an Intel Core i5-13420H (four performance cores with two
+threads each, four efficiency cores), Intel UHD Graphics (`8086:a7a8`), a
+Kingston NV3 NVMe disk with no DRAM cache, a Realtek RTL8111/8168 wired port
+and two xHCI USB controllers. Secure Boot is off. SlopOS was first run there
+from the live ISO on a USB stick, then installed on the NVMe disk, where it
+boots from its own boot slots.
 
-| Part | What works |
-|------|------------|
-| Processor (12 hardware threads) | All threads run, with per-CPU timers |
-| Display (Intel UHD Graphics) | Our Intel Xe display driver draws the desktop |
-| Keyboard | Works, found through the firmware's ACPI tables |
-| Touchpad (I2C-HID) | Works, found through ACPI, over the I2C controller |
-| NVMe disk | Driver loads; the live system does not mount it |
-| Firmware | Reset and power-off through UEFI |
+| Part | Status | What was tested |
+|------|--------|-----------------|
+| Processor (12 hardware threads) | Works | All threads run with per-CPU timers. HWP is enabled at boot, and tasks are placed on performance cores first; `cpufreq bench` and full builds measured both |
+| Display (Intel UHD Graphics) | Works | Our Intel Xe display driver draws the desktop; the kernel log and a panic show on screen |
+| Built-in keyboard (i8042) | Works | Found through ACPI |
+| Touchpad (I²C-HID) | Works | Found through ACPI, over the I²C controller |
+| NVMe disk (Kingston NV3) | Works | SlopOS installed on it, booted from it and built itself on it |
+| Wired network (RTL8168h) | Works with limits | Brought up without the PHY patch firmware; took a DHCP lease, and every remote-control session and measurement ran over it. git over ssh to another machine and cargo fetching from crates.io were not tried |
+| USB controllers (PCH `8086:51ed`, Thunderbolt `8086:a71e`) | Works | Both taken from the firmware and run on MSI, the internal devices enumerated |
+| USB keyboard and mouse | Works | A Logitech receiver's mouse (`046d:c548`) and a NuPhy Air75 V3 keyboard's receiver (`19f5:2620`) |
+| USB sticks and USB Ethernet | Not tested | Tested in QEMU only |
+| Crash record on the NVMe disk | Not tested | Tested in QEMU only |
+| Wi-Fi (Intel CNVi), Bluetooth, audio | No driver | |
+| Firmware | Works | Reset and power-off through UEFI; boot entries and boot-slot variables written by the installer and `bootctl` |
 
-The kernel log, and any panic message, appear on screen.
+A full build of the system on the installed laptop (`scripts/selfhost.sh build
+release`, kernel, programs and base, from an empty build directory, of commit
+`ff6b10ba`) took 356 and 364 seconds with the default settings, and 382 to
+397 seconds with the firmware's own frequency settings. Every run was held
+back by the package's power limit.
 
 ## What real hardware still lacks
 
-The laptop has no network under SlopOS, because its Realtek wired card and
-Intel Wi-Fi have no drivers. Its USB controllers have no driver either, so USB
-devices stop working once the kernel starts. The disk layout SlopOS boots from
-can already share a disk with the laptop's existing OS, but nothing inside
-SlopOS can create that layout, so it cannot install itself onto the laptop's
-disk yet. A panic still leaves no record after the machine resets.
-The [Roadmap](/docs/status/roadmap) covers what is planned for each, and
+No Wi-Fi, Bluetooth, audio, suspend or GPU acceleration, and no driver for
+SATA disks. Only the one laptop has been tried, and nothing since 2026-10-11
+has been run on it, so a change after that date has been tested in QEMU only.
 [Known limitations](/docs/status/known-limitations) lists the rest.

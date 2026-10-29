@@ -24,7 +24,7 @@ const PHASES: Phase[] = [
       },
       {
         title: 'The root',
-        detail: 'the ownership map’s directories, a hand-over of /usr/local finished, the apps’ manifest',
+        detail: 'the ownership map’s directories, a hand-over of /usr/local finished, on a live boot the medium’s apps',
         holds: 'init itself',
       },
       {

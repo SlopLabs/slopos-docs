@@ -1,0 +1,338 @@
+---
+title: "Remote control"
+description: "How you drive a SlopOS computer on your network from your Linux machine: run commands, move files, read its kernel log and install new versions without sitting at it."
+---
+
+import { RemoteRequest } from '@/components/diagrams/remote-request';
+
+The remote control lets you work on a SlopOS computer on your local network
+from the Linux machine you develop on. From your terminal you can run
+commands on it and get their output and exit status back, copy files in both
+directions, read its kernel log, and install a new base and kernel and boot
+them, all through `just remote` and `just remote-install`. The SlopOS
+computer runs a small agent, `remoted`, that connects out to a *broker* on
+your Linux machine; nothing on SlopOS listens for connections.
+
+What the broker can make the computer do is bounded. Commands run as a person
+holding no special powers. On top of that, the policy of privd, SlopOS's
+privilege broker, lets the agent change
+the boot slots and the bases, install extensions and software, change CPU
+frequency settings, read the kernel's diagnostics, change the keyboard layout
+and restart or power off, without asking anyone at the machine. It can't
+manage accounts, change network settings, run the installer or open a root
+shell.
+
+The rest of this page explains why the computer dials out rather than
+running a server, how a computer is paired with your broker, how a request
+travels, and the commands you type.
+
+## Where it comes from
+
+Driving a device from a development host is common practice. Fuchsia's `ffx`
+is a host tool that talks to a remote control service on each target device;
+test labs such as LAVA and KernelCI run deploy, boot and test jobs on
+fleets of boards; and Linux's `netconsole` sends the kernel's log messages
+over UDP to another machine. SlopOS's version is small and aimed at one
+developer with one or two computers. What differs is the direction: the
+target connects out, so it exposes no listening port, and its trust in the
+host is a certificate authority and a token built into its read-only base.
+
+## Why the computer dials out
+
+We built the remote control to measure and test SlopOS on a laptop without
+sitting at it. The obvious tool would be an SSH server on the laptop, but
+OpenSSH's server needs a password or key database and a privilege separation
+scheme that SlopOS doesn't provide, and a server listening on the network
+would be the machine's whole attack surface. So the SlopOS computer runs no
+server at all. Your Linux machine runs the broker on one TCP port (7330 by
+default), and the only change it needs is one firewall rule.
+
+That raises a second problem. Whoever the agent connects to gets everything
+the agent may do. If the broker's address lived in a file under `/etc`, any
+program able to write there could point the agent at a broker of its own. So
+the *pairing* (the broker's certificate authority, its address and a token)
+is packed into the base, the read-only image the system's programs come from,
+at `/usr/share/slopos/remote/`. No process can change it, and `remoted` reads
+it from nowhere else; it doesn't even take an address on its command line.
+[Base system](/docs/architecture/base) explains why nothing can write the
+base.
+
+## How a request travels
+
+<RemoteRequest />
+
+When `remoted` starts, it opens a TLS 1.3 connection to the broker. It accepts
+the broker only if the broker's certificate was issued for the name
+`slopos-remote` by the certificate authority in the base, so it never talks to
+anything else. Then it proves itself by sending the token, and the connection
+sits idle. Both sides send a ping every 15 seconds and drop a connection that
+has been silent for 45, so a computer that disappears is noticed. A failed
+connection is retried after 1 second, then 2, 4 and so on up to 30.
+
+When you run, say, `just remote run -- uname -a`, the command-line tool
+connects to the broker over a local socket only you can open, and the broker
+sends your request down the agent's idle connection. As soon as that
+connection takes the request, `remoted` dials another, which is why a second
+command doesn't wait for the first. Each connection carries one request and
+then closes.
+
+A command runs like this:
+
+- **As whom.** As the person the accounts record names for it (`users remote`
+  sets it; by default the administrator with the lowest uid, which on a fresh
+  install is the first person). The agent and everything it starts carry a
+  login tag of their own, so they form a session of their own, apart from the
+  person's desktop.
+- **With what.** No special powers (none of the gated capabilities
+  [Capabilities](/docs/architecture/authority) describes). The environment is
+  `PATH` alone,
+  plus whatever you pass with `--env`. The working directory is `/` unless
+  you pass `--cwd`, and standard input is empty unless you pass `--stdin`.
+- **For how long.** With `--timeout`, the command's process group gets
+  `SIGTERM`, then `SIGKILL` two seconds later, and `just remote` exits with
+  status 124. Otherwise the exit status is the command's, or 128 plus the
+  signal that killed it.
+
+Files move as whole, checked copies. A push writes into a temporary file
+beside the target and renames it into place, so a reader sees the old file
+or the complete new one, and both ends compare the SHA-256 of what was sent
+with what was written. Paths on the SlopOS side must be absolute, and files
+are written as the same person commands run as.
+
+### What the agent may ask privd for
+
+Installing a kernel or a base needs more than a person holds. When the
+program you run is one privd's policy names as a mechanism (such as
+`bootctl`, `halt`, `extctl` or `cpufreq`) or the shell, `remoted` hands it a
+connection to privd that it opened itself. privd sees `/bin/remoted`
+from a base that carries a pairing, which its policy calls the *paired* agent,
+and runs these actions without asking anyone:
+
+| Area | Actions |
+|------|---------|
+| Restarting and powering off | `org.slopos.power.reboot`, `org.slopos.power.poweroff` |
+| Kernels in the boot slots | `org.slopos.boot.*`: status, install, clone, one-shot boot, set the default, commit, spare, reboot |
+| Bases | `org.slopos.base.install`, `org.slopos.base.rollback` |
+| Extensions | `org.slopos.extension.*`: install, signed install, trust a key, manage, configuration |
+| Software in `/usr/local` | `org.slopos.software.install` |
+| Diagnostics and settings | `org.slopos.cpufreq.set`, `org.slopos.kconsole`, `org.slopos.prof`, `org.slopos.console.keymap` |
+
+Everything else privd refuses to the agent, and it never puts a question on
+the computer's screen on the agent's behalf. A program the agent runs that
+isn't a mechanism gets no privd connection, so it can't pass one on to
+something from outside the base.
+[Privileged actions](/docs/architecture/privd) explains principals and
+levels, and [privd actions](/docs/abi/privd-actions) lists every action.
+
+## Pairing a computer
+
+You pair a computer by booting it on a base built for your broker. There are
+two ways to get one there.
+
+### A computer that already runs SlopOS
+
+On your Linux machine, start the broker:
+
+```sh
+just remote-serve
+```
+
+The first run makes the broker's certificate authority, its certificate and a
+token in `~/.config/slopos-remote`. The recipe then builds the release kernel
+and a base paired with your broker (`builddir/initramfs-remote.cpio`) that
+dials your machine's LAN address on port 7330 (`REMOTE_HOST` and
+`REMOTE_PORT` change them), starts the broker on that port, and offers the
+two files for download. It prints
+what to type on the SlopOS computer, with each file's SHA-256 filled in:
+
+```text
+remote: on the SlopOS machine, boot the offered system, whose base dials 192.168.1.10:7330, from the spare slot:
+    mkdir -p /var/tmp
+    curl -fsS -o /var/tmp/kernel http://192.168.1.10:7330/files/kernel
+    curl -fsS -o /var/tmp/base http://192.168.1.10:7330/files/base
+    bootctl base install /var/tmp/base <sha256 of the base>
+    slot=$(bootctl spare)
+    bootctl install $slot /var/tmp/kernel <sha256 of the kernel>
+    bootctl oneshot slopos-$slot
+    bootctl reboot
+remote: init starts remoted there; once `just remote status` shows it, keep the slot with:
+    just remote run -- bootctl commit
+```
+
+The downloads travel over plain HTTP, which is why each `bootctl` command
+names the file's SHA-256: it installs only those bytes. Type the commands in
+a terminal on the SlopOS computer; the two installs ask you to allow them.
+Once the computer runs the paired base, init starts `remoted`. If `ufw` is
+active on your Linux machine, the broker also prints the rule that opens the
+port to your local network.
+
+### A computer you install from a paired medium
+
+```sh
+REMOTE=1 just iso
+```
+
+packs the paired base into the live ISO instead of the plain one. The live
+system, and every system you install from it, dials your broker from its
+first boot, so there is nothing to type on the computer.
+[Installing SlopOS](/docs/self-hosting/installing) covers the install itself.
+
+That ISO carries your broker's token. Use it only for your own computers.
+
+### Staying paired
+
+A computer stays paired across updates because the bases you install carry
+the pairing: `just remote-install` builds them that way, and
+`scripts/selfhost.sh`, building on the computer itself, copies the running
+base's pairing into the base it builds. `remote.py` refuses to serve or
+install a base paired with another broker, or with none, because the computer
+would boot unreachable.
+
+## Everyday commands
+
+With the broker running (`just remote-serve`, in a terminal of its own), the
+`just remote` subcommands reach the newest connected agent:
+
+| Command | What it does |
+|---------|--------------|
+| `just remote status` | The connected agents: boot id, address, uptime, idle and busy connections, kernel version and build tags |
+| `just remote wait --tag T` | Wait until an agent whose kernel carries build tag `T` connects |
+| `just remote run -- ARGV...` | Run a program; `--cwd`, `--env NAME=VALUE`, `--stdin` and `--timeout S` as described above |
+| `just remote sh 'CMDLINE'` | Run a command line through the SlopOS shell |
+| `just remote push LOCAL REMOTE` | Copy a file to an absolute path on the computer |
+| `just remote pull REMOTE LOCAL` | Copy a file off the computer |
+| `just remote klog [--follow]` | Print the kernel log (`/dev/kmsg`); `--follow` keeps printing new lines |
+
+`just remote status` prints something like:
+
+```text
+boot 6c1f0e2a9d4b47f3a8e5c0b1d2e3f405  peer 192.168.1.42  up 12m03s  conns 1 idle/0 busy
+  SlopOS 0.1.0 release remote-20261029T101500Z  (kernel tag remote-20261029T101500Z, base tag remote-20261029T101500Z)
+```
+
+Each start of `remoted` picks a random *boot id*, and a command goes to the
+newest one unless you name another with `scripts/remote.py --boot ID`. The
+build tags are the `SLOPOS_BUILD_TAG` a kernel and a base were built with,
+which is how the tools recognise a build once it runs.
+
+The diagnostic commands work too: `just remote run -- kconsole t` prints the
+kernel's task table, and `cpufreq` and `prof` measure a running system
+([Diagnostics](/docs/development/diagnostics)).
+
+### Installing a new build
+
+```sh
+just remote-install
+```
+
+builds and installs your current tree on the paired computer:
+
+1. It picks a fresh build tag, `remote-<UTC date and time>`, and builds a
+   paired base under it.
+2. It builds the release kernel without a tag and compares it with the kernel
+   it last installed under the running kernel's tag. Only a kernel that
+   changed is built again, under the new tag.
+3. It pushes the base and installs it with `bootctl base install`. When the
+   running kernel serves the new base, the computer switches to it at once,
+   and the recipe waits for `remoted` to report the new base's tag:
+   `remote: the base runs now, without a reboot`.
+4. A changed kernel is pushed into the slot that isn't the default, armed for
+   one boot, and booted. The recipe waits for the computer to come back with
+   the new tag. If it comes back with another, the new kernel didn't boot
+   (the machine fell back to its default), and nothing is committed.
+5. With `just remote-install --commit`, the kernel that came back becomes the
+   default. Without it, the next restart returns to the old kernel, and
+   `just remote run -- bootctl commit` keeps the new one later.
+
+`scripts/remote.py install` does steps 3 to 5 for files you built yourself
+(`--base`, `--kernel` with `--tag`, `--commit`), and
+`--extension` installs an extension image `just extension` packed
+([Package an extension](/docs/development/packaging-an-extension)).
+[Updating SlopOS](/docs/self-hosting/updating) explains what `bootctl` checks
+before it writes anything.
+
+## What it means in practice
+
+- **The broker's state is a key.** Anyone with `~/.config/slopos-remote` can
+  run the broker your computers trust, and with it every action in the table
+  above. The directory is created readable by you alone; keep it that way and
+  out of backups you share.
+- **The token is not a secret on the computer.** It sits in the base, which
+  every program can read, so a program on the computer could pose as the
+  agent to your broker and receive what you send it: commands, file contents.
+  It gains nothing on the computer by that, but don't push secrets to a
+  computer you don't trust.
+- **Installs touch only SlopOS's own boot partition.** Kernels and bases go
+  in through `bootctl`, which writes the boot partition and the boot loader's
+  variables, never the EFI system partition or another system's partitions.
+  Commit a kernel only once it has come back with the expected tag, which
+  `remote-install` does for you.
+- **A new pairing ends the old agent's work.** When a base switch changes the
+  pairing, init ends everything the old `remoted` started (`SIGTERM` and
+  `SIGCONT`, then `SIGKILL` five seconds later) before starting the new one. A
+  switch that only changes the `remoted` program lets it finish what it is
+  serving first.
+
+## How we know it works
+
+`just test-remote` builds a disk shaped like an installed computer, whose base
+is paired with a broker on the host, and drives it under QEMU through
+`scripts/remote.py`. It checks the agent's identity and build tags; commands'
+output, exit codes, working directory, environment, standard input, a
+timeout and two commands at once; an 8 MiB file pushed and pulled back
+byte for byte; the kernel log; that the base's pairing can't be rewritten and
+that a pairing planted under `/etc/remote` for a second broker is never
+dialled; a second agent on the same computer; a base installed and running at
+once (`BASE: generation 2 is the base` in the kernel log); a kernel put into
+the spare slot, booted and committed with that base kept; and that
+`/bin/halt` ends QEMU. The wire format's encoding is tested on the host under
+`just test-host`.
+
+## For contributors
+
+The broker listens on one port for two kinds of client. A connection whose
+first byte starts a TLS handshake is an agent; anything else is answered as
+plain HTTP, which serves only `GET /files/<name>` for the files `serve
+--offer` names. The broker refuses an agent whose hello names another
+protocol version or a wrong token, and logs why at most once a minute per
+address.
+
+Frames are a 5-byte header (kind and a big-endian length) and at most 1 MiB
+of payload, with data in chunks of at most 64 KiB; the hello names the
+protocol, the token, the kernel version and tag, the base's tag, the boot id,
+uptime and pid. `remoted` watches for base switches and redials its idle
+connection after one, so the broker hears the new base's tag. On `SIGTERM` it
+closes its idle connection, dials no other, and exits once what it is
+serving has finished.
+
+Two rules keep the pairing meaningful. `remoted` reads where to dial only from
+the base, never from a file a program could write or from its arguments. And
+the privd connection it makes goes only to a mechanism or the shell, which
+hands it on only to mechanisms it starts itself; anything else could pass it,
+and the agent's powers with it, to code from outside the base.
+
+## Further reading
+
+- [*ffx overview*](https://fuchsia.dev/fuchsia-src/development/tools/ffx/overview),
+  Fuchsia. A host tool that drives target devices through a service running
+  on each, the closest relative of `just remote`.
+- [*netconsole*](https://docs.kernel.org/networking/netconsole.html), Linux
+  kernel documentation. Kernel messages sent to another machine over UDP, the
+  minimal form of `just remote klog`.
+- [LAVA](https://docs.lavasoftware.org/lava/) and
+  [KernelCI](https://docs.kernelci.org/). How labs drive whole fleets of real
+  boards through deploy, boot and test jobs.
+- [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446.txt), TLS 1.3. Section
+  4.3.2, the certificate request, is the mutual authentication a client
+  certificate would give; the agent proves itself with a token instead.
+
+## In the source
+
+| Where | What |
+|-------|------|
+| `scripts/remote.py` | The broker, the pairing and the command-line tool |
+| `justfile` (`remote`, `remote-serve`, `remote-install`, `test-remote`) | The recipes on this page |
+| `userland/src/apps/remoted/` | The agent |
+| `remote-core/src/lib.rs` | The wire format, shared by both sides |
+| `tools/initramfs/src/main.rs` | Packing a pairing into a base |
+| `assets/privd/actions` | What the paired agent may ask for |

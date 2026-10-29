@@ -7,7 +7,7 @@ const LAYERS = [
   },
   {
     name: 'Kernel services',
-    detail: 'Scheduler, memory manager, filesystem, network stack, drivers: about two dozen crates.',
+    detail: 'Scheduler, memory manager, filesystems, network stack, drivers: every other crate the kernel links.',
     rule: 'Safe Rust only',
     trusted: false,
   },

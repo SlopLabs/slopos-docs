@@ -114,7 +114,7 @@ longer exists. Signals the old program chose to ignore stay ignored.
 `exec` never gives a process more power than it had. The kernel ignores the
 set-user-ID and set-group-ID bits on files, so a file can't carry ids into a
 process, and every gated capability the process held is dropped: only the few
-*universal* capabilities every program holds survive. A program that wants to
+*universal* capabilities, which any program may hold, survive. A program that wants to
 pass its powers to another program starts it with spawn instead, which hands
 over a chosen subset explicitly. The one exception is init re-executing its
 own program from the base, which keeps everything it held
@@ -122,7 +122,7 @@ own program from the base, which keeps everything it held
 
 When a process's effective ids differ from its real ones, the new program
 starts with `AT_SECURE` set. That is a flag in the startup information the
-kernel gives every program, and it tells the C library and the loader not to
+kernel gives every program (the *auxiliary vector*), and it tells the C library and the loader not to
 trust the environment the caller left: the loader ignores `LD_LIBRARY_PATH`
 and `$ORIGIN` and skips the libraries under `/usr/local/lib` and
 `~/.local/lib`, and `secure_getenv` returns nothing.
@@ -158,9 +158,9 @@ Powers work the same way. The child gets the universal capabilities, plus
 whichever of the caller's own gated capabilities the caller names; naming one
 the caller doesn't hold fails with `EPERM`. The child runs as the caller
 unless the caller asks for user or group ids it doesn't hold itself, other
-supplementary groups or a login tag, all of which take `SetId`. A child that holds a
-gated capability, or runs with ids other than its spawner's real ones, starts
-with `AT_SECURE` set. This is how init starts each service with exactly what
+supplementary groups or a login tag, all of which take `SetId`. A child that
+holds a gated capability, or runs with ids other than its spawner's real
+ones, starts with `AT_SECURE` set. This is how init starts each service with exactly what
 its service table names, and how privd starts a program it has been asked to
 run ([Capabilities](/docs/architecture/authority)).
 
@@ -324,7 +324,7 @@ signal anything; privd's task-ending action uses it, which is how the System
 Monitor ends another person's program once an administrator allows it
 ([Privileged actions](/docs/architecture/privd)). And `SIGCONT` to a process
 in the sender's own terminal session needs neither, so a shell can always
-resume a job it stopped.
+resume a job it stopped; Linux makes the same exception to its user-id rule.
 
 Beyond those rules, nothing may signal init, the first program the kernel
 starts, and kernel threads aren't processes and can't be signalled at all.
@@ -475,6 +475,9 @@ last member is reaped the reference upgrades to nothing.
 - [*A fork() in the road*](https://www.microsoft.com/en-us/research/uploads/prod/2019/04/fork-hotos19.pdf)
   by Baumann, Appavoo, Krieger and Roscoe, HotOS 2019. The case against
   `fork` as the way to start programs, and for spawn-style calls instead.
+- [*Adding the pidfd abstraction to the kernel*](https://lwn.net/Articles/801319/),
+  LWN, 2019. Why a reused pid is dangerous and how a process handle fixes it,
+  the problem SlopOS sidesteps by never reusing pids at all.
 - [`credentials(7)`](https://man7.org/linux/man-pages/man7/credentials.7.html).
   Linux's overview of real, effective and saved ids and supplementary groups,
   which SlopOS's credentials follow.

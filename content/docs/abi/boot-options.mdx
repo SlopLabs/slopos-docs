@@ -3,139 +3,230 @@ title: "Boot options"
 description: "Every option the SlopOS kernel reads from its command line, with values, defaults and effects."
 ---
 
-This page lists every option the kernel reads from its command line, grouped by
-what it controls. The parsers are the source of truth: most options are read in
-`boot/src/early_init.rs` and `boot/src/boot_drivers.rs`, the test options in
-`ktesting/src/config.rs`, the diagnostic console in
-`slopos-ostd/src/kconsole/config.rs` and the Intel GPU options in
-`drivers/src/xe_logic/cmdline.rs`.
+This page lists every option the kernel reads from its command line: first the
+three whose names Linux also uses, then the ones only SlopOS has, grouped by
+what they control. The parsers are authoritative: `boot/src/early_init.rs`
+(most options), `boot/src/boot_drivers.rs` (display and input),
+`boot/src/boot_services.rs` (`root=` and `mount=` at boot),
+`ktesting/src/config.rs` (`tests.*`), `slopos-ostd/src/kconsole/config.rs`
+(`kconsole.*`), `cpufreq-core/src/config.rs` (`cpufreq.*`, `sched.hybrid`),
+`usb-core/src/knob.rs` (`usb.*`) and `drivers/src/xe_logic/cmdline.rs`
+(`xe.*`). The command line itself is assembled in
+`boot/src/limine_protocol.rs`.
 
 ## How to pass options
 
 The command line is a list of options separated by spaces. The boot loader
-(Limine) hands it to the kernel, and the build scripts write it into the
-loader configuration when they build an image, so changing it means rebuilding
-the image.
+(Limine) hands it to the kernel from its configuration, which the build
+scripts write when they build an image, so changing it means rebuilding the
+image.
 
 | How you boot | Command line |
 |---|---|
-| `just iso`, `just boot-live`, `just boot-log` (live ISO) | `BOOT_CMDLINE`, default `tests=off root=initramfs`, plus `boot.debug=on` when `DEBUG=1` and `roulette=skip` when `ROULETTE=0` |
-| `just boot`, `just boot-fast`, `just boot-debug` (development disk) | `tests=off`, plus the same `DEBUG` and `ROULETTE` additions |
-| `just test` and the other test recipes | `tests=on tests.shutdown=on tests.verbosity=summary boot.debug=on roulette=skip mount=LABEL=slopos-media:/media`, plus the `tests.*` options the runner adds from its flags (see [Test output format](/docs/abi/ktap-test-output#host-runner)) |
-| Any `just` recipe that builds a test image | `TEST_CMDLINE` replaces the test command line; `TEST_CMDLINE_EXTRA` appends to the self-hosting recipes' command line |
+| `just iso`, `just boot-live`, `just boot-log` (live ISO) | `BOOT_CMDLINE`, default `tests=off root=initramfs`, plus `boot.debug=on` with `DEBUG=1` and `roulette=skip` with `ROULETTE=0` |
+| `just boot`, `just boot-fast`, `just boot-debug` (development boot disk) | `tests=off`, plus the same `DEBUG` and `ROULETTE` additions; each slot's entry adds `slot=<name>`, which the kernel does not read |
+| `just test` and its variants | The justfile's `test_cmdline`: `tests=on tests.shutdown=on tests.verbosity=summary boot.debug=on roulette=skip root=auto mount=LABEL=slopos-media:/media`, plus the `tests.*` options the runner adds from its flags (see [Test output format](/docs/abi/ktap-test-output#host-runner)). `just test-userland-only` takes `TEST_CMDLINE` from the environment in its place |
+| `just test-persist`, `test-rude-exit`, `test-capacity`, `test-install` | `test_cmdline` and a `tests.run=` naming their tests; `test-install`'s slots boot with `root=PARTUUID=` of the disk's root partition in place of `root=auto` |
+| `just test-toolchain`, `test-selfhost`, `bench-selfhost`, `test-install-guest` | `test_cmdline` with `boot.debug=off`, plus `watchdog.miss_threshold=300` and a `tests.run=` naming their tests. All but `test-install-guest` append `TEST_CMDLINE_EXTRA`; `bench-selfhost` also adds `prof=on` unless `BENCH_PROF` is set |
+| An installed system | `root=PARTUUID=<root partition> panic=reboot`, where `installer --cmdline <words>` replaces `panic=reboot` |
 
 ```sh
 BOOT_CMDLINE='tests=off root=initramfs lockdep=warn' just boot-live
-TEST_CMDLINE='tests=on tests.shutdown=on tests.run=*ext2*' just test-raw
+just test 'slopos_mm::*'    # tests=on ... tests.run=slopos_mm::*
 ```
 
-Rules that apply to every option:
+### Built-in command line
+
+A kernel built with `SLOPOS_BUILTIN_CMDLINE` set carries that text and
+appends it to the loader's command line, so an option read by its last
+occurrence takes the built-in value. This is how a kernel installed into a
+slot whose loader entry is fixed still boots with an experiment's options:
+
+```sh
+SLOPOS_BUILTIN_CMDLINE='cpufreq=firmware prof=on' just remote-install
+```
+
+The boot log says `BOOT: built-in command line appended: <text>`. The two lines
+together must fit in 1024 bytes; when they do not, the kernel uses the
+loader's alone and logs
+`BOOT: built-in command line dropped: it does not fit beside the loader's`.
+
+## How options are read
 
 - An option the kernel does not know is ignored.
-- A known option with a malformed value is ignored, and the default stays.
-  Most options log a `Boot option: ... ignored` line when that happens.
-- Where an option appears twice, the last one wins, with two exceptions:
-  `mount=` is repeatable, and `boot.debug=on` beats `boot.debug=off`.
-- On/off options accept only the spellings listed in their row. The test
-  options and the diagnostic console also accept `true`/`false`,
-  `yes`/`no`, `enabled`/`disabled` and `1`/`0`.
+- A known option with a value it does not accept is ignored and its default
+  stays. Most such options log a line in the form
+  `Boot option: <key>=<value> ignored (want on or off)`, naming what they
+  accept.
+- On/off options accept exactly `on` and `off`.
+- Where an option appears more than once, the last accepted value wins.
+  The exceptions: `mount=`, `tests.run=` and `tests.skip=` accumulate;
+  `prof=on` and `panic=reboot` take effect wherever they appear;
+  `extensions=off` takes effect wherever it appears, and a later
+  `extensions=on` does not undo it.
+- `video=framebuffer`, `roulette=skip`, `tp.off`, `tp.poll`, `tp.debug`,
+  `platform.debug` and the `panic.*_smoke=on` options are matched as text
+  anywhere in the line, and the userland test mode is set by any `tests=on`.
+
+## Names Linux also uses
+
+Three options share a name with a Linux kernel parameter. Each entry says how
+it differs from Linux's.
+
+### `root=`
+
+- **Values:** `auto`, `initramfs`, `disk`, or a device.
+- **Default:** `auto`.
+- **Effect:** chooses what `/` is.
+  - `auto` mounts the first disk that is not a USB disk (`nvme0n1` under
+    QEMU) at `/` if it mounts writable. If there is no such disk, or it
+    mounts read-only, `/` is the initramfs (the base archive unpacked into
+    memory), and a disk that mounted read-only is shown at `/mnt`.
+  - `initramfs` uses the initramfs and attaches no root disk. It still
+    mounts what a `mount=` names and an install medium's payload.
+  - `disk` requires the disk as `/`, read-only or not, and fails the boot
+    without one.
+  - A device is named in any spelling `mount(2)` accepts: a node name
+    (`nvme0n1p2`), its `/dev/` path, `PARTUUID=`, `UUID=` (both
+    case-insensitive), `LABEL=`, or a path under `/dev/disk/by-id/`,
+    `by-label/`, `by-partuuid/` or `by-uuid/`. A partition comes from the GPT
+    or MBR table on its disk. A named device that is absent is waited for
+    until USB settles (at most `usb.settle_ms`). If it is still absent, the
+    boot logs `FS: root=<device> names no usable block device (...)` and
+    uses the initramfs, as it does when the device holds no volume the
+    kernel can mount.
+- **Differs from Linux:** Linux's `root=` takes a block device (`/dev/<name>`,
+  `PARTUUID=`, `PARTLABEL=` or a hexadecimal device number) or `ram`, `nfs`,
+  `cifs`, `mtd` or `ubi`, and leaves a filesystem's `UUID=` or `LABEL=` to an
+  initramfs. SlopOS resolves `UUID=`, `LABEL=` and the `/dev/disk/by-*` paths
+  itself, has the three modes above, and takes neither `PARTLABEL=` nor a
+  device number. Instead of Linux's `rootwait` and `rootdelay=`, an absent
+  device is waited for as above.
+
+[Disks](/docs/architecture/storage) and [Filesystem](/docs/architecture/filesystem)
+explain how the root is chosen and mounted.
+
+### `panic=`
+
+- **Values:** `reboot`.
+- **Default:** halt.
+- **Effect:** a kernel panic resets the machine (through ACPI, then port
+  `0xCF9`, then the keyboard controller) instead of halting it. The crash
+  record is written first. On bare metal the panic screen stays up for ten
+  seconds before the reset; under a hypervisor the reset is immediate. The
+  format-free abort a lockup takes resets by a triple fault. An installed
+  system boots with this, so that a slot whose kernel panics falls back to
+  the loader's default entry.
+- **Differs from Linux:** Linux's `panic=<timeout>` takes a number of seconds
+  (`0` waits forever, a negative value reboots at once). SlopOS reads only
+  `panic=reboot`; a number is ignored without a log line.
+
+### `video=`
+
+- **Values:** `framebuffer`.
+- **Default:** a GPU driver takes the display when it binds.
+- **Effect:** ranks the firmware framebuffer above every GPU driver, so it
+  stays the display.
+- **Differs from Linux:** Linux's `video=` configures a framebuffer driver's
+  mode. SlopOS reads only `video=framebuffer`, which Linux does not define.
 
 ## Root filesystem and mounts
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `root=` | `auto`, `initramfs`, `disk`, or a device | `auto` | Chooses what `/` is. `auto` uses the first disk if it mounts writable, and otherwise the initramfs (the in-memory filesystem shipped with the kernel). `initramfs` uses the initramfs and attaches no root disk, so a live boot never touches the machine's disks. `disk` requires the disk as root. A device is named in any spelling `mount(2)` accepts: `nvme0n1p2`, `/dev/vda`, `PARTUUID=...`, `UUID=...`, `LABEL=...`; if that device is absent, the boot falls back to the initramfs and logs it. |
-| `mount=` | `SOURCE:/PATH`, repeatable | none | After the root is up, mounts the ext2/3/4 volume `SOURCE` at `/PATH`, in command-line order, so a later entry may mount inside an earlier one. `SOURCE` takes the same spellings as `root=`. A failure logs one `MOUNT:` line and the boot continues. |
-| `verity=require` | `require` | off | The root disk must mount with a verity trailer (integrity data), or the `fs init` boot step fails. A boot with no disk at all still passes. |
+| `mount=` | `<source>:/<path>`, repeatable | none | Once the root is up, mounts the ext2/3/4 volume `<source>` at `/<path>`, read-write, in command-line order, so a later entry may mount inside an earlier one. The value splits at its first `:/`, so a `LABEL=` may hold a colon. `<source>` takes every spelling `root=` takes; an absent one is waited for as for `root=`. Each logs `MOUNT: <source> at <path> (ext4, read-write)` (or `read-only`); a failure logs `MOUNT: mount=<value> failed (...); continuing` and the boot goes on |
+| `verity=` | `require` | off | The root disk must mount with a verity trailer (a hash tree that attests its blocks), or the `fs init` boot step fails. A boot with no disk at all still passes |
 
-[Disks](/docs/architecture/storage) and [Filesystem](/docs/architecture/filesystem)
-explain how the root is chosen and mounted.
-
-## Display and input
+## Boot and userland
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `video=framebuffer` | flag | off | Keeps the firmware framebuffer as the display and stops any GPU driver from taking it over. |
-| `serial_mirror=off` | flag | mirroring on | Stops copying the text console's output to the serial port. |
-| `i8042.legacy` | flag | off | Brings up the PS/2 keyboard and mouse controller at fixed addresses during boot, instead of through the ACPI device list. |
-| `tp.off` | flag | off | Skips the Intel LPSS I²C controllers and the I²C-HID touchpad behind them. |
-| `tp.poll` | flag | off | Drives the touchpad by polling instead of interrupts. |
-| `tp.debug` | flag | off | Verbose touchpad bring-up logging, and a periodic check for sleeping tasks that missed their wake-up. |
-| `platform.debug` | flag | off | Verbose logging while the kernel searches the ACPI tables for platform devices (the PS/2 controller, the touchpad). |
+| `roulette=skip` | `skip` | spin | init does not run `/bin/roulette`, the Wheel of Fate, at startup |
+| `extensions=` | `on`, `off` | `on` | `off` activates no extension this boot: init does not run `extctl activate-all`, `ext_activate` answers `EPERM`, and `sys_info` reports `BOOT_FLAG_EXTENSIONS_OFF`. See [Extensions](/docs/architecture/extensions) |
+
+## Hardware
+
+| Option | Values | Default | Effect |
+|---|---|---|---|
+| `usb=` | `on`, `off`, `report` | `on` | `on` takes every xHCI controller the kernel can drive from the firmware and runs it. `off` binds none and touches nothing. `report` logs each controller's capabilities, protocols and ports and leaves it to the firmware. Any other value logs `USB: usb=<value> names no mode; ignored`. See [USB](/docs/architecture/usb) |
+| `usb.settle_ms=` | milliseconds | `5000` | How long a USB disk's LUN may stay not ready at probe, and how long the boot waits for USB to settle when the device `root=` or a `mount=` names is absent, or before an install medium looks for its payload |
+| `serial_mirror=off` | `off` | mirroring on | Stops copying the text console's output to the serial port |
+| `tp.off` | flag | off | Skips the Intel LPSS I²C controllers and the I²C-HID touchpad behind them |
+| `tp.poll` | flag | off | Drives the touchpad by polling instead of interrupts |
+| `tp.debug` | flag | off | Verbose touchpad bring-up logging, and a periodic check for sleeping tasks that missed their wake-up |
+| `platform.debug` | flag | off | Verbose logging while the kernel searches the ACPI tables for platform devices (the PS/2 controller, the touchpad) |
 
 ### Intel GPU (`xe`)
 
-These are recovery and expert overrides for the Intel Xe display driver. Without
-them the driver takes over the display when it binds.
+Recovery and expert overrides for the Intel Xe display driver. A value it
+does not accept is ignored without a log line.
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `xe.modeset=` | `on`, `off` | `on` | `off` leaves the firmware framebuffer in place and touches no display register. |
-| `xe.diag=` | `on`, `off` | `off` | Logs decoded display registers (`XE-DIAG:` lines) while probing. |
-| `xe.nocursor=` | `on`, `off` | `off` | Skips the hardware cursor plane; the compositor draws the cursor itself. |
-| `xe.pipe=` | `A`, `B`, `C` (either case) | detected | Forces which display pipe is treated as the active one. |
-| `xe.wdog_ms=` | decimal milliseconds | `100` | How long the driver checks that the display is still scanning after switching it over, before it rolls back to the firmware framebuffer. |
-| `xe.force_did=` | hex with `0x` prefix | the device's own ID | Treats the GPU as this PCI device ID, for hardware not yet in the driver's table. |
+| `xe.modeset=` | `on`, `off` | `on` | `off` leaves the firmware framebuffer in place and touches no display register |
+| `xe.diag=` | `on`, `off` | `off` | Logs decoded display registers (`XE-DIAG:` lines) while probing |
+| `xe.nocursor=` | `on`, `off` | `off` | Skips the hardware cursor plane; the compositor draws the cursor itself |
+| `xe.pipe=` | `A`, `B`, `C` (either case) | detected | Forces which display pipe is treated as the active one |
+| `xe.wdog_ms=` | decimal milliseconds | `100` | How long the driver checks that the display is still scanning after switching it over, before it rolls back to the firmware framebuffer. Never less than 20 |
+| `xe.force_did=` | hexadecimal with `0x` | the device's own ID | Treats the GPU as this PCI device ID, for hardware not yet in the driver's table |
+
+## CPU and scheduling
+
+| Option | Values | Default | Effect |
+|---|---|---|---|
+| `cpufreq=` | `hwp`, `firmware` | `hwp` | `hwp` enables HWP (hardware-managed P-states) on every CPU that has it and asks for autonomous selection between the CPU's lowest and highest level. `firmware` writes no frequency register. A CPU without HWP keeps the firmware's settings either way. See [CPU frequency](/docs/architecture/cpu-frequency) |
+| `cpufreq.epp=` | `performance`, `balance_performance`, `balance_power`, `power`, or `0` to `255` (decimal, or hexadecimal with `0x`) | `balance_performance` (128) | The energy-performance preference HWP is given. The names are 0, 128, 192 and 255 |
+| `sched.hybrid=` | `on`, `off` | `on` | `on` places a waking or new task on the best idle CPU by class on a machine whose CPUs differ: a P-core with nothing on it, then an E-core, then a busy core's sibling thread. `off` treats every idle CPU alike |
+| `sched.ap_pause_ms=` | milliseconds | `12` | How long the kernel waits for the other CPUs to pause when it needs all of them stopped. `0` removes the time limit and falls back to a fixed number of attempts. The default is measured (`AP_PAUSE_BUDGET_NS_DEFAULT` in `sched/src/per_cpu.rs`) |
+
+## Memory and resource limits
+
+| Option | Values | Default | Effect |
+|---|---|---|---|
+| `mem.commit=` | percent | `100` | How much memory, as a percentage of usable physical memory, the kernel may promise to private mappings. Values above `400` are capped at `400`; `0` counts promises but sets no ceiling. See [Memory](/docs/architecture/memory) |
+| `quota=` | `off`, `warn`, `enforce` | `enforce` | What a resource limit does when a program would exceed it. `warn` grants and counts; `off` still counts but never refuses. See [Resource limits](/docs/architecture/resource-accounting) |
 
 ## Logging, diagnostics and profiling
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `boot.debug=` | `on`, `1`, `true` / `off`, `0`, `false` | off | Sets the kernel log level to debug, or back to info. `bootdebug=on` and `bootdebug=off` are older spellings of the same option. |
-| `prof=on` | `on` | off | Samples where CPU time goes (user, kernel, idle, the hottest kernel addresses, the tasks blocked in the kernel) and prints `PROF[...]` lines at the end of a test run. |
-| `kconsole=` | `on`, `off`, or a hex mask | `on` | Which classes of [diagnostic console](/docs/development/diagnostics) commands may run. `on` is informational commands only (mask `0x1`); `0x3` adds the commands that take the machine down (`0x2`); `off` disables the console. |
-| `kconsole.serial=` | on/off | on | Whether a serial BREAK arms the diagnostic console. |
-| `kconsole.arm_ms=` | milliseconds, up to 65535 | `3000` | How long the console waits for a command key after it is armed. |
-| `kconsole.max_lines=` | lines, up to 65535 | `512` | The most lines one command may print. |
-| `kconsole.probe_ms=` | milliseconds, up to 65535 | `250` | How long the all-CPU probe waits for each CPU to answer. |
-| `lockdep=` | `off`, `warn`, `panic` (`on` = `panic`) | `panic` | What the lock-order checker does when it finds two locks taken in an order that could deadlock. `warn` reports each distinct pair once and keeps booting; `off` skips the ordering checks but still tracks which locks each CPU holds. |
-| `watchdog=` | `on`, `off` | `on` | Enables the watchdog that reports a CPU that has stopped making progress. |
-| `watchdog.miss_threshold=` | positive integer | `100` | Consecutive heartbeat samples (one per timer tick) a CPU may miss before it is reported. `0` is refused. |
-| `watchdog.panic=` | `on`, `off` | on bare metal, off under a hypervisor | Whether a long stall panics the kernel: five thresholds long, or one threshold when the stalled CPUs are waiting on each other in a cycle. Under a hypervisor a virtual CPU the host has paused looks the same as a stalled one, which is why the default differs. |
+| `boot.debug=` | `on`, `off` | `off` | Sets the kernel log level to debug (`on`) or info (`off`) |
+| `prof=` | `on` | off | Samples where the time goes: each CPU's user, kernel, idle and halted time, its busy share and effective clock, the hottest kernel addresses, user time by task name, and the kernel stacks blocked user tasks wait on. A test run prints the report as `PROF[post-userland-tests]:` lines; on a running system `/bin/prof` starts, stops and reports the same profiler |
+| `kconsole=` | `on`, `off`, or a hexadecimal mask (`0x` optional) | `on` | Which classes of [diagnostic console](/docs/development/diagnostics) commands may run. `on` is the informational commands only (mask `0x1`); `0x3` adds the commands that take the machine down (`0x2`); `off` disables the console |
+| `kconsole.serial=` | `on`, `off` | `on` | Whether a serial BREAK arms the diagnostic console |
+| `kconsole.arm_ms=` | `0` to `65535` | `3000` | How long, in milliseconds, the console waits for a command key after it is armed |
+| `kconsole.max_lines=` | `0` to `65535` | `512` | The most lines one command may print |
+| `kconsole.probe_ms=` | `0` to `65535` | `250` | How long, in milliseconds, the all-CPU probe waits for each CPU to answer |
+| `lockdep=` | `off`, `warn`, `panic` | `panic` | What the lock-order checker does when it finds two locks taken in an order that could deadlock. `warn` reports each distinct pair once and keeps booting; `off` skips the ordering checks but still tracks which locks each CPU holds |
+| `watchdog=` | `on`, `off` | `on` | Whether the watchdog reports a CPU that has stopped making progress |
+| `watchdog.miss_threshold=` | positive integer | `100` | Consecutive heartbeat samples (one per timer tick, so 100 is a second) a CPU may miss before it is reported. `0` is refused |
+| `watchdog.panic=` | `on`, `off` | `on` on bare metal, `off` under a hypervisor | Whether a long stall panics the kernel: one five thresholds long, or one threshold long when the stalled CPUs wait on each other in a cycle. A hypervisor can pause a virtual CPU, which looks the same as a stalled one, which is why the default differs |
 
-## Panics and recovery
+## Panics
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `panic=reboot` | `reboot` | halt | A kernel panic resets the machine instead of halting it. An installed system uses this so that a boot slot that panics falls back to the loader's default entry. |
-| `panic.on_oops=` | `on`, `1`, `true` | off | Makes every kernel panic fatal, turning off recovery of panics in task context. |
-| `panic.oops_limit=` | integer | `100` | How many panics the kernel may recover from in one boot; the panic that crosses the limit is fatal. `0` removes the limit. |
-| `panic.boot=on` | `on` | off | Panics as soon as boot initialisation finishes. `just test-install` uses it to build a broken slot to roll back from. |
-| `panic.recover_smoke=` | `on`, `1`, `true` | off | Runs the panic recovery smoke tasks after boot and enables the `test_panic` system call, which otherwise returns `ENOSYS`. |
-| `panic.post_boot_unwind=on` | `on` | off | Raises a deliberate panic after boot that unwinds; halts the machine. |
-| `panic.fatal_smoke=on` | `on` | off | Raises a deliberate fatal panic from deep in the call stack; halts the machine. |
-| `panic.nested_drop_smoke=on` | `on` | off | Raises a panic from a destructor during a recoverable unwind; halts the machine. |
+| `panic.boot=` | `on`, `abort` | off | `on` panics as soon as boot initialisation finishes; `abort` takes the format-free abort a lockup takes instead. `just test-install` builds the broken slots it rolls back from with these |
+| `panic.on_oops=` | `on`, `off` | `off` | `on` makes every kernel panic fatal, turning off the recovery of panics in task context |
+| `panic.oops_limit=` | integer | `100` | How many panics the kernel may recover from in one boot; the panic that crosses the limit is fatal. `0` removes the limit |
+| `panic.recover_smoke=` | `on`, `off` | `off` | Runs the panic-recovery smoke tasks after boot and enables the `test_panic` system call, which otherwise answers `ENOSYS` |
+| `panic.post_boot_unwind=on` | `on` | off | Raises a deliberate panic after boot that unwinds; halts the machine |
+| `panic.fatal_smoke=on` | `on` | off | Raises a deliberate fatal panic from deep in the call stack; halts the machine |
+| `panic.nested_drop_smoke=on` | `on` | off | Raises a panic from a destructor during a recoverable unwind; halts the machine |
 
 The last three check that a panic prints one clean `=== KERNEL PANIC ===`
 report. `just test` never sets them.
-
-## Security and resource limits
-
-| Option | Values | Default | Effect |
-|---|---|---|---|
-| `authority=` | `off`, `warn`, `enforce` (`on` = `enforce`) | `enforce` | What a capability check does when a program lacks the capability. `warn` reports each missing capability once and allows the call; `off` skips the checks. See [Permissions](/docs/architecture/authority). |
-| `quota=` | `off`, `warn`, `enforce` (`on` = `enforce`) | `enforce` | What a resource limit does when a program would exceed it. `warn` grants and counts; `off` still counts but never refuses. See [Resource limits](/docs/architecture/resource-accounting). |
-| `mem.commit=` | percent | `100` | How much memory, as a percentage of usable physical memory, the kernel may promise to private mappings. Values above `400` are capped at `400`; `0` counts but sets no ceiling. See [Memory](/docs/architecture/memory). |
-
-## Scheduling
-
-| Option | Values | Default | Effect |
-|---|---|---|---|
-| `sched.ap_pause_ms=` | milliseconds | measured default | How long the kernel waits for the other CPUs to pause when it needs all of them stopped. `0` removes the time limit and falls back to a fixed number of attempts. |
 
 ## Tests
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `tests=` | on/off | off | Runs the test harness. Any value that is not an on/off spelling also turns it on; `tests=off` also clears `tests.shutdown`. Write `tests=on` exactly: only that spelling also puts userland into test mode (init runs the userland tests and the Wheel of Fate cannot reboot the machine). |
-| `tests.run=` | globs separated by commas | all tests | Runs only tests whose `module::name` matches one of the globs. |
-| `tests.skip=` | globs separated by commas | none | Skips matching tests. |
-| `tests.suite=` | name | none | Shorthand for `tests.run=*NAME*`; also turns the harness on. |
-| `tests.verbosity=` | `quiet`, `summary`, `verbose` | `summary` | `quiet` prints only failures; `verbose` adds the captured log of passing tests. Any other value means `summary`. |
-| `tests.warn_ms=` | milliseconds, optional `ms` suffix | `0` (off) | Marks passing tests slower than this as `OVER_TIME`. `tests.timeout=` is another name for it. |
-| `tests.shutdown=` | on/off | off | Exits QEMU through its `isa-debug-exit` device when the tests finish. |
-| `tests.stacktrace_demo=` | on/off | off | Parsed but currently has no effect. |
-| `roulette=skip` | `skip` | spin | Skips the Wheel of Fate at startup. |
+| `tests=` | `on`, `off` | `off` | Runs the kernel test harness. `off` also clears `tests.shutdown`. Any `tests=on` also puts userland in test mode: init runs the userland tests in a copy of itself, `test_key` answers, and the Wheel of Fate cannot restart the machine |
+| `tests.run=` | globs separated by commas | all tests | Runs only tests whose `module::name` matches one of the globs. A test registered as explicit runs only when a glob is its full name |
+| `tests.skip=` | globs separated by commas | none | Skips matching tests |
+| `tests.verbosity=` | `quiet`, `summary`, `verbose` (any case) | `summary` | `quiet` prints only failures; `verbose` adds the captured log of passing tests. Any other value means `summary` |
+| `tests.warn_ms=` | milliseconds, optional `ms` suffix | `0` (off) | Marks passing tests slower than this as `OVER_TIME` |
+| `tests.shutdown=` | `on`, `off` | `off` | Exits QEMU through its `isa-debug-exit` device when the tests finish |
 
 The output these options control is described in
 [Test output format](/docs/abi/ktap-test-output).
@@ -144,10 +235,17 @@ The output these options control is described in
 
 | Where | What |
 |---|---|
-| `boot/src/early_init.rs` | Root, panic, logging, lockdep, authority, quota, watchdog, scheduling, memory and test-mode options |
-| `boot/src/boot_drivers.rs` | Display and input options |
-| `boot/src/boot_services.rs` | `mount=` and what `root=` does at boot |
-| `ktesting/src/config.rs` | `tests.*` |
-| `slopos-ostd/src/kconsole/config.rs` | `kconsole.*` |
+| `boot/src/early_init.rs` | `root=`, `verity=`, the panic, logging, lockdep, quota, watchdog, scheduling, memory, `prof=`, `extensions=` and test-mode options |
+| `boot/src/limine_protocol.rs` | The loader's command line and the built-in one |
+| `boot/src/boot_drivers.rs` | `video=`, `serial_mirror=`, `tp.*`, `platform.debug` |
+| `boot/src/boot_services.rs` | What `root=` and `mount=` do at boot |
+| `cpufreq-core/src/config.rs` | `cpufreq=`, `cpufreq.epp=`, `sched.hybrid=` |
+| `usb-core/src/knob.rs` | `usb=`, `usb.settle_ms=` |
+| `ktesting/src/config.rs` | `tests=` and `tests.*` |
+| `slopos-ostd/src/kconsole/config.rs` | `kconsole=` and `kconsole.*` |
 | `drivers/src/xe_logic/cmdline.rs` | `xe.*` |
 | `justfile` (`boot_cmdline`, `test_cmdline`) | What the `just` recipes pass |
+| `installer-core/src/choices.rs` (`DEFAULT_CMDLINE`) | What an installed system passes |
+
+Linux's own list is
+[*The kernel's command-line parameters*](https://docs.kernel.org/admin-guide/kernel-parameters.html).

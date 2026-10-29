@@ -114,8 +114,8 @@ What drivers can't rely on:
 - **No protection from a misbehaving device.** DMA addresses are physical
   addresses; SlopOS doesn't program an IOMMU (the hardware that would limit
   which memory a device can reach), so a buggy or hostile PCI device could
-  write anywhere. A USB device can't: it reaches memory only through the
-  controller, which the kernel tells what to read and write.
+  write anywhere. A USB device has no such reach: it sends and receives only
+  through the controller, into buffers the kernel gave it.
 - **No unbinding of built-in devices.** A PCI or ACPI driver keeps its device
   until shutdown.
 
@@ -150,8 +150,9 @@ version is declined and named in the log.
 All the virtio drivers use the current virtio standard and need
 message-based interrupts (MSI or MSI-X). A virtio disk or network card
 without them stops the boot; a virtio GPU without them is left alone, and the
-screen stays on the framebuffer the firmware set up. The xHCI and RTL8168
-drivers decline such a device instead, and leave it to the firmware.
+screen stays on the framebuffer the firmware set up. The xHCI driver checks
+before it touches a controller, and leaves one without them to the
+firmware.
 
 When more than one display driver could own the screen, a priority decides:
 a graphics driver outranks the plain framebuffer the firmware leaves behind.
@@ -191,9 +192,9 @@ state*:
   toggle a lock. The i8042 repeats by itself; a USB keyboard doesn't, so the
   kernel repeats its last key after 500 ms, about 30 times a second.
 - **A few keys belong to the machine.** Alt+PrintScreen arms the
-  [diagnostic console](/docs/development/diagnostics), Esc shows the boot log
-  while the boot splash is up, and Shift+PageUp and Shift+PageDown scroll the
-  console. A USB keyboard counts as the physical console as much as the
+  [diagnostic console](/docs/development/diagnostics), Esc shows or hides the
+  kernel log during boot, and Shift+PageUp and Shift+PageDown scroll the
+  console's history. A USB keyboard counts as the physical console as much as the
   built-in one does.
 - **A keyboard that leaves releases what it held.** Every key it held goes
   up as it is unplugged.
@@ -248,10 +249,12 @@ keeps the current list.
 The matching step is tested with fake drivers on PCI and ACPI: priorities,
 declining, deferring, and a probe that fails after acquiring resources and
 must release them. The keyboard state, the cursor and the i8042's decoding
-have kernel tests of their own. Register logic that can be separated from the
-hardware lives in crates tested on the host with simulated devices: the Xe
-driver's logic, the NVMe and RTL8168 bring-up sequences, the whole of the USB
-controller and device protocols, and HID report parsing. The device drivers
+have kernel tests of their own. The Xe driver's register logic is a separate
+module tested without the hardware, and what can be separated from the other
+drivers lives in crates tested on the host: NVMe's command and identify
+layouts, the RTL8168's bring-up against a simulated chip, the USB controller
+and device protocols against a simulated controller, and HID report parsing.
+The device drivers
 themselves run in every test boot under QEMU, `just test-usb` plugs and
 unplugs USB devices under a running kernel, and the laptop drivers are
 checked by booting the laptop.
@@ -277,9 +280,10 @@ checked by booting the laptop.
   handle, so they are recorded for release. DMA goes through the registered
   mapper, which is the identity mapper today.
 - **Drop order.** In a claim slot the binding is declared before the bag so
-  it drops first. USB unbinding is built on that: `ClaimTable::release`, which
-  only the USB bus calls, runs the driver's removal and then drops the
-  binding before its resources.
+  it drops first. USB unbinding is built on that: it takes the slot out with
+  `ClaimTable::release`, which only the USB bus calls, runs the driver's
+  removal, and drops the binding before its resources once the controller
+  has let go of the device.
 - **Shutdown hooks.** A `DeviceShutdown` registered with
   `driver_core::shutdown::register` runs after the filesystem flush and after
   the kernel I/O threads have stopped, so it polls. Hooks run newest first,
@@ -296,7 +300,8 @@ checked by booting the laptop.
   the keyboard, which its own interrupt carries forward: each acknowledgement
   sends the next byte, and a byte that is refused or left unanswered for
   250 ms is sent again, twice at most. Nothing masks its interrupt line or
-  polls its data port after boot, which is what lost key presses before.
+  polls its data port after boot: masking the line to poll for the answer
+  lost interrupts and could wedge the controller.
 - **ACPI.** `slopos-acpi` parses tables without allocating. The AML
   evaluator walks only the parts of the namespace SlopOS needs; it is not a
   general interpreter.

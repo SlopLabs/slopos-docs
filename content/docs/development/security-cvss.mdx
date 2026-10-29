@@ -13,12 +13,18 @@ history as examples.
 ## What counts as a finding
 
 A finding is a defect that an attacker can trigger. For SlopOS, the usual
-attacker is any program running on the machine: SlopOS has no user accounts
-yet, so every program that can run code counts as an unprivileged local
-attacker. A finding is something such a program can use to get more than it
-should: read or change memory or files that aren't its own, act with a
-permission it wasn't given, or take the machine (or part of it) away from
-everyone else.
+attacker is any code a person's session runs. The session runs as that
+person's uid, and a program it starts holds only the capabilities every
+program holds, whatever its path, so anything the session runs counts as an
+unprivileged local attacker. A second person on the same machine is one too,
+toward the first. A finding is something such code can use to get more than
+it should: read or change memory or files that aren't its own, act with a
+capability it wasn't given, get a privileged program (init, privd or a
+program privd runs for it) to act for it beyond what the policy allows, or
+take the machine, or another person's part of it, away from everyone else.
+[Capabilities](/docs/architecture/authority) and
+[Privileged actions](/docs/architecture/privd) describe what the session is
+and isn't allowed.
 
 A weakness that no attacker can reach (a limit that only trusted code can
 hit, a missing check in code that only runs at boot) isn't a finding. Write
@@ -39,21 +45,22 @@ Give each candidate a confidence score out of 100, in three parts:
 | Exploitability | 0 to 30 | You can describe a realistic path from an attacker's program to the effect |
 | Reproducibility | 0 to 30 | You have a repeatable way to trigger it, or a step-by-step argument strong enough to stand in for one |
 
-**80 or more** means the problem is real: a *confirmed* finding. Below 80, it
-is still recorded if an attacker could reach it, but without a severity
-score, and the entry says what evidence would raise it.
+**80 or more** means the problem is real: a *confirmed* finding (the ledger
+calls it a guaranteed issue). Below 80, it is still recorded if an attacker
+could reach it, but without a severity score, and the entry ends its
+confidence line with "Raised by:" and the evidence that would raise it.
 
-This is a real entry from the ledger's history, which stopped at 74:
+This is the confidence line of a real entry, SLOPOS-2026-0059, as the ledger
+writes it (wrapped here to fit):
 
-> **Confidence:** 74. Evidence 36 (the caps, the system-wide `held` sum and
-> the absence of any charge were read directly…), exploitability 20 (any
-> unprivileged process, but only for as long as it holds the mappings…),
-> reproducibility 18 (the code path is unconditional; the denial was not
-> observed under QEMU, only derived).
->
-> **CVSS vector/score:** omitted, confidence is below 80. What would raise
-> it: a utest that holds `MAX_MAPPED_INODES` mappings in one process and
-> observes a second process's `mmap` answer `ENOMEM`.
+```text
+Confidence: 60 — evidence 35 (the people's rows limit tasks and processes
+only; `choose_victim` shields by capabilities alone while `kill` also needs the
+uid rule), exploitability 15 (two people running at once; the attacker spreads
+its promises so each of its processes holds less than the victim's heaviest,
+within its 256 processes), reproducibility 10 (not run). Raised by: a utest
+that fills the ceiling as uid 1000 and sees uid 1001's process killed.
+```
 
 Leaving the score out keeps a guess from reading like a confirmed
 vulnerability, which is the main thing this process exists to prevent.
@@ -93,8 +100,15 @@ Scores map to severities as CVSS defines them: 0.1 to 3.9 Low, 4.0 to 6.9
 Medium, 7.0 to 8.9 High, 9.0 to 10.0 Critical. A few SlopOS-specific rules
 keep scores consistent:
 
-- **An ordinary program is `AV:L/PR:L`.** There are no accounts, so there is
-  no lower privilege level to score.
+- **Code the session runs is `AV:L/PR:L`.** It runs as a person's uid and
+  holds no gated capability.
+- **Steering a privileged program scores that program's impact.** Getting
+  init, privd or a program privd runs as uid 0 to do something from the
+  session is still `PR:L`, with the impact of what the privileged program
+  did, and `UI:R` when the action waits for the person to allow it in the
+  consent dialog.
+- **A paired host is `AV:N/PR:H`** for the actions the policy lets the
+  paired agent ask for ([Remote control](/docs/self-hosting/remote-control)).
 - **A panic in code that can't use `unsafe` is an availability problem.**
   Code in a crate marked `#![forbid(unsafe_code)]` can crash but can't
   corrupt memory, so the impact is `A:`, never `C:` or `I:`.
@@ -107,15 +121,16 @@ to answer each question in the vector, with examples.
 
 ## 4. Write the entry
 
-Each open finding gets an ID of the form `SLOPOS-YYYY-NNNN`, taken from the
-counter near the top of `CVSS.md` (raise the counter as you use it). IDs are
-never reused. Then add an entry under *Open findings* with these fields:
+Each open finding gets an ID of the form `SLOPOS-YYYY-NNNN`. The top of
+`CVSS.md` names the highest ID issued and the next one; take the next one and
+update both lines. IDs are never reused. Then add an entry under *Open
+findings* with these fields:
 
 | Field | What to write |
 |-------|---------------|
 | Title | The defect, not the symptom: "three user mapping paths drop `NO_EXECUTE`", not "code runs from a data page" |
 | Status | `open`, or `needs-retest` |
-| Confidence | The total and the three parts, each with its reason |
+| Confidence | The total and the three parts, each with its reason, and below 80 what would raise it |
 | CVSS vector/score | The vector and the script's score and severity. Leave it out below 80 |
 | Impact | What an attacker gets |
 | Evidence | One exact `path:line` for each claim |
@@ -156,11 +171,13 @@ often carry findings, and why:
 | Drivers | Devices supply data and can write to memory directly |
 | Networking and TLS | Packets come from anywhere |
 | SlopRing | Programs and the kernel share memory and pass buffers back and forth |
-| Host build tools | Scripts on your machine read disk images that SlopOS wrote |
+| Privileged services | init, privd and the programs privd runs act as uid 0, or with gated capabilities, on what the session sends them |
+| Sessions and the consent dialog | One person's input must not reach another's session, and a person must be able to tell privd's real question from a window that imitates it |
+| Extensions | Their images and programs come from outside the base, and their services and actions run with a grant |
+| Host build tools | Scripts on your machine read disk images that SlopOS wrote, and a debug boot opens ports on your machine |
 
-Each sweep adds a dated paragraph to the top of `CVSS.md`: what was reviewed,
-what the reviews found before the change landed, and anything left below the
-bar.
+The ledger keeps open findings and nothing else: a sweep that finds nothing
+leaves it unchanged, and a fixed finding is deleted from it.
 
 ## What usually goes wrong
 
@@ -173,7 +190,9 @@ bar.
 - **A memory-safety score for a panic in safe code.** Score it as
   availability.
 
-Read next: [Permissions](/docs/architecture/authority) for what a program is
-and isn't allowed to do, which is what most findings break, and
+Read next: [Capabilities](/docs/architecture/authority),
+[Users and file permissions](/docs/architecture/users) and
+[Privileged actions](/docs/architecture/privd) for what a program is and
+isn't allowed to do, which is what most findings break, and
 [Safety gates](/docs/verification/tcb-discipline) for the checks that keep
 `unsafe` code contained.

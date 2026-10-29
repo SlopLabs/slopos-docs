@@ -1,36 +1,42 @@
 ---
 title: "System call ABI"
-description: "How SlopOS numbers its system calls, which registers they use, and what they return."
+description: "Every SlopOS system call: its number, its registers, who may make it, and what it returns."
 ---
 
-This page lists the rules of the SlopOS system call interface: numbering,
-registers, return values and the families of calls. The authoritative table of
-numbers is `abi/src/syscall/numbers.rs` (crate `slopos_abi`); errno values are
-in `abi/src/errno.rs`. [System calls](/docs/architecture/syscalls) explains how
-the kernel handles a call.
+This page lists the SlopOS system call interface: numbering, registers, return
+values, the capability each call needs, and every registered call. The
+authoritative sources are `abi/src/syscall/numbers.rs` (each number, with the
+call's signature in its doc comment), `core/src/syscall/handlers.rs` (the two
+dispatch tables) and each handler's `cap(...)` clause in `core/src/syscall/`.
+Errno values are in `abi/src/errno.rs`, capability bits in `abi/src/caps.rs`.
+The private calls below are those of base interface 12.
+[System calls](/docs/architecture/syscalls) explains how the kernel handles a
+call.
 
 ## Numbering
 
 | Range | Contents | Rule |
 |---|---|---|
 | `0` to `472` (`SYSCALL_LINUX_MAX`) | Linux-numbered calls | Number, name, arguments and behaviour are those of the Linux x86-64 call |
-| `1024` (`SYSCALL_PRIVATE_BASE`) upwards | SlopOS-only calls | Numbered `1024 + k`, contiguous from `k = 0`; the private table holds 48 slots (`SYSCALL_PRIVATE_TABLE_SIZE`) |
+| `1024` (`SYSCALL_PRIVATE_BASE`) to `1077` | SlopOS-only calls | Numbered `1024 + k`, contiguous from `k = 0`; the private table holds 54 slots (`SYSCALL_PRIVATE_TABLE_SIZE`) |
 
 - A number below 1024 always means the Linux call with that number. If SlopOS
   does not implement it, the number returns `-ENOSYS`; it is never reused for
   something else.
 - 1024 is above every number Linux has assigned and below the x32 marker bit
-  (bit 30), so a private number cannot be mistaken for either. ARM uses the same
-  scheme with `__ARM_NR_BASE`.
+  (bit 30), so a private number cannot be mistaken for either. ARM uses the
+  same scheme with `__ARM_NR_BASE`.
+- A private call taken away keeps its slot, which answers `-ENOSYS`, so a base
+  built before it still boots. Slot `1056` (`roulette_draw`) is such a slot.
 - SlopRing uses private numbers, not io_uring's (425 to 427), because it does
   not implement io_uring's interface.
 - `scripts/check_syscall_abi.sh` enforces these rules. It compares every
-  number below 1024 with a vendored copy of Linux's `syscall_64.tbl` and
-  fails if a name sits on a number Linux gave to another call, if the private
-  range has a gap, if a number or name is used twice, or if a private name
-  matches a Linux call without an allowlist entry explaining why.
-- Numbers changed in September 2026 (a breaking change). Programs built
-  against older numbers do not run on current kernels.
+  number below 1024 with a vendored copy of Linux's `syscall_64.tbl`
+  (`scripts/gates/syscall/linux-x86_64.tbl`) and fails if a name sits on a
+  number Linux gave to another call, if the private range has a gap, if a
+  number or name is used twice, or if a private name matches a Linux call
+  without an entry in `scripts/gates/syscall/private-allowlist.txt`
+  explaining why.
 
 ## Registers
 
@@ -53,52 +59,294 @@ stores the return address in `rcx`.
 - Errno values use Linux's numbers (`EPERM` is 1, `ENOSYS` is 38).
 - A number with no handler, in either range or outside both, returns
   `-ENOSYS`.
+- A call whose capability the caller does not hold returns `-EPERM` before
+  its handler runs.
 - `ERESTARTSYS` (512) and `ERESTARTNOHAND` (514) are kernel-internal and never
   reach a program. When a signal interrupts a call that returned one of them,
   the kernel either restarts the call after the signal handler runs or returns
-  `-EINTR`, following Linux's `SA_RESTART` rules.
+  `-EINTR`, following Linux's `SA_RESTART` rules. `nanosleep`, `poll`, `futex`
+  and `ring_enter`, which carry a timeout they do not hand back, return
+  `-EINTR` instead.
 
-## Families
+## Capability classes
 
-Linux-numbered calls:
+Every call has one class, fixed at compile time in its handler's `cap(...)`
+clause. The dispatcher compares it with the calling task's capability mask.
+[Capabilities](/docs/architecture/authority) explains the mask, who holds what
+and how a program is given a capability.
 
-| Family | Calls |
+| Class | Who may make the call |
 |---|---|
-| File I/O | `read`, `write`, `open`, `openat`, `close`, `pread64`, `pwrite64`, `readv`, `writev`, `lseek`, `fcntl`, `ioctl`, `flock`, `fsync`, `fdatasync`, `truncate`, `ftruncate` |
-| Paths and metadata | `stat`, `fstat`, `lstat`, `newfstatat`, `access`, `faccessat`, `faccessat2`, `getdents64`, `getcwd`, `chdir`, `fchdir`, `mkdir`, `mkdirat`, `rmdir`, `rename`, `renameat`, `link`, `linkat`, `unlink`, `unlinkat`, `symlink`, `symlinkat`, `readlink`, `readlinkat`, `chmod`, `fchmod`, `fchmodat`, `fchmodat2`, `mknod`, `mknodat`, `umask`, `utimensat`, `statfs`, `fstatfs` |
-| Descriptors and polling | `dup`, `dup2`, `dup3`, `pipe`, `pipe2`, `poll`, `ppoll`, `select`, `pselect6`, `memfd_create`, `pidfd_open`, `signalfd4` |
-| Memory | `mmap`, `munmap`, `mprotect`, `msync`, `brk` |
-| Processes and threads | `fork`, `clone`, `execve`, `wait4`, `exit`, `exit_group`, `getpid`, `getppid`, `gettid`, `getpgid`, `setpgid`, `getsid`, `setsid`, `getuid`, `getgid`, `geteuid`, `getegid`, `arch_prctl`, `futex`, `prlimit64`, `vhangup` |
-| Signals | `rt_sigaction`, `rt_sigprocmask`, `rt_sigreturn`, `rt_sigsuspend`, `rt_sigtimedwait`, `rt_sigpending`, `rt_sigqueueinfo`, `rt_tgsigqueueinfo`, `kill`, `tgkill`, `sigaltstack` |
-| Scheduling and time | `sched_yield`, `sched_setaffinity`, `sched_getaffinity`, `getcpu`, `getpriority`, `setpriority`, `nanosleep`, `clock_gettime`, `clock_settime` |
-| Networking | `socket`, `bind`, `listen`, `accept`, `accept4`, `connect`, `sendto`, `recvfrom`, `sendmsg`, `recvmsg`, `getsockname`, `getpeername`, `setsockopt`, `getsockopt`, `shutdown` |
-| System | `uname`, `sysinfo`, `getrandom`, `mount`, `umount2`, `sync`, `reboot` |
+| `NoneSelf` | Anyone. The call acts on the caller, or reports what any process may know |
+| `NoneFd` | Anyone. The call acts on what the caller names by descriptor or path; file permissions still apply to a path (see [Users and file permissions](/docs/architecture/users)) |
+| `NoneRelation` | Anyone. The handler checks the caller's relation to the target itself (parent, session, the signal rule) |
+| `ConsoleIo`, `ClipboardGlobal`, `Fate` | A holder of that capability. These three are universal: every program holds them unless it or its spawner dropped them |
+| Any other capability (`Power`, `Mount`, `SysInspect`, ...) | A holder of that capability, which only a spawner that holds it can delegate |
 
-SlopOS-only calls:
+Some calls check more inside the handler, through `SyscallContext::holds`:
+the credential calls (`SetId`), `setpriority` (`SchedHigh`), `net_query`'s
+socket owners (`NetAdmin`), and the display calls, which also require the
+screen or input seat.
 
-| Family | Calls |
-|---|---|
-| Introspection and logging | `klog_write`, `sys_info`, `process_list`, `cpu_info`, `percpu_stats` |
-| Terminal | `ctty_read` |
-| Process launch | `spawn_path`, `sigdefault` |
-| Network control | `resolve`, `net_query`, `net_iface_ctl`, `net_addr_ctl`, `net_route_ctl`, `net_resolver_set`, `net_monitor` |
-| Display and input | `fb_info`, `fb_flip`, `cursor_set_image`, `cursor_move`, `set_display_mode`, `screen_acquire`, `input_sink_acquire`, `input_poll_batch`, `clipboard_copy`, `clipboard_paste`, `font_set`, `keymap_load`, `keymap_get_name` |
-| SlopRing | `ring_setup`, `ring_enter`, `ring_register` (see [SlopRing](/docs/abi/slopring)) |
-| Wheel of Fate | `roulette`, `roulette_result`, `roulette_draw` |
-| Testing | `test_report`, `run_userland_tests`, `test_panic` |
-| Firmware variables | `efivar_get`, `efivar_set` |
+## Linux-numbered calls
 
-Each call also has a capability class fixed at compile time, which decides who
-may make it. [Permissions](/docs/architecture/authority) lists the classes.
+Each behaves as its Linux man page says, except as noted.
+
+| Number | Call | Class | Notes |
+|---|---|---|---|
+| 0 | `read` | `NoneFd` | |
+| 1 | `write` | `NoneFd` | |
+| 2 | `open` | `NoneFd` | `openat(AT_FDCWD, ...)` |
+| 3 | `close` | `NoneFd` | |
+| 4 | `stat` | `NoneFd` | |
+| 5 | `fstat` | `NoneFd` | |
+| 6 | `lstat` | `NoneFd` | |
+| 7 | `poll` | `NoneFd` | `nfds` at most 256 |
+| 8 | `lseek` | `NoneFd` | |
+| 9 | `mmap` | `NoneSelf` | Anonymous, memfd and regular-file mappings, all filled lazily. A private mapping is charged against the commit ceiling and refused with `ENOMEM` past it ([Memory](/docs/architecture/memory)) |
+| 10 | `mprotect` | `NoneSelf` | |
+| 11 | `munmap` | `NoneSelf` | |
+| 12 | `brk` | `NoneSelf` | |
+| 13 | `rt_sigaction` | `NoneSelf` | `sigsetsize` must be 8 |
+| 14 | `rt_sigprocmask` | `NoneSelf` | `sigsetsize` must be 8 |
+| 15 | `rt_sigreturn` | `NoneSelf` | |
+| 16 | `ioctl` | `NoneFd` | `FIOCLEX`, `FIONCLEX` and `FIONBIO` on any descriptor; block-device requests (`BLKGETSIZE64`, `BLKGETSIZE`, `BLKSSZGET`, `BLKPBSZGET`, `BLKROGET`, `BLKRRPART`); `FS_IOC_GETFLAGS` and `FS_IOC_SETFLAGS`; terminal requests. Anything else is `ENOTTY` |
+| 17 | `pread64` | `NoneFd` | |
+| 18 | `pwrite64` | `NoneFd` | |
+| 19 | `readv` | `NoneFd` | At most 1024 segments (`UIO_MAXIOV`) |
+| 20 | `writev` | `NoneFd` | At most 1024 segments |
+| 21 | `access` | `NoneFd` | |
+| 22 | `pipe` | `NoneSelf` | |
+| 23 | `select` | `NoneFd` | `nfds` at most 256 |
+| 24 | `sched_yield` | `NoneSelf` | |
+| 26 | `msync` | `NoneSelf` | `MS_INVALIDATE` is `EINVAL` |
+| 32 | `dup` | `NoneFd` | |
+| 33 | `dup2` | `NoneFd` | |
+| 35 | `nanosleep` | `NoneSelf` | |
+| 39 | `getpid` | `NoneSelf` | |
+| 41 | `socket` | `NoneSelf` | `AF_UNIX` with `SOCK_STREAM`; `AF_INET` with `SOCK_STREAM` (TCP) or `SOCK_DGRAM` (UDP, ICMP) |
+| 42 | `connect` | `NoneFd` | |
+| 43 | `accept` | `NoneFd` | |
+| 44 | `sendto` | `NoneFd` | |
+| 45 | `recvfrom` | `NoneFd` | |
+| 46 | `sendmsg` | `NoneFd` | `SCM_RIGHTS` on `AF_UNIX` |
+| 47 | `recvmsg` | `NoneFd` | `SCM_RIGHTS` on `AF_UNIX` |
+| 48 | `shutdown` | `NoneFd` | |
+| 49 | `bind` | `NoneFd` | |
+| 50 | `listen` | `NoneFd` | |
+| 51 | `getsockname` | `NoneFd` | |
+| 52 | `getpeername` | `NoneFd` | |
+| 53 | `socketpair` | `NoneSelf` | `AF_UNIX` stream only; `EOPNOTSUPP` for `AF_INET` |
+| 54 | `setsockopt` | `NoneFd` | |
+| 55 | `getsockopt` | `NoneFd` | Also answers `SO_PEERPROGRAM` and `SO_PEEREXTENSION` at level `SOL_SLOPOS` ([Privileged actions](/docs/architecture/privd)) |
+| 56 | `clone` | `NoneSelf` | |
+| 57 | `fork` | `NoneSelf` | Copy-on-write; never refused by the commit ceiling |
+| 59 | `execve` | `NoneSelf` | The new program keeps only the universal capabilities |
+| 60 | `exit` | `NoneSelf` | |
+| 61 | `wait4` | `NoneRelation` | A process-group wait (`pid` 0 or below -1) is `ESRCH` |
+| 62 | `kill` | `NoneRelation` | The sender must hold every capability the target holds, and its real or effective uid must be the target's real or saved uid. `ProcSignal` waives both; `SIGCONT` to the sender's own session needs neither |
+| 63 | `uname` | `NoneSelf` | |
+| 72 | `fcntl` | `NoneFd` | |
+| 73 | `flock` | `NoneFd` | |
+| 74 | `fsync` | `NoneFd` | |
+| 75 | `fdatasync` | `NoneFd` | |
+| 76 | `truncate` | `NoneFd` | |
+| 77 | `ftruncate` | `NoneFd` | |
+| 79 | `getcwd` | `NoneSelf` | |
+| 80 | `chdir` | `NoneSelf` | |
+| 81 | `fchdir` | `NoneFd` | |
+| 82 | `rename` | `NoneFd` | Within one mount only (`EXDEV`) |
+| 83 | `mkdir` | `NoneFd` | |
+| 84 | `rmdir` | `NoneFd` | |
+| 86 | `link` | `NoneFd` | `EPERM` for a directory, `EXDEV` across mounts |
+| 87 | `unlink` | `NoneFd` | |
+| 88 | `symlink` | `NoneFd` | |
+| 89 | `readlink` | `NoneFd` | |
+| 90 | `chmod` | `NoneFd` | |
+| 91 | `fchmod` | `NoneFd` | |
+| 92 | `chown` | `NoneFd` | Without `DacOverride`, the owner may give the file only to a group it is in, and the owner never changes |
+| 93 | `fchown` | `NoneFd` | As `chown` |
+| 94 | `lchown` | `NoneFd` | As `chown` |
+| 95 | `umask` | `NoneSelf` | |
+| 99 | `sysinfo` | `NoneSelf` | |
+| 102 | `getuid` | `NoneSelf` | |
+| 104 | `getgid` | `NoneSelf` | |
+| 105 | `setuid` | `NoneSelf` | Without `SetId`, only among the caller's real, effective and saved ids |
+| 106 | `setgid` | `NoneSelf` | As `setuid` |
+| 107 | `geteuid` | `NoneSelf` | |
+| 108 | `getegid` | `NoneSelf` | |
+| 109 | `setpgid` | `NoneRelation` | |
+| 110 | `getppid` | `NoneSelf` | |
+| 112 | `setsid` | `NoneSelf` | |
+| 113 | `setreuid` | `NoneSelf` | As `setuid` |
+| 114 | `setregid` | `NoneSelf` | As `setuid` |
+| 115 | `getgroups` | `NoneSelf` | |
+| 116 | `setgroups` | `NoneSelf` | Takes `SetId` |
+| 117 | `setresuid` | `NoneSelf` | As `setuid` |
+| 118 | `getresuid` | `NoneSelf` | |
+| 119 | `setresgid` | `NoneSelf` | As `setuid` |
+| 120 | `getresgid` | `NoneSelf` | |
+| 121 | `getpgid` | `NoneRelation` | |
+| 124 | `getsid` | `NoneRelation` | |
+| 127 | `rt_sigpending` | `NoneSelf` | |
+| 128 | `rt_sigtimedwait` | `NoneSelf` | |
+| 129 | `rt_sigqueueinfo` | `NoneRelation` | |
+| 130 | `rt_sigsuspend` | `NoneSelf` | |
+| 131 | `sigaltstack` | `NoneSelf` | |
+| 133 | `mknod` | `NoneFd` | A FIFO or a regular file; `EPERM` for a device or socket node |
+| 137 | `statfs` | `NoneFd` | `EOPNOTSUPP` from a filesystem that keeps no counters. The base and the install medium report `BASEFS_MAGIC`, an extension's activation `EXTENSION_MAGIC` |
+| 138 | `fstatfs` | `NoneFd` | As `statfs` |
+| 140 | `getpriority` | `NoneRelation` | |
+| 141 | `setpriority` | `NoneRelation` | A nice value below both 0 and the task's current one takes `SchedHigh` (`EACCES` otherwise) |
+| 153 | `vhangup` | `ConsoleConfig` | |
+| 158 | `arch_prctl` | `NoneSelf` | `ARCH_SET_FS` and `ARCH_GET_FS` |
+| 162 | `sync` | `NoneSelf` | |
+| 165 | `mount` | `Mount` | `fstype` `ext2`, `ext3`, `ext4`, `ramfs` or `devfs` (else `ENODEV`); a non-null `data` is `EINVAL` |
+| 166 | `umount2` | `Mount` | |
+| 169 | `reboot` | `Power` | `LINUX_REBOOT_CMD_RESTART`, `_POWER_OFF` and `_HALT` |
+| 186 | `gettid` | `NoneSelf` | |
+| 202 | `futex` | `NoneSelf` | `WAIT`, `WAKE`, `REQUEUE`, `CMP_REQUEUE`, `WAIT_BITSET`, `WAKE_BITSET` |
+| 203 | `sched_setaffinity` | `NoneRelation` | |
+| 204 | `sched_getaffinity` | `NoneRelation` | |
+| 217 | `getdents64` | `NoneFd` | |
+| 227 | `clock_settime` | `Clock` | `CLOCK_REALTIME` only |
+| 228 | `clock_gettime` | `NoneSelf` | `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, `CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID` |
+| 231 | `exit_group` | `NoneSelf` | |
+| 234 | `tgkill` | `NoneRelation` | As `kill` |
+| 257 | `openat` | `NoneFd` | |
+| 258 | `mkdirat` | `NoneFd` | |
+| 259 | `mknodat` | `NoneFd` | As `mknod` |
+| 260 | `fchownat` | `NoneFd` | As `chown` |
+| 262 | `newfstatat` | `NoneFd` | |
+| 263 | `unlinkat` | `NoneFd` | |
+| 264 | `renameat` | `NoneFd` | As `rename` |
+| 265 | `linkat` | `NoneFd` | As `link` |
+| 266 | `symlinkat` | `NoneFd` | |
+| 267 | `readlinkat` | `NoneFd` | |
+| 268 | `fchmodat` | `NoneFd` | |
+| 269 | `faccessat` | `NoneFd` | |
+| 270 | `pselect6` | `NoneFd` | `nfds` at most 256 |
+| 271 | `ppoll` | `NoneFd` | `nfds` at most 256 |
+| 280 | `utimensat` | `NoneFd` | |
+| 288 | `accept4` | `NoneFd` | |
+| 289 | `signalfd4` | `NoneSelf` | `fd` must be -1 (no re-arming) and `sizemask` 8 |
+| 292 | `dup3` | `NoneFd` | |
+| 293 | `pipe2` | `NoneSelf` | |
+| 297 | `rt_tgsigqueueinfo` | `NoneRelation` | |
+| 302 | `prlimit64` | `NoneRelation` | `pid` must be 0 or the caller's own (`EPERM` otherwise) |
+| 309 | `getcpu` | `NoneSelf` | `node` is always 0 |
+| 318 | `getrandom` | `NoneSelf` | `GRND_NONBLOCK` and `GRND_RANDOM` are accepted and change nothing; any other flag is `EINVAL` |
+| 319 | `memfd_create` | `NoneSelf` | `MFD_CLOEXEC` is the only flag |
+| 434 | `pidfd_open` | `NoneSelf` | Any live process, by its leader's id; `flags` must be 0. The descriptor is close-on-exec and never readable |
+| 439 | `faccessat2` | `NoneFd` | |
+| 452 | `fchmodat2` | `NoneFd` | |
+
+## SlopOS-only calls
+
+The signature is the one the call's doc comment in `numbers.rs` states.
+
+| Number | Call | Class | Signature and effect |
+|---|---|---|---|
+| 1024 | `klog_write` | `ConsoleIo` | `klog_write(buf, len)`: writes to the kernel log, with no descriptor |
+| 1025 | `sys_info` | `NoneSelf` | `sys_info(out: *mut UserSysInfo)`: page, task and scheduler counters, the boot flags (`BOOT_FLAG_*`), the commit ceiling's limit, promised total and headroom, the OOM killer's count and last victim, and the base interfaces this kernel serves |
+| 1026 | `process_list` | `NoneSelf` | `process_list(out: *mut UserTaskEntry, max) -> entries written`: every task, with its process id, state, login tag and effective uid |
+| 1027 | `cpu_info` | `NoneSelf` | `cpu_info(out: *mut UserCpuInfo)`: vendor, brand string, CPU count, family, model, stepping and feature bits |
+| 1028 | `percpu_stats` | `NoneSelf` | `percpu_stats(out: *mut UserPerCpuStats, max) -> entries written`: each CPU's switches, ticks, idle ticks and ready tasks |
+| 1029 | `spawn_path` | `NoneSelf` | `spawn_path(path, path_len, argv, argc, attrs: *const SpawnAttrs) -> task id`: starts a program in one call. `attrs` lists the descriptors the child gets, its environment and directory, the capabilities it is delegated (a subset of the caller's, else `EPERM`), and ids and a login tag (`SetId` for any the caller does not hold) |
+| 1030 | `sigdefault` | `NoneSelf` | `sigdefault(mask)`: resets every signal in `mask` to `SIG_DFL` |
+| 1031 | `resolve` | `NoneSelf` | `resolve(host, host_len, out: *mut [u8; 4])`: an IPv4 address from the kernel's DNS client; `host` at most 253 bytes |
+| 1032 | `net_query` | `NoneSelf` | `net_query(what, ifindex, buf, len) -> bytes written`: interfaces, addresses, routes, neighbours, sockets, the resolver, global settings or the DHCP clients (`NET_Q_*`), as a header and fixed-size records. A socket's owner is named only to its owner or a `NetAdmin` holder |
+| 1033 | `net_iface_ctl` | `NetAdmin` | `net_iface_ctl(ifindex, op, arg)`: interface up and down, MTU, the DHCP client, flushes |
+| 1034 | `net_addr_ctl` | `NetAdmin` | `net_addr_ctl(op, ptr, len)`: adds or removes an address (`UserAddrReq`) |
+| 1035 | `net_route_ctl` | `NetAdmin` | `net_route_ctl(op, ptr, len)`: adds or removes a route (`UserRouteReq`) |
+| 1036 | `net_resolver_set` | `NetAdmin` | `net_resolver_set(ptr, len)`: sets or clears the static resolver (`UserResolverReq`) |
+| 1037 | `net_monitor` | `NoneSelf` | `net_monitor(mask, flags) -> fd`: a descriptor that turns readable when the network configuration changes and reads `NetEvent` records |
+| 1038 | `fb_info` | `NoneSelf` | `fb_info(out: *mut DisplayInfo)`: the display's geometry and format |
+| 1039 | `fb_flip` | `NoneFd` | `fb_flip(seat_fd, damage: *const DamageRect, count)`: presents the back buffer; the caller must hold the screen seat (`EPERM` otherwise) |
+| 1040 | `cursor_set_image` | `NoneFd` | `cursor_set_image(image, len, hotspot)`: a 64 by 64 BGRA cursor; screen seat holder only |
+| 1041 | `cursor_move` | `NoneFd` | `cursor_move(pos)`: `(x << 16) \| y`; screen seat holder only |
+| 1042 | `set_display_mode` | `NoneFd` | `set_display_mode(width, height)`; screen seat holder only |
+| 1043 | `screen_acquire` | `DisplaySeat` | `screen_acquire(seat_id) -> fd`: takes the screen seat (`SEAT_COMPOSITOR_PRIMARY` 0, `SEAT_VIRTCON` 1); `EBUSY` while a seat of equal or higher rank is held |
+| 1044 | `input_sink_acquire` | `InputSeat` | `input_sink_acquire(seat_id) -> fd`: as `screen_acquire`, for the input stream |
+| 1045 | `input_poll_batch` | `NoneFd` | `input_poll_batch(out: *mut InputEvent, max) -> events written`; input seat holder only |
+| 1046 | `clipboard_copy` | `ClipboardGlobal` | `clipboard_copy(buf, len) -> bytes kept`: into the clipboard of the caller's session (by login tag), at most 4096 bytes; a process of no session keeps nothing |
+| 1047 | `clipboard_paste` | `ClipboardGlobal` | `clipboard_paste(buf, len) -> bytes written`: from the caller's session's clipboard |
+| 1048 | `font_set` | `ConsoleConfig` | `font_set(data, width, height, glyph_count)`: the console font |
+| 1049 | `keymap_load` | `ConsoleConfig` | `keymap_load(data, len)`: a serialised keyboard layout; `EINVAL` if malformed |
+| 1050 | `keymap_get_name` | `NoneSelf` | `keymap_get_name(buf, buf_len) -> bytes written`: the active layout's short name |
+| 1051 | `ring_setup` | `NoneSelf` | `ring_setup(entries, params: *mut RingParams) -> ring fd` ([SlopRing](/docs/abi/slopring)) |
+| 1052 | `ring_enter` | `NoneFd` | `ring_enter(ring_fd, to_submit, min_complete, flags) -> submissions` |
+| 1053 | `ring_register` | `NoneFd` | `ring_register(ring_fd, op, arg, nr_args)` |
+| 1054 | `roulette` | `Fate` | `roulette() -> (token << 32) \| fate`: spins the Wheel of Fate; an odd fate wins |
+| 1055 | `roulette_result` | `Fate` | `roulette_result(packed)`: reports the spin `token` names; a loss restarts the machine when `BOOT_FLAG_FATE_REBOOT` is set |
+| 1056 | `roulette_draw` | | Retired: `-ENOSYS`. `/bin/roulette` draws the wheel itself |
+| 1057 | `test_report` | `NoneSelf` | `test_report(status, name, name_len, msg, msg_len)`: one subtest result of a userland test (`0` pass, `1` fail, `2` skip); name cut at 64 bytes, message at 128 |
+| 1058 | `run_userland_tests` | `TestHarness` | `run_userland_tests() -> 0`: runs the userland test phase |
+| 1059 | `test_panic` | `TestHarness` | `test_panic()`: panics in syscall context; `ENOSYS` unless `panic.recover_smoke=on` |
+| 1060 | `efivar_get` | `Power` | `efivar_get(name, name_len, guid, buf, buf_len) -> len`: reads a UEFI variable of the Boot Loader Interface's namespace or SlopOS's own; `BootEntry` adds `Boot####`, `BootOrder`, `BootNext` and `BootCurrent`. `EPERM` for anything else, `ENOENT` when unset, `ENOBUFS` when `buf` is too small, `ENODEV` without UEFI runtime services |
+| 1061 | `efivar_set` | `Power` | `efivar_set(name, name_len, guid, attributes, data, data_len)`: writes or (empty `data`) deletes one, as `efivar_get` gates it. In the global namespace only non-volatile with boot and runtime access, and only values the firmware can parse; `BootCurrent` is `EPERM` |
+| 1062 | `cpu_perf` | `NoneSelf` | `cpu_perf(info: *mut UserCpuPerfInfo, cpus: *mut UserCpuPerf, max) -> entries written`: frequency control state and, per CPU, its APERF, MPERF and TSC sample, HWP registers and core type |
+| 1063 | `cpu_perf_ctl` | `Power` | `cpu_perf_ctl(op, value) -> settings generation`: one `CPU_PERF_OP_*` change (HWP, preference, limits, placement), applied by every CPU at its next tick or idle entry |
+| 1064 | `prof_ctl` | `SysInspect` | `prof_ctl(op, label, label_len)`: starts, stops, reports or (`PROF_OP_STATUS`) reads the sampling profiler; a label is 1 to 32 bytes of `[A-Za-z0-9_.-]` |
+| 1065 | `kconsole` | `SysInspect` | `kconsole(key) -> 0`: runs an informational diagnostic console command and returns once it has printed. `EPERM` for a command that may change the machine, `ENOENT` for no command, `EOPNOTSUPP` under `kconsole=off`, `ETIMEDOUT` after five seconds |
+| 1066 | `caps_drop` | `NoneSelf` | `caps_drop(mask) -> mask now held`: removes capabilities from every task of the calling process, for good. Never fails |
+| 1067 | `base_activate` | `BaseUpdate` | `base_activate(archive, len) -> generation`: makes the archive the base's next generation at every base directory in one step. `ENOEXEC` for an archive naming an interface this kernel does not serve, `EINVAL` for one that is no base the kernel can index, `EFBIG` past a quarter of usable memory, `EBUSY` while every generation slot is held or the resident generations would take more than that quarter with it ([Base system](/docs/architecture/base)) |
+| 1068 | `base_monitor` | `NoneSelf` | `base_monitor() -> fd`: close-on-exec, readable when the base's generation changes; `read` gives the current generation as eight little-endian bytes |
+| 1069 | `ext_activate` | `ExtensionUpdate` | `ext_activate(name, fd, digest: *const [u8; 32]) -> activation`: shows the extension image `fd` reads, checked block by block against `digest`, read-only at `/opt/<name>`. `EINVAL` for a name the grammar refuses or a file that is no image the kernel serves, `EIO` for a block that fails its tree, `EBUSY` while every activation slot is held or `/opt/<name>` holds a mount that is no activation, `EPERM` under `extensions=off` ([Extensions](/docs/architecture/extensions)) |
+| 1070 | `ext_deactivate` | `ExtensionUpdate` | `ext_deactivate(name)`: takes the activation at `/opt/<name>` away; `ENOENT` if none |
+| 1071 | `test_key` | `TestHarness` | `test_key(keycode, codepoint, pressed)`: delivers a key to the input sink's holder as a keyboard would; `ENOSYS` unless the boot runs the tests |
+| 1072 | `seat_switch` | `SeatSwitch` | `seat_switch(task_id) -> 0`: gives the screen and input seats to a task holding `DisplaySeat` and `InputSeat`. `ESRCH`, `EPERM` for a task lacking a seat capability, `EBUSY` while the virtual console holds a seat |
+| 1073 | `login_tag` | `NoneSelf` | `login_tag() -> tag`: the caller's login tag, 0 for none |
+| 1074 | `caps_get` | `NoneSelf` | `caps_get(pid) -> mask`: the capability mask of task `pid`; `ESRCH` for no such task or a kernel task |
+| 1075 | `process_memory` | `NoneSelf` | `process_memory(out: *mut UserProcessMemory, max) -> entries written`: each live process's resident pages and peak |
+| 1076 | `block_stats` | `NoneSelf` | `block_stats(out: *mut UserBlockStats, max) -> entries written`: each whole disk's name, size, block size, transport, flags, and bytes, requests, flushes and busy time since it was registered |
+| 1077 | `display_stats` | `NoneSelf` | `display_stats(out: *mut UserDisplayStats) -> 0`: the scanout adapter, its geometry, and the compositor's presents, bytes copied and copy and present time since boot |
+
+## Base interface
+
+A base (the read-only userland, see [Base system](/docs/architecture/base))
+calls the SlopOS-only calls directly, so it is built against a numbered
+interface, and a kernel serves a range of them.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `BASE_INTERFACE` | `12` | The interface this tree's private calls form |
+| `BASE_INTERFACE_MIN` | `10` | The oldest interface a kernel built from this tree serves |
+
+- A kernel states its range in `sys_info` and in the ELF note
+  `.note.slopos.base-interface` (owner `SlopOS`, type
+  `NT_SLOPOS_BASE_INTERFACE`, two `u32` values: minimum and maximum), which
+  can be read from the file without booting it. A base states its number in
+  `/usr/share/slopos/base-interface`.
+- The interface covers every private call's number and signature, every
+  `slopos_abi` item a signature names or a call's documentation links, what
+  those items reach through their fields, and the families the `root` lines
+  of `scripts/gates/base-interface.txt` name (capability bits, ring layouts,
+  spawn attributes, network records, the kept directories, the extension
+  name grammar and others).
+- It does not cover the Linux-numbered calls or the Linux structures a private
+  call passes through (`sockaddr`, `msghdr`, `iovec`), which follow Linux.
+- `scripts/check_base_interface.sh` digests that surface from rustdoc's view
+  of `slopos-abi` and holds it to the ledger row for `BASE_INTERFACE` in
+  `scripts/gates/base-interface.txt`. A change to the surface takes the next
+  number. The minimum rises only when a change reshapes something an older
+  base calls; an addition leaves it, and so does a call retired to
+  `-ENOSYS`.
+
+A program outside the base never makes a private call. It reaches SlopOS
+through `libc.so`, whose exported symbols and header structure layouts only
+grow: `scripts/check_libc_exports.sh` holds them to
+`scripts/gates/libc/exports.txt` and `scripts/gates/libc/layouts.txt`.
 
 ## Rules for changing the ABI
 
-- `abi/src/syscall/numbers.rs` is the only place a number is written down.
-  Userland imports the constant; documentation does not repeat numbers.
+- `abi/src/syscall/numbers.rs` is where a number is defined, with the call's
+  signature in its doc comment. Programs import the constant.
 - A Linux-numbered slot holds only the Linux call of that number, with
   Linux's arguments.
-- A new SlopOS-only call takes the next free `1024 + k`. When the private
-  table is full, `SYSCALL_PRIVATE_TABLE_SIZE` grows.
+- A new SlopOS-only call takes the next free `1024 + k`, and
+  `SYSCALL_PRIVATE_TABLE_SIZE` grows to hold it. It takes the next base
+  interface number.
 - Every struct passed between a program and the kernel is `#[repr(C)]` and has
   compile-time checks on its size and field offsets.
 

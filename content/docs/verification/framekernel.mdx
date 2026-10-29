@@ -16,10 +16,12 @@ instead of the whole kernel.
 The design is called a *framekernel*, and it is not ours. It comes from
 [Asterinas](https://asterinas.github.io/book/kernel/the-framekernel-architecture.html),
 a Rust kernel whose authors described it in their USENIX ATC '25 paper. SlopOS
-follows it closely, down to the name of the trusted crate, `slopos-ostd`
-(OSTD, after Asterinas's own). This page explains why a kernel needs `unsafe`
-at all, what changes when you keep it in one place, how the build makes sure
-it stays there, and what that does and doesn't promise.
+follows it closely, down to the name of the trusted crate, `slopos-ostd`, or
+OSTD. The name is Asterinas's, which expands it as *Operating System Standard
+Library*; SlopOS's own source spells it out as *Operating System Trusted
+Domain*. This page explains why a kernel needs `unsafe` at all, what changes
+when you keep it in one place, how the build makes sure it stays there, and
+what that does and doesn't promise.
 
 ## Why a kernel needs `unsafe`
 
@@ -119,9 +121,9 @@ expands its own macros where no source scan sees them. The final check reads
 the linked kernel image and fails if it contains a linker section the kernel's
 linker script doesn't declare.
 
-Every check also tests itself first: it is run against planted violations and
-must reject them, so a check that has quietly stopped matching fails the build
-instead of passing it. [Safety gates](/docs/verification/tcb-discipline) lists
+Nearly every check also tests itself first: it is run against planted
+violations and must reject them, so a check that has quietly stopped matching
+fails the build instead of passing it. [Safety gates](/docs/verification/tcb-discipline) lists
 all of them.
 
 ## What you have to trust in the trusted core
@@ -140,23 +142,28 @@ OSTD hands an obligation to its caller, and there are three kinds:
 The last kind is the one that matters. A safe function with a `# Safety`
 section admits that safe code can break it, which is exactly what a
 framekernel must not allow. A check holds the number of such functions at
-zero, and every contract it once counted has been turned into a type. The
-current counts for the other two are on [Safety gates](/docs/verification/tcb-discipline).
+zero, and every contract it once counted has been turned into a type.
+[Safety gates](/docs/verification/tcb-discipline) shows how to count the
+other two.
 
-The build also prints the share of kernel source lines that are `unsafe` and
-fails above 1 percent. Watch it as a trend. It counts source lines, while
-published figures for other kernels measure compiled code, so the two can't
-be compared.
+The gates also print the share of kernel source lines that are `unsafe`
+(`just tcb-ratio`) and fail above 1 percent. Watch it as a trend. It counts
+source lines, while published figures for other kernels measure compiled
+code, so the two can't be compared.
 
 ## What it doesn't promise
 
-The framekernel narrows where memory-safety bugs can start. It doesn't make
-the kernel correct, and it doesn't make the trusted core trustworthy by
-itself.
+The framekernel narrows where memory-safety bugs can start. Asterinas's
+documentation draws the line the same way: the property is *soundness*, which
+is not *correctness*. If the trusted core is sound, no safe kernel code can
+corrupt memory through it. That says nothing about whether the kernel does
+the right thing, and it rests on a list of things that are trusted rather
+than checked.
 
 - **Safe code can still be wrong.** A driver in safe Rust can deadlock, panic,
-  leak memory or send a device the wrong data. What it can't do is corrupt
-  memory through the CPU.
+  leak memory, give a program the wrong answer or send a device the wrong
+  data, and a kernel panic still takes the machine down. What it can't do is
+  corrupt memory through the CPU.
 - **Devices can write memory directly.** Disks and network cards copy data
   straight into RAM, at addresses the driver gives them. SlopOS doesn't yet
   program the hardware unit (an *IOMMU*) that would confine each device to its
@@ -170,8 +177,20 @@ itself.
   libraries, a stack unwinder and the debugging-information reader it uses,
   and they contain `unsafe`. They are pinned to an exact upstream version and
   content hash instead of being rewritten. The kernel binary's own crate also
-  contains the global allocator declaration, which Rust requires there.
-- **The compiler and the hardware are trusted,** as in every Rust program.
+  contains the global allocator declaration, which Rust requires there, and
+  the note that names the [base interfaces](/docs/architecture/base) the
+  kernel serves.
+- **Some rules are held by scripts, not by the compiler.** Apart from the
+  `forbid` lint, the checks above are scans of source text, of macro
+  expansions and of the linked image.
+  They are tested against planted violations, but a scan only finds the
+  shapes it looks for.
+- **It covers the kernel only.** The C library, the userland runtime and the
+  apps use `unsafe` where they need it, like any Rust program. The kernel
+  keeps them in user mode, so a bug there can corrupt that program and not
+  the kernel ([User mode and kernel mode](/docs/architecture/privilege-separation)).
+- **The compiler, the firmware, the bootloader and the hardware are
+  trusted,** as they are for every kernel.
 
 ## For contributors
 
@@ -196,7 +215,13 @@ just check-framekernel-gates
   and Sound TCB*](https://arxiv.org/abs/2506.03876) by Peng et al., USENIX ATC
   '25 ([conference page](https://www.usenix.org/conference/atc25/presentation/peng-yuke)).
   The full design, the invariants the trusted core must keep, and how it was
-  tested with Miri. SlopOS's 2 KiB limit on stack frames comes from section 4.3.
+  tested with Miri. The rule behind SlopOS's limit on stack frames (a frame
+  must not be able to step over a stack's guard page) comes from section 4.3;
+  the 2 KiB figure matches Linux's default frame-size warning.
+- [*What soundness means*](https://asterinas.github.io/book/ostd/soundness/what-soundness-means.html)
+  in the Asterinas book. Separates soundness from correctness and sets out
+  Asterinas's trust model, the clearest statement of limits like the ones
+  above.
 - [*Unsafe Rust*](https://doc.rust-lang.org/book/ch20-01-unsafe-rust.html),
   a chapter of the Rust Book. What `unsafe` lets you do, if you haven't
   written any.

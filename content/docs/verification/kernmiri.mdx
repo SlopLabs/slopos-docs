@@ -81,10 +81,13 @@ set up, and the trusted core's translation from physical addresses to
 pointers hands out pointers into that block. Because those pointers come from
 a real allocation, Miri can check every access against it exactly.
 
-A handful of tests can't run under Miri and are skipped there: tests of the
-real assembly that handles faults while copying user memory, tests that
-depend on symbols the linker provides, and the deliberate data-race test
-above.
+A handful of tests can't run under Miri and are skipped there: tests that
+depend on where a block of assembly lands in the compiled program (the code
+that recovers from a fault while copying user memory, and the code that
+restores floating-point state), tests that read the addresses of symbols the
+linker provides, and the `RefCell` test above, whose kernel counterpart
+relies on interrupts being off, which a test on a normal computer can't
+arrange.
 
 ## What it doesn't catch
 

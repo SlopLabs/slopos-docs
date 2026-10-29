@@ -394,6 +394,18 @@ QEMU attaches are listed in [QEMU options](/docs/getting-started/qemu-options).
 - [The NVMe specifications](https://nvmexpress.org/specifications/). The
   base specification defines queues, commands and namespaces. Long, but the
   overview chapter is readable.
+- [*Persistent naming attributes*](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_storage_devices/persistent-naming-attributes_managing-storage-devices)
+  in Red Hat's storage guide. Why `sdX` names move between boots and what
+  each `/dev/disk/by-*` directory means; the same reasoning applies here.
+- [systemd's `60-persistent-storage.rules.in`](https://github.com/systemd/systemd/blob/main/rules.d/60-persistent-storage.rules.in).
+  The udev rules whose `by-id` names SlopOS reproduces in the kernel, with no
+  udev daemon.
+- [*Mass Storage Bulk Only 1.0*](https://www.usb.org/document-library/mass-storage-bulk-only-10)
+  from the USB Implementers Forum. The transport USB sticks speak: the
+  command and status wrappers, and the Reset Recovery a stuck stick gets.
+- [I/O statistics fields](https://docs.kernel.org/admin-guide/iostats.html)
+  in the Linux kernel documentation, which defines the busy time
+  (`io_ticks`) that `block_stats` reports.
 - [Linux's device number list](https://docs.kernel.org/admin-guide/devices.html).
   Block nodes use major 259, Linux's number for extended block devices.
 

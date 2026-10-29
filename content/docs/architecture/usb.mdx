@@ -1,0 +1,485 @@
+---
+title: "USB"
+description: "How SlopOS runs USB controllers, finds what is plugged into them, and turns keyboards, mice, sticks and network adapters into input, disks and network interfaces."
+---
+
+import { UsbTree } from '@/components/diagrams/usb-tree';
+
+Plug a USB keyboard, mouse or tablet into a SlopOS machine and it types and
+moves the cursor alongside the built-in keyboard and touchpad. Plug in a USB
+stick and it becomes a disk, `sda`, that you can mount. Plug in a USB Ethernet
+adapter and it becomes a network interface, `eth1`, with an address from
+DHCP. Pull any of them out and the system lets go: the keys it held come up,
+its disk or interface disappears, and nothing waits for it to answer. This
+works the same under QEMU and on real hardware. Programs never talk to USB
+devices directly: a device shows up only as the input, disk or network
+interface its kind gives it. What you don't get is everything else USB
+carries, from audio and cameras to Bluetooth and printers; the
+[list is below](#what-usb-devices-slopos-doesnt-support).
+
+Every part follows a published specification: Intel's *eXtensible Host
+Controller Interface* (xHCI) for the controller, and the USB Implementers
+Forum's documents for the rest: USB 2.0 and 3.2 for the bus and hubs, HID 1.11
+for keyboards and pointers, the Bulk-Only Transport for sticks, and the
+Communications Device Class (CDC) with its ECM and NCM models for network
+adapters. The SCSI commands a stick understands come from Seagate's public
+command reference, because the committee drafts that define them aren't
+public. The overall shape is Linux's: USB lives in the kernel, drivers bind to
+the parts of a device through tables of IDs, the controller is taken from the
+firmware the way Linux's code does it, and USB disks get Linux's `sd` names.
+Redox's MIT-licensed USB programs (`xhcid`, `usbhidd`, `usbscsid`), which run
+in user space, were read as an influence. What is ours is the split: every
+format and state machine lives in two crates that allocate nothing and are
+tested on the host against a simulated controller.
+
+The rest of the page explains what a USB controller does, how SlopOS finds and
+names the devices behind it, how each one reaches a driver, what the three
+kinds of driver do, and what happens when a device leaves.
+
+## What a USB controller does
+
+USB is a tree. At the root is the computer's *host controller*, with a row of
+ports. A *hub* plugged into a port adds more ports, a hub can sit behind a
+hub, and devices sit at the leaves. The controller does the work on the
+wire: the timing, the packets, the retries. The kernel only tells it what to
+send and receive, and it does that through memory the controller reads and
+writes by itself (DMA):
+
+- a *command ring*, where the kernel leaves orders for the controller itself
+  ("give the device on port 3 an address");
+- a *transfer ring* for each channel to each device, where the kernel leaves
+  the data to send or the space to receive into;
+- an *event ring*, where the controller reports each command or transfer it
+  finished, and raises an interrupt;
+- a *doorbell* register, which the kernel writes to say "look at your rings".
+
+Each of those channels is an *endpoint*: a numbered, one-way pipe on a
+device. Every device has endpoint 0, which carries *control requests* ("what
+are you?", "use configuration 1"). A stick adds two *bulk* endpoints, one in
+and one out, for its data; a keyboard adds an *interrupt* endpoint that
+reports which keys are down.
+
+xHCI is the standard interface for USB 3 controllers, and one xHCI controller
+serves devices of every USB speed. It is the only kind SlopOS drives, which
+covers QEMU's recommended controller and the laptop's two. The older EHCI,
+OHCI and UHCI controllers have no driver.
+
+### Taking a controller from the firmware
+
+The firmware uses USB before the operating system starts, so you can type in
+its menus, and on some machines it keeps driving the controller behind the
+system's back. xHCI defines a handshake for taking it over. SlopOS sets the
+*OS owned* flag, waits up to a second (the limit the specification gives) for
+the firmware to clear its *BIOS owned* flag, and clears it itself if the
+firmware never does. Then it turns off the firmware's hooks into the
+controller, because some firmware reports a clean handover and leaves them
+armed.
+
+After that the controller is halted, cut off from memory, reset, given its
+rings and started. As a last check SlopOS sends it a command that does
+nothing and waits for the answer: a controller whose rings or interrupt
+don't work shows up here, at boot, rather than later as a device that never
+appears. The log says which way it went:
+
+```text
+USB: xhci 1 taken from the firmware
+USB: xhci 1 running on MSI
+```
+
+A controller SlopOS can't drive is left to the firmware, untouched apart from
+its power state. That is one without message-based interrupts (MSI-X or MSI),
+one that can only reach the first 4 GiB of memory, one that wants more
+scratch memory than a page lists or no 4 KiB pages, and any past the eighth.
+The `usb=` [boot option](/docs/abi/boot-options) takes three values: `on`,
+the default; `off`, which leaves every controller to the firmware; and
+`report`, which logs each controller's capabilities and ports and then leaves
+it to the firmware, a safe first look at an unfamiliar machine.
+
+## How devices are found and named
+
+When a port says something was connected, the kernel *enumerates* the
+device, one step at a time:
+
+1. It waits for the connection to stop bouncing, then resets the port.
+2. It asks the controller for a *slot*, the controller's record of one
+   device, and has the controller give the device an address on the bus.
+3. It reads the device's *descriptors*, what the device says about itself:
+   its vendor and product numbers, its class, and its *configurations*, each
+   a list of interfaces and their endpoints.
+4. It picks a configuration, tells the controller about its endpoints, and
+   offers the device's parts to the drivers.
+
+Only one device per controller is ever between steps 1 and 2, because until
+it has an address every new device answers to the same one. Every wait is
+bounded by the timings USB 2.0 gives, and a control request has five seconds.
+A device that fails three times in a row has its port disabled until it is
+unplugged, and the log says `USB: 1-3 disabled until unplugged`.
+
+Hubs belong to the kernel's USB core, not to a driver. A hub is configured
+like any device, and then its ports are watched and its devices enumerated
+just like the controller's own. A slow device (a keyboard, say) behind a fast
+hub talks through the hub's *transaction translator*, which the kernel names
+to the controller for each such device. Hubs may be stacked five deep, as the
+specification allows.
+
+Devices are named by where they are plugged in:
+
+<UsbTree />
+
+Controllers are numbered from 1 in the order they were found. `1-4` is root
+port 4 of controller 1, and `1-4.2` is port 2 of the hub on that port. These
+names appear in every USB line of the kernel log. The name says where a
+device is, not what it is, so a stick moved to another port gets another
+name; its disk keeps whatever name it is given when it registers.
+
+When a device offers several configurations, SlopOS picks the first one in
+which a driver it has matches something, or else the first one. QEMU's USB
+network adapter, for example, lists a configuration for Microsoft's RNDIS
+protocol first, which SlopOS doesn't speak, and a standard Ethernet one
+second.
+
+## How a device reaches a driver
+
+A device can do several things at once, like a keyboard with a separate
+interface for its volume keys, or a network adapter with one interface for
+status and another for data. Each part a driver serves is a *function*: an
+interface, or several interfaces the device declares belong together. Each
+function is offered to the registered USB drivers in priority order, exactly
+as a PCI device is offered to PCI drivers ([Drivers](/docs/architecture/drivers)
+explains the matching), and the first driver to accept it owns it. Once every
+function has an answer, the log names the device and its drivers:
+
+```text
+USB: 1-7 attached, high speed (USB 2.0 port)
+USB: 1-7 LUN 0 is sda, 16 MB in 512-byte blocks
+USB: 1-7 46f4:0001 1 function, bound usb-storage
+```
+
+SlopOS has three USB drivers:
+
+| Driver | Takes | Becomes |
+|---|---|---|
+| `usb-hid` | Keyboards, mice and tablets (class `03`) | Keys in the keyboard state, motion of the cursor |
+| `usb-storage` | Sticks and other disks speaking Bulk-Only SCSI (class `08`, subclass `06`, protocol `50`) | Disks `sda`, `sdb`, ... |
+| `usb-net` | Ethernet adapters speaking CDC ECM or NCM (class `02`, subclass `06` or `0D`) | Interfaces `eth1` and up |
+
+A function no driver takes is listed as having `no driver` and left alone.
+
+Two kernel threads serve every controller. The **`usb`** thread runs the
+controllers: it notices ports changing, steps each enumeration, recovers
+endpoints that stopped, repeats held keys and sets keyboard lights. It never
+waits for a device to answer: it starts the next step and comes back when
+the answer arrives, so a slow device delays only itself. It also runs at
+least once a second, which catches a lost interrupt or a controller that
+died. The **`usb-bind`** thread runs the drivers' probes and removals, which
+may wait, for example while a stick spins up.
+
+USB enumeration starts only once every PCI and ACPI device has been offered
+its driver, so the machine's own disks and network cards get the first names
+(`nvme0n1`, `eth0`) whatever is plugged in.
+
+## Keyboards, mice and tablets
+
+A HID device (*human interface device*: keyboards, mice, tablets, game pads)
+describes the reports it sends in a *report descriptor*, a small table that
+says "bits 0 to 7 are modifier keys, the next six bytes are key codes" or
+"these two 16-bit fields are an X and a Y position". `usb-hid` reads every
+device through its descriptor. There is also a fixed *boot protocol*, a
+simple format a BIOS can read without parsing anything, and SlopOS uses it
+only when a keyboard's or mouse's descriptor can't be read or describes
+neither keys nor a pointer. Reading the descriptor first is deliberate: a
+device starts in the descriptor's format, and at least one wireless keyboard
+receiver acknowledges the request to switch to the boot protocol, keeps
+sending its own format, and so typed the wrong letters until we stopped
+asking.
+
+Each report arrives on the device's interrupt endpoint, is decoded the moment
+the controller reports it, and goes into the machine's one keyboard state or
+one cursor, the same ones the built-in keyboard and touchpad feed. [Keyboards
+and pointers](/docs/architecture/drivers#keyboards-and-pointers) explains how
+several keyboards and mice share them. A few things are USB's own:
+
+- A USB keyboard doesn't repeat a held key by itself, so the `usb` thread
+  does: after half a second, about thirty times a second.
+- Each keyboard is told when Caps Lock, Num Lock or Scroll Lock change, so its
+  lights match the others'.
+- Keys are read only from the parts of a descriptor that call themselves a
+  keyboard or keypad, and motion only from a mouse or pointer, so a game pad
+  moves nothing. Media keys (volume, play) aren't read.
+- Unplugging a keyboard or mouse releases every key and button it held.
+
+A USB keyboard is the physical console as much as the built-in one, so the
+[diagnostic console](/docs/development/diagnostics)'s Alt+PrintScreen works on
+it too.
+
+## USB sticks
+
+A stick speaks *SCSI*, the command set of old server disks: "read 240 blocks
+from block 2048", "how big are you?". Over USB those commands travel in the
+*Bulk-Only Transport*: the kernel sends a 31-byte command wrapper on the bulk
+out endpoint, the data moves on one of the two bulk endpoints, and the stick
+answers with a 13-byte status wrapper on the bulk in endpoint.
+
+A stick may hold several disks, called *logical units* (a card reader with
+four slots has four). For each one, `usb-storage` asks what it is, waits for
+it to become ready (for up to `usb.settle_ms`, five seconds by default),
+reads its size and checks the write-protect switch. A unit that is a disk with
+512-, 1024-, 2048- or 4096-byte blocks registers with the block layer, which
+names it `sda`, `sdb` and so on, the lowest letter free. A card-reader slot
+with no card is passed over. From there a stick is a disk like any other:
+it has partitions, `/dev/disk/by-*` links and claims, as [Disks](/docs/architecture/storage)
+describes. A stick whose switch is set to read-only reports so, and a mount of
+it is read-only.
+
+Each stick keeps one command on the wire and one queued behind it, and every
+read or write is cut into pieces of at most 120 KiB. That is the limit Linux
+keeps for USB disks, because some devices fail on anything larger. Sticks
+also fail in ways a built-in disk doesn't, so every command has a deadline
+and a ladder of recovery behind it, each rung heavier than the last:
+
+1. A stalled transfer is cleared, and the stick is asked for its status.
+2. A command the stick reports as failed is followed by a request for the
+   reason, which decides whether it is tried again.
+3. A garbled status, a protocol error, or a command still unanswered after
+   20 seconds gets a *reset recovery*: the Bulk-Only reset request, the
+   stalls cleared on both sides, and the endpoints set up afresh. Then the
+   command is sent once more.
+4. If that fails, the port is reset and the stick is enumerated again, as if
+   it had been plugged in anew.
+
+### Pulling a stick
+
+A stick can leave while it is mounted, and while a program is writing to it.
+When it does, its disk is unregistered and every request still waiting fails
+at once instead of timing out. The filesystem on it turns read-only, as ext4
+does on a disk that fails: it refuses every change with `EROFS`, fails every
+read that would need the stick, and stays mounted until you unmount it, which
+releases the disk's name for the next stick. What a program saved with
+`fsync` before the pull is on the stick, as [Crash recovery](/docs/architecture/crash-recovery)
+promises for any crash. The log records the departure:
+
+```text
+USB: 1-7 detached
+USB: 1-7 sda removed
+USB: 1-7 removed from slot 3
+```
+
+At poweroff and reboot each controller's shutdown hook drains its sticks'
+queues, tells every stick that has a write cache to write it out, and only
+then resets the controller. A stick written raw through `/dev/sda` is flushed
+the same way.
+
+## Network adapters
+
+Most USB Ethernet adapters offer a standard configuration besides the
+vendor's own: CDC *ECM*, which carries one Ethernet frame per transfer, or
+*NCM*, which packs several frames into one transfer. `usb-net` speaks both.
+It reads the adapter's MAC address from the device, declines one that can't
+carry a full 1500-byte packet or names a MAC that isn't a valid unicast
+address, keeps four receive transfers posted, and publishes the adapter to
+the network stack like any network card:
+
+```text
+USB: 1-4.4 is eth1, 40:54:00:12:34:99, ECM
+```
+
+The adapter takes the lowest free `ethN` name, so the machine's own card
+keeps `eth0`. It also gets a DHCP client without anyone asking, which is why
+the stack is careful about what a lease from a device someone just plugged in
+may change: [Networking](/docs/architecture/networking) explains the rules.
+When the adapter leaves, its interface, routes and DHCP client go with it
+and the name is free again. Whether the cable is plugged in is what the
+adapter last reported; an adapter that never reports it is taken as always
+connected.
+
+## When the boot waits for USB
+
+The boot doesn't wait for USB to finish finding devices, except where
+something on the command line depends on it:
+
+- when `root=` or a `mount=` names a device that isn't there yet, the boot
+  waits up to `usb.settle_ms` for USB to settle, in case it is a stick;
+- when the live system looks for the toolchain partition on the stick it was
+  started from ([Installing SlopOS](/docs/self-hosting/installing));
+- under `tests=on`, where the `usb settle` step waits up to a minute and
+  fails the run with `USB: unsettled`, so every test run sees the same bus.
+
+USB has *settled* once every port has been powered long enough for a device
+to announce itself and has been quiet since, and every device that connected
+has reached an end: bound, declined, matched by no driver or given up on,
+with every new disk's partition table read. The USB threads run on the other
+processors while the boot waits, so on a machine with a single processor the
+wait is skipped and the log says so.
+
+`root=auto` and `root=disk` never choose a USB disk: they mean the machine's
+own disk, and a stick left in a port must not change what boots. A root on a
+stick can be named with `root=PARTUUID=...`, which waits for it, but no test
+boots one.
+
+## What it means in practice
+
+- **Mounting a stick takes the `Mount` capability**, as mounting any disk
+  does, so at a shell you ask for it with
+  [`priv`](/docs/architecture/privd), which asks you to confirm:
+
+  ```bash
+  mkdir ~/stick
+  priv mount /dev/sda1 ~/stick
+  priv umount ~/stick
+  ```
+
+  `mount` takes a device as ext4 unless `-t` says otherwise. The kernel
+  mounts only ext2, ext3 and ext4, so a FAT stick gets its device node and
+  its `/dev/disk/by-label` link but can't be mounted.
+- **Unmount before you pull.** Pulling a mounted stick loses what nobody
+  synced and leaves the mount read-only until you unmount it.
+- **To see the bus**, run `kconsole u`. It lists every controller, port,
+  device, function, driver and endpoint queue, in lines like these:
+
+  ```text
+  usb:   1-4 slot 2 0409:55aa full speed, hub
+  usb:   1-4.1 slot 3 46f4:0001 full speed, configured
+  usb:     function 0 interface 0 class 08/06/50: bound usb-storage
+  usb:     ep 0x81 dci 3 queued 0
+  ```
+
+  `kconsole` runs through privd, and an administrator is not asked. The same
+  listing is the diagnostic console's `u` key.
+- **On a machine you don't know yet**, boot once with `usb=report` to see
+  its controllers without taking them from the firmware.
+
+## What USB devices SlopOS doesn't support
+
+- Controllers other than xHCI (EHCI, OHCI, UHCI), and controllers that come
+  and go: docks, USB4 and Thunderbolt tunnels, Type-C alternate modes.
+- Isochronous transfers, so no audio devices or cameras.
+- Bluetooth, USB serial adapters, printers, smart cards, phones (MTP), and
+  any device that needs a vendor driver.
+- RNDIS network adapters, by decision: the protocol can't be made safe
+  against a hostile device.
+- UAS, the faster protocol for USB 3 disks; a UAS disk is used through the
+  Bulk-Only setting it also offers.
+- Power management: suspend, and the low-power link states.
+- Media change in card readers: the disk is the card that was present when
+  the reader was plugged in.
+- USB on the panic path: a panic's record is written to the NVMe disk, and
+  `panic=reboot` is the answer on a machine whose only keyboard is USB.
+
+## Differences from Linux
+
+| | Linux | SlopOS |
+|---|---|---|
+| What a driver binds to | An interface | A function: an interface, or the interfaces declared to belong together |
+| Access from programs | `usbfs` at `/dev/bus/usb/`, and user-space drivers on libusb | None. A device is reachable only as its disk, interface or input |
+| Largest request to a stick | 120 KB by default, with a quirk list for devices that need less | 120 KiB, with no quirk list yet |
+| Network adapters | ECM, NCM and RNDIS | ECM and NCM |
+| Keyboards and mice | Each device separate for programs; merged for the text console | Merged once, in the kernel, for every consumer |
+
+## How we know it works
+
+Every parser of something a device sends (descriptors, reports, status
+wrappers, network transfer blocks, strings) runs on the host under deliberate
+corruption, and must neither panic nor read past its input. The whole
+enumeration and recovery logic runs on the host against a simulated
+controller with simulated hubs, keyboards and sticks. That simulation is
+there because QEMU's controller lacks things real ones have: QEMU never
+makes the firmware hand a controller over, has only a full-speed hub, and
+its sticks don't track the data toggles that make a recovery go wrong in
+subtle ways.
+
+`just test` attaches one QEMU controller with a scratch stick, `sda`. `just
+test-usb` boots a kernel with both of QEMU's controller models, one on MSI-X
+and one on MSI, each carrying sticks at every speed, a hub with a stick, a
+tablet, a mouse and a network adapter behind it, a keyboard, an ext4 stick
+and a read-only drive. The host then plugs and pulls devices through QEMU's
+control socket and types and moves the mouse through it, and the run passes
+only if every device enumerates, binds and leaves cleanly twice over with
+nothing left behind; held keys repeat, Caps Lock lights every keyboard and
+SysRq runs a command; every mouse and the tablet move the one cursor; a
+stick pulled under a program that keeps calling `fsync` turns its mount
+read-only and comes back holding what was synced; the network adapter takes
+a lease and carries TCP; a shell typed at on the USB keyboard runs what was
+typed; and each controller is reset at the end. The laptop's two controllers
+have also been run on real hardware, with a USB mouse and keyboard.
+
+## For contributors
+
+- **Formats are data.** xHCI's registers, rings and contexts, descriptors,
+  hubs, Bulk-Only and SCSI, and CDC live in `usb-core`; HID lives in
+  `hid-core`, which the I²C touchpad shares. Both allocate nothing and are
+  tested by `just test-host`. A parser of device input bounds every read and
+  joins the mutation loops.
+- **The event ring is the only completion path.** The interrupt handler
+  drains it into per-endpoint queues, allocating nothing, then wakes the
+  block engine, netpoll or the USB threads. A `ReportSink` or
+  `TransferSink` is called right there and may not block, allocate or log.
+- **Nothing slow under a spinlock.** No bring-up, port reset, enumeration or
+  control transfer runs under one, and a hub's lock is never held while a
+  child's is taken. `QueueOps` and `NetDevice::tx` run with interrupts off.
+- **A command that never completes kills the controller.** Commands run in
+  ring order, so one stuck command holds every later one: after five seconds
+  the controller is halted, taken off the bus and every device on it removed
+  without a command.
+- **Removal is ordered.** The device is marked gone, its endpoints stopped,
+  its transfers failed, its claims released and their removals run on the
+  bind thread, then its slot disabled and its pages freed. A driver whose
+  objects outlive the binding (a stick's disk does, until its last mount
+  goes) must touch no ring or page of a device that is gone.
+- **A halt is cleared on both sides.** Resetting the endpoint resets the
+  controller's data toggle and `CLEAR_FEATURE(ENDPOINT_HALT)` resets the
+  device's; a driver that owns its pipes through `BoundDevice::stream`
+  recovers them itself, as Bulk-Only must.
+- **Rings and contexts are single zeroed pages**, so nothing crosses a page
+  or a 64 KiB boundary, and a TRB's cycle bit is written last, behind a
+  fence.
+- **The specifications are the source.** No code or prose comes from Linux or
+  QEMU, and spec prose stays out of comments, which cite sections.
+  [Add a driver](/docs/development/adding-a-driver#a-usb-driver) shows the
+  handles a USB driver gets.
+
+## Further reading
+
+- [*USB in a NutShell*](https://www.beyondlogic.org/usbnutshell/usb1.shtml)
+  (Beyond Logic). Start here. A short tour of the USB 2.0 specification for
+  software people; its
+  [chapter on descriptors](https://www.beyondlogic.org/usbnutshell/usb5.shtml)
+  explains configurations, interfaces and endpoints.
+- [*Introduction to HID report descriptors*](https://docs.kernel.org/hid/hidintro.html)
+  in the Linux kernel documentation. The most approachable explanation of
+  what `usb-hid` parses.
+- [*The Linux-USB Host Side API*](https://docs.kernel.org/driver-api/usb/usb.html)
+  and [*Linux USB hotplugging*](https://docs.kernel.org/driver-api/usb/hotplug.html).
+  How Linux splits host controllers, hubs and interface drivers, and how a
+  driver is matched by its ID table, the model `usb_driver!` follows.
+- [Intel's xHCI specification, revision 1.2](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)
+  (PDF). The primary source: §4.3 covers enumeration and §4.22.1 the handover
+  from the firmware.
+- The USB-IF class specifications:
+  [HID 1.11](https://www.usb.org/document-library/device-class-definition-hid-111)
+  with the [HID usage tables](https://www.usb.org/document-library/hid-usage-tables-16),
+  [Mass Storage Bulk-Only 1.0](https://www.usb.org/document-library/mass-storage-bulk-only-10),
+  [CDC 1.2](https://www.usb.org/document-library/class-definitions-communication-devices-12)
+  (which includes ECM) and
+  [NCM 1.0](https://www.usb.org/document-library/network-control-model-devices-specification-v10-and-errata-and-adopters-agreement).
+  Seagate's [*SCSI Commands Reference Manual*](https://www.seagate.com/files/staticfiles/support/docs/manual/Interface%20manuals/100293068L.pdf)
+  (PDF) covers the commands a stick takes.
+- [*USB: disable all RNDIS protocol drivers*](https://lwn.net/Articles/915828/),
+  LWN (2022). The short argument behind leaving RNDIS out.
+- [QEMU's USB emulation](https://www.qemu.org/docs/master/system/devices/usb.html).
+  The devices `just test-usb` plugs in, and why QEMU recommends `qemu-xhci`.
+- Redox's [`xhcid`](https://gitlab.redox-os.org/redox-os/base/-/tree/main/drivers/usb/xhcid)
+  and [`usbscsid`](https://gitlab.redox-os.org/redox-os/base/-/blob/main/drivers/storage/usbscsid/src/protocol/bot.rs).
+  A permissively licensed Rust xHCI driver and Bulk-Only transport, run as
+  user-space programs.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `drivers/src/usb/xhci/` | Taking a controller, its rings, devices and endpoints, and the shutdown hook |
+| `drivers/src/usb/mod.rs`, `drivers/src/usb/bus.rs` | The `usb` and `usb-bind` threads, settling, `UsbBus` and `usb_driver!` |
+| `drivers/src/usb/hid.rs`, `storage.rs`, `net.rs` | The three class drivers |
+| `drivers/src/usb/kconsole.rs` | The `u` listing |
+| `usb-core/` | xHCI, descriptors, hubs, the device tree, Bulk-Only and SCSI, CDC, and the simulated controller |
+| `hid-core/` | Report descriptors, boot reports, keys, pointers and lights |
+| `drivers/src/tests/usb_tests.rs`, `scripts/test_usb.py` | The two halves of `just test-usb` |

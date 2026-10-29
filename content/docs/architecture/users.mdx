@@ -1,0 +1,407 @@
+---
+title: "Users and file permissions"
+description: "How SlopOS tells people apart, decides who may read and write each file, and keeps the list of people and their passwords."
+---
+
+Every process on SlopOS runs as a user, and every file has an owner, a group
+and permission bits, enforced by the kernel the way Unix has always done it.
+Each person with an account has their own user id (uid), from 1000 up, and
+everything they run runs as them, so one person can't read another's private
+files or write the system's. The system's own services run as uid 0, `root`.
+
+What is different is that uid 0 has no power of its own. It owns the system's
+files, so it can change them the way any owner can change their own, and that
+is all. Bypassing a permission check takes a capability, `DacOverride`, and so
+does taking on another uid ([Capabilities](/docs/architecture/authority)). A
+program running as root that wasn't handed `DacOverride` can't read a person's
+private files any more than another person can.
+
+The people themselves live in an *accounts record* that only a few privileged
+programs can change, and the familiar `/etc/passwd`, `/etc/group` and
+`/etc/shadow` are generated from it. The rest of this page covers a process's
+ids, the permission checks, who owns what on a disk, and how accounts and
+passwords are kept.
+
+## Where it comes from
+
+The ids and the checks are POSIX's, as Linux implements them: real, effective
+and saved ids, supplementary groups, owner, group and other permission bits,
+the sticky bit, set-group-ID directories. Linux's `fs.protected_symlinks`
+rule is always on. Leaving uid 0 powerless is what Linux's securebits
+(`SECBIT_NOROOT`) allow a system to choose; SlopOS makes it the only choice.
+The uid ranges follow Debian's policy, the password hash is Argon2id as RFC 9106
+recommends, and keeping hashes in a file only root reads, apart from the list
+of users everyone reads, is the `shadow` file's old idea.
+
+Where SlopOS differs from Linux:
+
+- Credentials belong to the process, as POSIX describes them. Linux keeps them
+  per thread, and its C library copies a change to every thread.
+- There are no separate filesystem ids (`setfsuid`): the effective ids are the
+  ones checked.
+- Set-user-ID and set-group-ID bits on a program are stored and stripped
+  exactly as Linux strips them, but never honoured. No program gains an
+  identity or a capability by being run.
+- `DacOverride` is Linux's `CAP_DAC_OVERRIDE`, `CAP_FOWNER` and `CAP_CHOWN` in
+  one bit, since one broker hands all three out.
+
+## Why the system needs users
+
+Before SlopOS had users, every program ran as uid 0 and the kernel checked
+only the execute bit, so any program could rewrite `/etc`. There was one person
+at the machine and nothing to tell their programs apart from the system's.
+Giving the session its own uid makes the ordinary permission bits do their
+job: a person's programs can't touch the system's files, and once there are
+several people, can't touch each other's. Giving uid 0 nothing beyond
+ownership keeps that from turning into the opposite problem, where every
+service running as root can do anything.
+
+## A process's ids
+
+Every process carries a set of *credentials*: a real, an effective and a saved
+user id, the same three for its group, and up to 32 supplementary groups. The
+effective ids are the ones permission checks use. All threads of a process
+share one set.
+
+- **`fork`** copies them. **A spawn** passes the spawner's on, or sets the
+  child's to the ids it names: ids the spawner already has, or with `SetId` any
+  ids at all. That is how init starts each person's programs as them.
+- **`exec`** keeps them and saves the effective ids, as POSIX says, so the new
+  program can't return to an id the old one set aside. A program whose
+  effective ids differ from its real ones starts in secure mode (`AT_SECURE`).
+- **The `set*id` calls** follow POSIX's rules for an unprivileged process: it
+  may move among its own real, effective and saved ids. Any other id, and
+  `setgroups`, takes `SetId`, which only init and privd hold.
+
+## How a file access is checked
+
+The kernel checks permissions on every path operation, against the effective
+ids of whoever is asking. The filesystem code is handed that identity
+explicitly (a *subject*, the ids plus whether the caller holds
+`DacOverride`), so a check can't accidentally read some other process's ids.
+
+- **Walking a path** needs search (execute) permission on every directory it
+  passes through.
+- **Opening a file** needs read or write permission for the way it is opened.
+  Running a program needs execute permission on it and on its interpreter.
+- **Creating, removing or renaming** needs write and search permission on the
+  directory, and moving a directory to a new parent needs write permission on
+  the directory itself. In a *sticky* directory (mode `1777`, like `/tmp`) only
+  the file's owner or the directory's owner may remove or replace a name.
+- **Changing a file's mode, its times or its flags** needs ownership (setting
+  the times to "now" needs only write permission). **`chown`** lets the owner
+  move a file to a group they belong to, and nothing more.
+- **`access` and `faccessat`** check with the real ids, unless the caller asks
+  for the effective ones with `AT_EACCESS`.
+
+One class answers each check: the owner's bits for the owner, the group's for
+a member of the file's group, the others' bits for everyone else, even where a
+later class would allow more. A new file belongs to the effective uid that made
+it, and to its effective group, unless its directory is set-group-ID, in which
+case it takes the directory's group.
+
+`DacOverride` passes every one of these checks. It allows reading and writing
+any file, searching any directory, running any file that has an execute bit
+for someone, and changing the owner of any file. It doesn't override one rule:
+in a sticky directory that everyone may write, a symbolic link is followed only
+for the link's owner or the directory's owner. Otherwise a person could plant
+a link in `/tmp` for a privileged program to follow somewhere it shouldn't.
+
+### Example: a file in `/etc`
+
+`/etc` belongs to uid 0, group 0, mode `0755`. When the first person (uid 1000)
+runs `touch /etc/motd`, the kernel checks search permission on `/` and `/etc`,
+which the "others" bits allow, then write permission on `/etc` to create a
+name there, which they don't. The call fails with `EACCES`.
+
+A service running as uid 0 can create the file, because it owns `/etc` and the
+owner's bits allow writing. That's ownership, not power: the same service
+can't open a file in `/home/bob`, mode `0700` and owned by bob, unless it
+holds `DacOverride`.
+
+When the person runs `priv touch /etc/motd`, `touch` runs as them holding
+`DacOverride` ([Privileged actions](/docs/architecture/privd) covers `priv`),
+so the write check passes. The new file belongs to whoever made it, though, so
+`/etc/motd` is now owned by uid 1000.
+
+## What uid 0 is
+
+uid 0 is `root`, home `/root`. It owns the system's files and directories, and
+init, privd and most of the programs privd starts run as it. Holding uid 0
+gives a process none of the following by itself: bypassing permission bits,
+taking another uid, signalling another user's processes, or any capability.
+Its identity matters in three places only:
+
+- **Ownership.** It may do to the files it owns what any owner may.
+- **The disk's reserve.** ext4 keeps a share of each volume for a reserve user,
+  so the system can still write when people have filled the disk. That user is
+  uid 0 unless the volume says otherwise.
+- **The loader.** A process running as uid 0 never loads libraries from
+  `/usr/local/lib` or `~/.local/lib`, where people can put them.
+
+privd and init accept requests from "root" only from uid 0 running a program
+from the base, so a program from outside the base gets nothing by running as
+uid 0 either ([Privileged actions](/docs/architecture/privd)).
+
+## Who runs as whom
+
+| uid | Name | Runs |
+|---|---|---|
+| 0 | `root` | init, privd, and the programs privd starts for most actions |
+| 1 to 99 | the base's own users | `greeter` (uid 50), which runs the login screen and the console's login prompt |
+| 100 to 999 | extensions' users | each extension's services and actions, under users of its own ([Extensions](/docs/architecture/extensions)) |
+| 1000 to 59999 | people | everything a person runs: their desktop, terminal and shells, the commands `priv` runs for them |
+| 65534 | `nobody` | nothing; it is listed because Unix programs expect it |
+
+uid 1000 is the *first person*, the one the installer creates. Their home is
+always `/home/user`, whatever name they chose, because the ownership map
+below names that path. The Wheel of Fate and an extension's session
+services run as the first person, and `remoted` as the person the accounts
+record names for it (the first administrator unless set otherwise). Every
+person has a group of their own whose gid is their uid. Administrators are also
+members of `admin` (gid 10). What makes someone an administrator is the
+accounts record, which privd reads when it decides who may do what; the kernel
+knows nothing of administrators.
+
+## Who owns what on a disk
+
+Every root filesystem is held to one ownership map, and init lays out at every
+boot whatever part of it a root lacks.
+
+| Path | Owner | Mode |
+|---|---|---|
+| `/`, `/etc`, `/var`, `/var/lib`, `/var/lib/slopos`, `/var/log`, `/home`, `/media`, `/usr`, `/opt`, `/opt/bin` | uid 0 | `0755` |
+| `/root` | uid 0 | `0700` |
+| `/var/tmp` | uid 0 | `1777` |
+| `/usr/local` | the first person, with everything in it, while they are the only person; then uid 0 | `0755` |
+| `/home/user` | the first person, with everything in it | `0755`, then `0700` once a second person has an account |
+| `/home/<name>` for every later person | that person | `0700` |
+
+The workspace, `/src`, belongs to the first person with everything in it.
+
+`/tmp` and `/run` aren't on the disk at all: the kernel mounts memory there at
+boot, `/tmp` as mode `1777`. The base's directories (`/bin`, `/sbin`, `/lib`,
+`/usr/bin`, `/usr/share`, `/etc/ssl`) are mounted read-only over the root and
+belong to uid 0 ([Base system](/docs/architecture/base)).
+
+The first person's three trees (their home, the workspace at `/src` and
+`/usr/local`) are theirs only while the record `/var/lib/slopos/owners` says
+so, one line per tree:
+
+```text
+1000:1000 /home/user
+1000:1000 /src
+1000:1000 /usr/local
+```
+
+The image builders and the installer write this record when they make a root,
+and a root without one, or with one that can't be read, gives the first person
+nothing. While the first person is alone, their home is `0755` and they install
+software into `/usr/local` themselves. Adding a second person changes both:
+the first person's home becomes `0700`, and `/usr/local` and everything in it
+becomes uid 0's, installed into through privd from then on. [Installed
+software](/docs/architecture/software) describes that hand-over.
+
+Other things have owners too:
+
+- **A pseudo-terminal** belongs to whoever opened its master side, mode `0620`,
+  as on Linux, so one person can't read another's terminal.
+- **A Unix socket's name** is a file of type socket. Binding one needs write
+  and search permission on the directory, and connecting needs write
+  permission on the name. A bound socket holds its name's file open, as a
+  descriptor holds a file, so the volume it is on can't be unmounted under it.
+- **Each person's runtime directory**, `/run/user/<uid>`, is theirs alone,
+  mode `0700`. Their compositor's socket lives there.
+- **Files in memory** (`/tmp`, `/run`) belong to whoever made them, and the
+  base's files all belong to uid 0.
+
+## The accounts record
+
+The people the machine knows are kept in one record: each person's uid, name,
+home, whether they administer the machine and their password's hash, plus whom
+the desktop logs in automatically, whom `remoted` runs as, and the next uid to
+give out, so no uid is ever given twice. It looks like this:
+
+```text
+next 1002
+autologin user
+person 1000 user /home/user admin -
+person 1001 bob /home/bob - $argon2id$v=19$m=65536,t=3,p=4$<salt>$<tag>
+```
+
+A `-` in the fourth field means not an administrator, and in the fifth, no
+password. The record lives in `/var/lib/slopos/accounts`, a directory only uid
+0 can read. Each change is written as a new *generation* beside the old one
+and *sealed* (marked immutable, which takes the `Seal` capability), and readers
+believe only the newest sealed generation. So a change cut short leaves the
+previous record standing, and a program holding `DacOverride` but not `Seal`
+can neither rewrite the record nor plant one of its own. The kernel also keeps
+`/etc` and `/var/lib/slopos` where they are: nothing can rename them, remove
+them or mount another filesystem over them
+([Filesystem](/docs/architecture/filesystem)).
+
+A root without a record has one person: `user`, uid 1000, the first
+administrator, with no password, logged in by the desktop automatically. The
+installer creates a record for the name you give it, with a password unless
+you choose none.
+
+### The user database
+
+From the record and the installed extensions' users, SlopOS writes the files
+every Unix program reads:
+
+| File | Mode | Holds |
+|---|---|---|
+| `/etc/passwd` | `0644` | root, `greeter`, the people, the extensions' users, then `nobody`; a person's shell is `/bin/shell`, everyone else's but root's `/bin/false` |
+| `/etc/group` | `0644` | root, `admin` listing the administrators, then a group of each user's own |
+| `/etc/shadow` | `0600` | each person's password hash, empty for none |
+
+All three are sealed. The C library's `getpwnam`, `getgrnam`, `getgrouplist`
+and `initgroups` believe one of them only while it is a sealed regular file,
+and otherwise answer from four rows built into the library: root, `greeter`,
+`user` and `nobody`. So a program that managed to write `/etc/passwd` without
+`Seal` changes no name and no group. Init runs `users sync` at every boot,
+which writes the database from the record (and writes the one-person record on
+a root without one). A root in memory, such as a live boot from the install
+medium, keeps every seal for good, so it keeps the built-in rows and its people
+can't be changed.
+
+## Passwords
+
+A password is hashed with Argon2id at the second cost RFC 9106 recommends
+(64 MiB of memory, 3 passes, 4 lanes) under a random 16-byte salt, and stored
+in the standard PHC string form shown above. A password is optional: a person
+without one confirms their own requests with a click where someone else would
+type theirs.
+
+One program reads a hash back: `/sbin/authcheck`. It takes a name and a
+password on standard input, one per line, and answers with its exit status
+alone: 0 for the right password, 1 for anything else (a wrong password, a
+person with no password, nobody of that name), 2 when it can't tell. Only uid 0
+may read `/etc/shadow`, so `authcheck` answers only when it runs as uid 0, as
+privd and the accounts programs run it, and whoever asks it never sees a hash. Passwords always travel on a pipe, never on a command
+line, and a terminal asking for one turns its echo off first. How the login
+screen and privd slow down repeated wrong passwords is on
+[Sessions and login](/docs/architecture/sessions).
+
+## Managing people
+
+`/bin/users` lists the people to anyone, and changes them through privd:
+
+| Command | Does |
+|---|---|
+| `users` or `users list` | Lists each person's name, uid, `admin` or `-`, and home |
+| `users add <name> [--admin] [--keep-autologin]` | Adds a person with the next uid and a home `/home/<name>`, mode `0700` |
+| `users remove <name> [--home]` | Removes a person; their home stays unless `--home` says otherwise, and their uid is never given again |
+| `users rename <name> <new name>` | Renames a person, keeping their uid and home |
+| `users passwd` | Changes your own password, after you type the current one if you have one |
+| `users passwd <name>` | Sets a person's password |
+| `users promote <name>`, `users demote <name>` | Makes a person an administrator, or not |
+| `users autologin <name>`, `users autologin --off` | Sets whom the desktop logs in by itself |
+| `users remote <name>`, `users remote --default` | Sets whom `remoted` runs as |
+
+Changing your own password is privd's `org.slopos.accounts.password` action,
+which any person may ask for with a click. Everything else is
+`org.slopos.accounts.manage`: an administrator confirms with a click, and a
+person who isn't one needs an administrator to type their password
+([privd actions](/docs/abi/privd-actions)). A few rules hold whoever asks:
+
+- A name is a lowercase letter followed by lowercase letters, digits, `-` and
+  `_`, at most 32 bytes, and not one the base keeps (`root`, `nobody`, `admin`,
+  `greeter`) or an extension's user holds.
+- The last administrator stays one, and the first person can't be removed,
+  because they hold the workspace at `/src`.
+- An administrator without a password must set one before adding someone, and
+  adding someone turns automatic login off unless `--keep-autologin` says
+  otherwise. A shared machine shouldn't open anyone's desktop to whoever sits
+  down.
+- Adding the second person hands `/usr/local` to uid 0, and adds nobody if
+  that fails.
+
+If the record changes but the database can't be written, `users` says so, and
+the old database (with a removed person's hash still in it) stands until the
+next boot writes it.
+
+## What it means in practice
+
+- **Your files are yours.** Programs you run can't write the system's files, and
+  once a second person has an account, other people's programs can't read
+  your home.
+- **For system files, use `priv`** or the program's own privd action. Remember
+  that a file `priv` creates is still yours.
+- **Don't test for uid 0.** A program that wants to know whether it may do
+  something should try it, or check the capability, never compare `getuid()`
+  with 0.
+- **Read people through the C library.** `getpwnam` and friends already ignore
+  a database that isn't sealed; parsing `/etc/passwd` yourself doesn't.
+- **The base's tools are thin here.** There is no `chmod`, `chown` or `id`
+  command yet, and `ls -l` doesn't show owners. The system calls behave as on
+  Linux; `whoami` and `users` tell you who is who.
+
+## How it is tested
+
+A userland test drops to uid 1000 without `DacOverride` and checks the rules
+between real processes, each refusal next to a positive control one permission
+bit away: `/etc` refusing a new name, a file closed to others, the sticky bit,
+links in shared directories, terminal and socket ownership, uid 0 meeting the
+mode bits, and the hand-over of `/usr/local`. Run as the person instead, it
+holds the root to the ownership map. Kernel tests check the permission checks,
+`chmod` and `chown`, the signal rule's uid half and the id calls, and host tests
+check the credential arithmetic. Another userland test adds, renames, promotes and
+removes people, sets and checks passwords (including one typed at a terminal,
+which must never be echoed), and checks that `DacOverride` alone can't touch
+the record or the database. After the suite, the host checks the disk image it
+wrote against the ownership map (`check_fs_image.sh --map`), and the Argon2id
+code is held to RFC 9106's test vectors.
+
+## For contributors
+
+- **Pass the subject, don't look it up.** Every filesystem entry point takes
+  the `Subject` it acts for; nothing below the system call layer reads the
+  current task for a permission check. The kernel's own callers pass
+  `Subject::KERNEL`, and a SlopRing operation passes its submitter's. The ext4
+  reserve is the one exception, because every allocation reaches it.
+- **The ownership map is stated once** in `slopos_abi::fs` (`ROOT_LAYOUT`,
+  `PERSON_TREES`, `OWNERS_RECORD`) and mirrored in `scripts/lib/root_layout.sh`
+  and `tools/initramfs`, whose test holds all three equal. Change them together.
+- **Database writers take the store's lock** across reading the record and
+  writing the database, so the last database written matches the newest
+  record. `/etc/shadow` is written first and from the record alone.
+- **Nothing but `/sbin/authcheck` parses a hash** outside `accounts-core`, and
+  privd never does.
+- **A file written through a seal must be read back sealed.** Use the sealed
+  file helpers in `userland/src/sealed.rs`, which refuse an unsealed file where
+  a sealed one should be.
+
+## Further reading
+
+- [`credentials(7)`](https://man7.org/linux/man-pages/man7/credentials.7.html).
+  Start here. Real, effective, saved and filesystem ids, and why Linux keeps
+  them per thread while POSIX describes them per process.
+- [`fs.protected_symlinks`](https://docs.kernel.org/admin-guide/sysctl/fs.html)
+  in the Linux kernel's documentation. The shared-directory link rule, in two
+  sentences.
+- [Debian Policy, chapter 9](https://www.debian.org/doc/debian-policy/ch-opersys.html)
+  and systemd's [Users, Groups, UIDs and GIDs](https://systemd.io/UIDS-GIDS/).
+  The two uid-range conventions; SlopOS follows Debian's.
+- [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+  Why Argon2id, and what its parameters cost an attacker.
+- [RFC 9106](https://www.rfc-editor.org/rfc/rfc9106.html). Argon2 itself, its
+  test vectors and the two recommended parameter sets.
+- [`shadow(5)`](https://man7.org/linux/man-pages/man5/shadow.5.html). The
+  format SlopOS's `/etc/shadow` keeps.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `slopos-ostd/src/process/cred.rs` | Credentials, the id rules and the permission checks |
+| `fs/src/vfs/perm.rs`, `fs/src/vfs/ops.rs` | Where the filesystem applies them |
+| `core/src/syscall/cred_handlers.rs` | The id system calls |
+| `abi/src/fs.rs` | The uid ranges and the ownership map |
+| `userland/src/root_layout.rs` | Laying out a root, and the owners record |
+| `accounts-core/` | The accounts record, the database and password hashes |
+| `userland/src/accounts.rs`, `userland/src/sealed.rs` | The store and sealed files |
+| `userland/src/apps/users.rs`, `userland/src/apps/authcheck.rs` | `/bin/users` and `/sbin/authcheck` |
+| `slibc/src/pwd.rs` | How the C library reads the database |
+| `userland/src/bin/tests/dac_test.rs`, `userland/src/bin/tests/accounts_test.rs` | Tests |

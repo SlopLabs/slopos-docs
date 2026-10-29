@@ -44,10 +44,20 @@ Each CPU keeps its own queue of ready tasks, so CPUs don't contend for one
 shared list every time they switch. The cost is that the queues can get out of
 balance, which SlopOS corrects in three places. A new process or thread starts
 on whichever CPU has the least to do. A task that wakes up goes back to the
-CPU it last ran on, because that CPU's caches probably still hold its data.
-And a CPU with nothing to run takes a waiting task from any CPU that has at
-least two more than it does, while every few ticks a busy CPU checks whether
-it should hand work to a quieter one.
+CPU it last ran on if that CPU is idle, because its caches probably still
+hold the task's data, and otherwise to an idle or lightly loaded one. And a
+CPU with nothing to run takes a waiting task from any CPU that has at least
+two more than it does, while every few ticks a busy CPU checks whether it
+should hand work to a quieter one. An idle CPU sleeps until something wakes
+it, so a CPU that queues a task behind a running one sends an idle CPU an
+interrupt to come and take it.
+
+On a processor whose CPUs are not all alike (fast and slow cores, or two
+hardware threads sharing one core), "idle" isn't enough: the scheduler ranks
+the idle CPUs and picks the best, a fast core with nothing on it first. A
+running task is never moved for this; it lands somewhere better the next
+time it wakes. [CPU frequency](/docs/architecture/cpu-frequency#how-the-scheduler-places-work)
+explains the ranking. On identical CPUs, QEMU's included, nothing changes.
 
 ### Priorities
 
@@ -56,18 +66,21 @@ the highest tier that has one ready:
 
 | Tier | Used by | Who can choose it |
 |------|---------|-------------------|
-| High | The compositor, which every window's frames pass through | Granted by the kernel to `/bin/compositor` only |
-| Kernel I/O | Kernel threads that move network packets and run network timers | Kernel only |
+| High | The compositor, which every window's frames pass through | A spawner holding the `SchedHigh` capability; init starts the compositor there |
+| Kernel I/O | Kernel threads devices and the filesystem depend on: the network's receive and timer threads, the USB threads, the filesystem's flusher | Kernel only |
 | Normal | Ordinary programs and kernel threads (the default) | Anyone |
 | Low | Background work | Anyone |
 | Idle | The CPU's idle loop, which runs when nothing else can | Kernel only |
 
 A program picks Normal or Low when it starts another one through
-[spawn](/docs/architecture/processes#starting-a-new-program-in-one-step-spawn),
-and any other tier is refused. A High task that looped forever would starve
-everything below it, so the kernel grants High per program, through the same
-table that grants special [permissions](/docs/architecture/authority).
-`nice` and `setpriority` succeed, but the scheduler ignores the value.
+[spawn](/docs/architecture/processes#starting-a-new-program-in-one-step-spawn).
+A High task that looped forever would starve everything below it, so asking
+for High takes the `SchedHigh` [capability](/docs/architecture/authority),
+which ordinary programs never hold, and the kernel's own tiers are refused to
+everyone.
+`nice` and `setpriority` record a value for any task the caller may signal,
+but lowering a value below zero takes `SchedHigh` too, and is refused with `EACCES`
+without it. The scheduler ignores the value either way.
 
 Strict priority on its own would let a busy Normal task keep a Low task from
 ever running. So the scheduler counts how often each tier has been passed over
@@ -220,10 +233,14 @@ Kernel tests in `sched/src/sched_tests.rs` cover waits that time out, waits
 ended by a kill, and the disk wait that must outlast one. Tests in
 `core/src/syscall/tests.rs` check that the `poll` marker refuses a late wake
 from an old generation, and `sched/src/fair.rs` has host tests for the aging
-rule. In userland, `spin_signal_test` kills a program spinning in a loop and
-`ctrlc_flood_test` interrupts a job blocked in a write.
-`just check-sched-spread` boots the system and fails if any online CPU can't
-run tasks.
+rule. Another kernel test blocks a task while its CPU can't switch tasks and
+checks that it comes back running. In userland, `spin_signal_test` kills a
+program spinning in a loop, `ctrlc_flood_test` interrupts a job blocked in a
+write, and `exit_stress_test` ends processes whose threads are on their way
+into `futex_wait`, hundreds of times on every CPU, and checks that none
+outlives its process. `just check-sched-spread` boots the system and fails if
+any online CPU can't run tasks. The ranking of cores is tested with
+[CPU frequency](/docs/architecture/cpu-frequency#how-we-know-it-works).
 
 ## For contributors
 
@@ -263,6 +280,22 @@ bounded delay.
 is capped at `UNINTERRUPTIBLE_MAX_MS`; its one caller is the block engine,
 and a new caller needs a reason of the same kind. `Mutex::lock` is killable
 but not interruptible, and must never be taken from an interrupt handler.
+
+**Blocking outside a wait queue.** `futex_wait` and the sleep path
+(`sched/src/sleep.rs`) commit `Running -> Blocked` themselves rather than
+through `wait_core`. A kill or a signal posted while the task was still
+`Running` woke nothing, because a wake only moves a `Blocked` task, so after
+the compare-and-swap they look for one (`abort_raced_block`) and cancel the
+block if it is there. Without that check a thread on its way into
+`futex_wait` when its process exits outlives the process, holding its file
+descriptors. Any new path that blocks a task by hand owes the same check.
+
+**A `schedule` that can't switch hands back `Running`.** Early in boot the
+first CPU turns the scheduler off while the other CPUs already run user
+tasks. A task that blocks in that window and calls `schedule` gets no switch,
+so `schedule` undoes its `Blocked` before returning; its wait loop sees a
+spurious wake and waits again. Left `Blocked`, a task still on its CPU fails
+every later `Running -> Blocked` compare-and-swap and spins forever.
 
 **The kill flag.** `task_kill_and_wake` (`slopos-ostd/src/task/ops.rs`) is the
 only writer of `killed`. The syscall exit and every interrupt exit share one

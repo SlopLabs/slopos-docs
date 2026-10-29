@@ -69,7 +69,7 @@ the model describes, and the model is reviewed by people.
 | Page tables | Mapping and unmapping keep the page tables well formed and the page counts balanced, a program can only be given pages that are safe for it to see, and a mapping that fails gives the page back |
 | Copying between pages | Reading or writing memory through the kernel's copy helpers never runs past the end of a page or touches a page that doesn't exist |
 | Task lifetimes | A task is freed exactly once, never while it is running or queued, and only after it has been removed from everything that referred to it ([Task lifetimes](/docs/architecture/task-ownership)) |
-| Permissions | Only starting a program can raise a task's permissions, only to what that program is granted, and only if the task starting it may launch programs; dropping permissions always works ([Permissions](/docs/architecture/authority)) |
+| Capabilities | No step ever widens a task's capability mask. An exec keeps only the universal capabilities the task held (init re-executing itself keeps its mask and gains nothing); a spawn is refused unless what it hands the child is within the spawner's own mask, and gives the child nothing because of which program it runs; dropping capabilities always works and reaches every thread of the process, including one being created at that moment ([Capabilities](/docs/architecture/authority)) |
 | Resource accounting | Every account's usage equals the sum of what is charged to it, a charge never takes an account over its limit, and nothing is refunded twice ([Resource limits](/docs/architecture/resource-accounting)) |
 | SlopRing queues | The kernel never overwrites a completion a program hasn't read, never runs ahead of what the program submitted, and never has more requests in flight than allowed ([SlopRing](/docs/abi/slopring)) |
 | SlopRing layout | Entries in the shared queues are always read and written inside the queue's memory |
@@ -94,6 +94,9 @@ path. [Safety gates](/docs/verification/tcb-discipline) lists those checks.
 **The rest of the trusted core.** Interrupt handling, locks, device access,
 copying to and from user programs, the boot code and most of the memory code
 outside the parts above are reviewed and tested under Miri, but not proved.
+The capability proof covers the masks alone: the user and group ids a
+process carries, and the rules for changing them, are held by the kernel's
+own tests.
 Proving the whole trusted core isn't a goal. The proofs cover the places where
 a bug would corrupt memory rather than return an error, which is where they
 buy the most.
@@ -116,8 +119,8 @@ build Verus from the pinned commit and point `VERUS_BIN` at it.
 ## For contributors
 
 - **The pin.** `verification/verus.toml` names the Verus release, its commit,
-  the release file's SHA-256 and the Rust toolchain Verus itself uses
-  (1.95.0, separate from the kernel's nightly). It tracks a release on Verus's
+  the release file's SHA-256 and the Rust toolchain Verus itself uses (a
+  stable release, separate from the kernel's nightly). It tracks a release on Verus's
   main branch, not its experimental `async` branch, because the kernel has no
   `async`.
 - **Bumping it.** At most once a quarter, and only when a needed feature

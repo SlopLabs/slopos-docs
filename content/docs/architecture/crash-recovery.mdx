@@ -140,17 +140,29 @@ fraction of a second however big the disk is. Then the disk mounts read-write
 as usual, and the boot log records what was done:
 
 ```text
-ext2: journal attached — 8192 blocks at inode 8, replayed 1 transactions (5 blocks)
+ext4: journal attached — 2048 blocks at inode 8, replayed 1 transactions (5 blocks)
+ext4: the journal is recovered, so the mount is writable again
 ```
 
-The log calls each journal entry a *transaction*, and the filesystem driver
-still introduces itself as `ext2` because that is where it started. The disk
-is ext4.
+The log calls each journal entry a *transaction*.
+
+The same happens whenever a disk that went down in use is mounted later, not
+only at boot: a USB stick pulled out while it was mounted gets its journal
+replayed when it is plugged back in and mounted. The one exception is a
+read-only mount. Replaying means writing, so if you ask for `MS_RDONLY` on a
+disk whose journal still needs replaying, or the disk refuses writes, the
+mount fails with `EROFS` rather than show you a disk in an inconsistent
+state.
 
 At the same point the kernel finishes deleting files that were deleted while
 a program still had them open. On Unix, deleting an open file only removes
 its name; the file itself stays until the last program closes it. If the
 machine stops before that happens, nothing else would ever free its space.
+For the root disk the boot log counts them:
+
+```text
+FS: reclaimed 1 inode(s) the previous boot left unlinked-but-open
+```
 
 ### If the journal is damaged
 
@@ -158,16 +170,20 @@ Replay writes nothing until every copied block has passed its checksum. If
 one fails, SlopOS doesn't apply the entries that look fine and skip the rest.
 It mounts the disk read-only and leaves the repair to `e2fsck`, the standard
 checker from e2fsprogs. If that disk is your root filesystem, SlopOS by default
-boots from its built-in RAM filesystem instead, mounts the disk read-only at
-`/mnt`, and logs what to do:
+boots from memory instead (the base, unpacked into a RAM filesystem), mounts
+the disk read-only at `/mnt`, and logs what to do:
 
 ```text
-ext2: MOUNTING READ-ONLY — the volume went down in use and its journal could not be replayed. Replay it on the host with `e2fsck -fy <image>`.
+ext4: MOUNTING READ-ONLY — the volume went down in use and its journal could not be replayed. Replay it on the host with `e2fsck -fy <image>`.
 ```
 
 On the [development machine](/docs/self-hosting/development-machine) the disk
-is the image `fs/assets/ext2-persist.img` on the host. Shut the guest down,
-run `e2fsck -fy fs/assets/ext2-persist.img`, and boot again.
+is the image `fs/assets/ext4-persist.img` on the host. Shut the guest down,
+run `e2fsck -fy fs/assets/ext4-persist.img`, and boot again. On an installed
+machine, boot the install medium and run `e2fsck -fy` on the root partition
+from its rescue shell, which holds the raw access to the disk that `e2fsck`
+needs ([Installing SlopOS](/docs/self-hosting/installing) covers the rescue
+shell).
 
 A damaged journal means the disk lost or garbled data after confirming that
 it had stored it. The journal can't protect you from that, but the checksums
@@ -271,8 +287,9 @@ half of its blocks.
 
 | Where | What |
 |---|---|
-| `fs/src/ext2/journal.rs` | Writing journal entries and commit records |
-| `fs/src/ext2/cache.rs` | The block cache, and the order in which contents, journal and metadata reach the disk |
+| `fs/src/ext4/journal.rs` | Writing journal entries and commit records |
+| `fs/src/ext4/cache.rs` | The block cache, and the order in which contents, journal and metadata reach the disk |
+| `fs/src/ext4_vfs.rs` | Mounting: replay, the read-only reasons and their log lines, the flusher |
 | `ext4-core/src/jbd2.rs`, `ext4-core/src/recovery.rs` | The journal's on-disk format and replay, host-tested |
 | `fs/src/tests/journal.rs` | Kernel tests for commits, rollbacks and refused replays |
 | `fs/src/tests/rude_exit.rs`, `scripts/check_fs_replay.sh` | The two halves of the crash test |

@@ -97,8 +97,8 @@ A userland test is a program. On a test boot, init starts a copy of itself
 so init keeps serving while the tests run: privd answers requests and a test
 can ask for a desktop. The kernel then starts each registered program in
 turn, and the program reports each of its cases to the kernel, which prints
-them with the other results. This is `userland/src/bin/tests/keymap_test.rs`, cut down to two
-of its five cases:
+them with the other results. This is
+`userland/src/bin/tests/keymap_test.rs`, cut down to two of its five cases:
 
 ```rust
 use slopos_userland as _;
@@ -183,8 +183,9 @@ what a uid does and doesn't.
 
 Some behaviour only exists once a person is at the desktop: privd asking for
 consent, the lock screen, a window's keys. A test boot starts no desktop by
-itself, so a test that needs one asks init to restart the sessions and waits
-for one to come in front, then types into it:
+itself, so a test that needs one asks init to restart the sessions
+(`init_control::ask(Command::RestartSession)`), waits for one to come in
+front, then types into it:
 
 - `test_key(keycode, codepoint, pressed)` hands one key to whoever holds the
   keyboard input, as if a keyboard had sent it. It needs the `TestHarness`
