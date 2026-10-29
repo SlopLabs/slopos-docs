@@ -38,9 +38,11 @@ what happens while the system updates itself. The exact list of actions is on
 The shape is polkit's. In [polkit](https://polkit.pages.freedesktop.org/polkit/polkit.8.html),
 privileged programs it calls *mechanisms* serve unprivileged ones for named
 actions, and an *authentication agent* in the person's session asks them to
-prove who they are. Its results `yes`, `auth_self` and `auth_admin`, and the
-`_keep` variants that remember an answer for a short while, correspond to
-SlopOS's levels: unasked, the person themselves, an administrator, and `keep`.
+prove who they are. Its results `yes`, `auth_self` and `auth_admin`
+correspond to SlopOS's levels: a line with no level runs unasked, `password`
+has the person prove it is them, and an administrator's password answers for
+a person no line lets in. polkit's `_keep` variants, which remember an answer
+for a short while, correspond to an action's `keep` setting.
 The split between a click for an administrator and an administrator's password
 for anyone else is how Windows'
 [User Account Control](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works)

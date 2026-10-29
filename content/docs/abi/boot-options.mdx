@@ -146,7 +146,7 @@ The rest of the options have no Linux counterpart of the same name.
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `mount=` | `<source>:/<path>`, repeatable | none | Once the root is up, mounts the ext2/3/4 volume `<source>` at `/<path>`, read-write, in command-line order, so a later entry may mount inside an earlier one. The value splits at its first `:/`, so a `LABEL=` may hold a colon. `<source>` takes every spelling `root=` takes; an absent one is waited for as for `root=`. The target is refused as `mount(2)` refuses it: `/` itself, anything at or beneath a base directory, and anything at, above or beneath a directory the kernel keeps (`/etc` and `/var/lib/slopos`, so `/var` and `/var/lib` too). Each logs `MOUNT: <source> at <path> (ext4, read-write)` (or `read-only`); a failure logs `MOUNT: mount=<value> failed (...); continuing` and the boot goes on |
-| `verity=` | `require` | off | The root disk must mount with a verity trailer (a hash tree that attests its blocks), or the `fs init` boot step fails. A boot with no disk at all still passes |
+| `verity=` | `require` | off | The root disk must mount with a verity trailer (a table of each block's CRC-32 appended to the image, which the kernel checks every block it reads against), or the `fs init` boot step fails. A boot with no disk at all still passes |
 
 ### Boot and userland
 

@@ -151,7 +151,7 @@ What the extension asks for. The file is at most 64 KiB.
 |---|---|---|
 | `user` | Declares the user `<name>` | Each user once |
 | `user <suffix>` | Declares the user `<name>-<suffix>` | Each user once |
-| `state` | The extension has `/var/lib/<name>`, its first user's home | No |
+| `state` | The extension has `/var/lib/<name>`, owned by its first user, the home the user database gives each of its users | No |
 | `config` | The extension has `/etc/<name>` for settings | No |
 | `runtime` | The extension has `/run/<name>`, where its unix sockets go | No |
 | `command <command>` | Links `/opt/<name>/bin/<command>` into `/opt/bin` | Each command once |
