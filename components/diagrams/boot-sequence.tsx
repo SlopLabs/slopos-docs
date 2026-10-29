@@ -11,39 +11,39 @@ const STAGES: Stage[] = [
   {
     title: 'Firmware',
     detail: 'UEFI checks the hardware and starts the boot loader',
-    seen: 'whatever the firmware shows',
+    seen: "the firmware's logo, or nothing",
   },
   {
     title: 'Limine',
-    detail: 'loads the kernel, the base image and the command line into memory',
-    seen: 'no menu: it boots the default entry at once',
+    detail: 'loads the kernel, the bases and the command line into memory',
+    seen: "nothing, or an installed disk's five-second menu",
   },
   {
     title: 'Kernel setup',
     detail: 'CPU tables, memory, interrupt controllers, timers, the other CPUs, devices',
-    seen: 'the splash screen and its progress bar',
+    seen: 'a ring of twelve segments lighting up clockwise',
   },
   {
-    title: 'Root filesystem',
-    detail: 'a disk or the base image becomes /',
-    seen: 'ROOTFS: and VFS: lines in the log',
+    title: 'Base and root',
+    detail: 'one base is chosen, a disk or memory becomes /, and the base is mounted over it',
+    seen: 'BOOT: base, ROOTFS: and VFS: lines in the log',
   },
   {
     title: 'init',
-    detail: 'the first program; it starts everything else',
+    detail: 'the first program: it saves crash records and starts privd and the services',
     seen: 'USERLAND: launched /sbin/init in the log',
     user: true,
   },
   {
     title: 'Wheel of Fate',
-    detail: 'a spin decides whether this boot continues',
-    seen: 'the wheel',
+    detail: 'a light runs round the same ring; odd starts the system, even restarts it',
+    seen: 'the ring, then a number',
     user: true,
   },
   {
-    title: 'Desktop',
-    detail: 'init starts the compositor, then a terminal running the shell',
-    seen: 'the desktop and a shell prompt',
+    title: 'Session',
+    detail: 'a desktop that logs in by itself, or the login screen',
+    seen: 'the desktop and a terminal, or the login screen',
     user: true,
   },
 ];
@@ -51,7 +51,7 @@ const STAGES: Stage[] = [
 const FIRST_USER = STAGES.findIndex((s) => s.user);
 
 const SUMMARY =
-  'The boot sequence in order: firmware, Limine, kernel setup, root filesystem, then in user mode init, the Wheel of Fate and the desktop. ' +
+  'The boot sequence in order: firmware, Limine, kernel setup, choosing the base and the root, then in user mode init, the Wheel of Fate and a session. ' +
   STAGES.map((s) => `${s.title}: you see ${s.seen}.`).join(' ');
 
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)' };
@@ -98,8 +98,8 @@ export function BootSequence() {
         ))}
       </ol>
       <figcaption className="mt-2 text-sm" style={{ color: 'var(--ink-faint)' }}>
-        From power-on to the desktop. The serial log follows every stage; the screen shows the splash until a
-        program draws over it.
+        From power-on to a session. The serial log follows every stage; the screen stays black with one ring on it
+        until a session draws over it.
       </figcaption>
     </figure>
   );

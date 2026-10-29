@@ -6,7 +6,8 @@ description: "How programs start, run side by side, end and get signals on SlopO
 Programs on SlopOS start, run and end the way they do on Linux. A shell
 starts a command with `fork` and `exec` and waits for it with `waitpid`, and
 Ctrl-C and Ctrl-Z behave as you'd expect. A threaded program gets real
-threads that share its memory. Signals, process groups and sessions follow
+threads that share its memory. Every process runs as a user, with the user
+and group ids POSIX describes. Signals, process groups and sessions follow
 POSIX. Because SlopOS uses Linux's x86-64 system call numbers and meanings,
 most software ported from Linux needs no changes in this area. The
 [differences](#differences-from-linux) are few, and most of them are about
@@ -18,14 +19,15 @@ Linux's man pages. The one thing SlopOS leans on more than Linux does is
 starting a program in a single step with *spawn* rather than `fork`
 followed by `exec`; the reasons are [below](#starting-a-new-program-in-one-step-spawn).
 
-This page covers how programs start and end, how a shell uses process groups
-to run jobs, and how signals work.
+This page covers who a process runs as, how programs start and end, how a
+shell uses process groups to run jobs, and how signals work.
 
 ## Threads, tasks and process IDs
 
 Inside the kernel a thread is a *task*, and tasks and processes are separate
-objects. The scheduler runs tasks; the memory, open files, working directory
-and [resource limits](/docs/architecture/resource-accounting) belong to the
+objects. The scheduler runs tasks; the memory, open files, working
+directory, user and group ids and
+[resource limits](/docs/architecture/resource-accounting) belong to the
 process that its tasks share. Some signals go to one thread and others to the
 whole process.
 
@@ -33,6 +35,37 @@ whole process.
 calling thread's own. SlopOS hands these numbers out in increasing order and
 never reuses them, so unlike on Linux, a pid you saved earlier can't come to
 mean a different program.
+
+## Who a process runs as
+
+Every process carries a set of user and group ids, its *credentials*: a
+real, an effective and a saved user id, the same three for its group, and up
+to 32 supplementary groups, as POSIX defines them. All of a process's threads
+share them, so a `setuid` in one thread changes the whole process, as POSIX
+requires. Your shell and the programs it starts run as you; the system's
+services run as users of their own. The ids decide which files a process may
+open and which processes it may signal.
+
+They don't decide what a process may do to the machine. On SlopOS uid 0 is
+only the owner of the system's files: powers such as mounting a disk,
+writing the boot partition or rebooting are *capabilities*, held in a
+separate mask that every task carries.
+[Users and file permissions](/docs/architecture/users) explains the ids and
+the file checks, and [Capabilities](/docs/architecture/authority) explains
+the mask and where a program gets it.
+
+A process also carries a *login tag*: a number naming the login session it
+belongs to, such as one person's desktop or a shell logged in at the
+console. `fork`, spawn and `exec` pass it on unchanged, and only a spawner
+holding the `SetId` capability can give a new process a different one, which
+is how init gives each session a tag of its own. Ending a session means
+ending every process that carries its tag, whatever user it runs as; see
+[Sessions and login](/docs/architecture/sessions).
+
+Anyone may list every process. The list (`process_list`) gives each task's
+id, parent, state, effective user id and login tag, much as Linux's `/proc`
+shows every process, and `caps_get` tells anyone which capabilities a task
+holds. Acting on a process is what the rules below guard, not seeing it.
 
 ## How a program starts
 
@@ -46,13 +79,14 @@ marked read-only, and a page is copied only when one of them writes to it
 (*copy-on-write*; [Memory](/docs/architecture/memory) explains how). Because
 nothing is copied yet, `fork` doesn't count the child's memory against the
 machine's memory limit; each page is charged when the child gets its own copy
-of it. SlopOS has no `vfork`.
+of it. In every other respect the child is its parent's twin: the same ids,
+the same capabilities and the same login tag. SlopOS has no `vfork`.
 
 ### Replacing the program: exec
 
-`exec` (the `execve` call) keeps the pid, the open files and the working
-directory, and replaces the memory with a new program. SlopOS can run three
-kinds of file:
+`exec` (the `execve` call) keeps the pid, the open files, the working
+directory and the ids, and replaces the memory with a new program. SlopOS can
+run three kinds of file:
 
 - **A static ELF program**, which the kernel maps into memory and starts.
 - **A dynamic ELF program.** The file names the *dynamic loader*
@@ -69,17 +103,35 @@ kinds of file:
   fails with `ELOOP`, not `ENOEXEC`, so a shell searching `PATH` doesn't try to
   run the loop as a shell script.
 
-`exec` checks that the new program fits in memory before it lets go of the
-old one, so a program too big to load fails with `ENOMEM` and the caller
-keeps running. Once the old program is gone, the kernel closes every
-descriptor marked close-on-exec and resets any signal handlers to their
-defaults, because the handler code no longer exists. Signals the old program
-chose to ignore stay ignored.
+The caller needs permission to execute every file in that chain: the script,
+each interpreter and the program at the end. `exec` checks that the new
+program fits in memory before it lets go of the old one, so a program too big
+to load fails with `ENOMEM` and the caller keeps running. Once the old
+program is gone, the kernel closes every descriptor marked close-on-exec and
+resets any signal handlers to their defaults, because the handler code no
+longer exists. Signals the old program chose to ignore stay ignored.
 
-A script never gets more authority than its interpreter. Any special
-permission a program is entitled to (see
-[Permissions](/docs/architecture/authority)) is decided by the interpreter
-the kernel actually loads, never by the script file.
+`exec` never gives a process more power than it had. The kernel ignores the
+set-user-ID and set-group-ID bits on files, so a file can't carry ids into a
+process, and every gated capability the process held is dropped: only the few
+*universal* capabilities every program holds survive. A program that wants to
+pass its powers to another program starts it with spawn instead, which hands
+over a chosen subset explicitly. The one exception is init re-executing its
+own program from the base, which keeps everything it held
+([Init and services](/docs/architecture/init)).
+
+When a process's effective ids differ from its real ones, the new program
+starts with `AT_SECURE` set. That is a flag in the startup information the
+kernel gives every program, and it tells the C library and the loader not to
+trust the environment the caller left: the loader ignores
+`LD_LIBRARY_PATH` and searches no directory a user could have written to, and
+`secure_getenv` returns nothing.
+
+`exec` also records which program the process now runs, and whether that
+file came from the [base](/docs/architecture/base) or from an installed
+[extension](/docs/architecture/extensions). privd reads that record to tell
+which program is asking it for something
+([Privileged actions](/docs/architecture/privd)).
 
 ### Starting a new program in one step: spawn
 
@@ -101,6 +153,16 @@ descriptors it should get: share this one of mine as your 0, move this one
 of mine to you as your 3, close that one. Every action can only hand over or
 drop something the caller already holds, which is the point: a spawn can
 never give a child a file its parent couldn't open.
+
+Powers work the same way. The child gets the universal capabilities, plus
+whichever of the caller's own gated capabilities the caller names; naming one
+the caller doesn't hold fails with `EPERM`. The child runs as the caller
+unless the caller asks for other user or group ids, a different set of groups
+or a different login tag, all of which take `SetId`. A child that holds a
+gated capability, or runs with ids other than its spawner's real ones, starts
+with `AT_SECURE` set. This is how init starts each service with exactly what
+its service table names, and how privd starts a program it has been asked to
+run ([Capabilities](/docs/architecture/authority)).
 
 ### Threads: clone
 
@@ -127,20 +189,21 @@ the process's memory and closes its files, but it keeps a small record: the
 pid and how the process ended (its exit code, or the signal that killed it).
 A process in that state is a *zombie*. It stays one until its parent asks how
 it ended, with `wait4` or `waitpid`, which is called *reaping* it. Only then
-is the pid's record gone. A shell reaps each command when it finishes and
-prints its status as `$?`.
+is the pid's record gone, and the child is no longer a child: waiting for it
+again fails with `ECHILD` at once. A shell reaps each command when it
+finishes and prints its status as `$?`.
 
 `wait4` can also report a child that has been stopped (with `WUNTRACED`) or
 continued (with `WCONTINUED`), which is how a shell notices that you pressed
 Ctrl-Z.
 
 If the parent dies first, the child is an *orphan*. On Linux an orphan is
-handed to process 1 (`init`), whose job includes reaping it. SlopOS has no
-user program doing that job, so the kernel takes it on: an orphan has
-no parent any more, and when it exits it is cleaned up at once instead of
-becoming a zombie. The same happens to the children of a parent that set
-`SIGCHLD` to `SIG_IGN`, which is POSIX's way of saying "I will never wait for
-my children".
+handed to process 1 (`init`), whose job includes reaping it. SlopOS's init
+doesn't take on that job, so the kernel does: an orphan has no parent any
+more, and when it exits it is cleaned up at once instead of becoming a
+zombie. The same happens to the children of a parent that set `SIGCHLD` to
+`SIG_IGN`, which is POSIX's way of saying "I will never wait for my
+children".
 
 ## How the shell runs jobs
 
@@ -152,11 +215,16 @@ A *process group* is the set of processes that make up one job, such as the
 two halves of that pipeline. The shell puts each job in its own group (with
 `setpgid`) so that it can signal the job as a whole.
 
-A *session* is everything started from one login or one terminal window. A
-session has a *controlling terminal*, and at any moment one process group in
-the session is the terminal's *foreground* group. The shell sets it with
-`tcsetpgrp` each time it starts a job in the foreground, and takes it back
-when the job finishes.
+A *session*, in this sense, is everything started from one terminal: a
+console login or one terminal window. (It is a different thing from a login
+session, such as a person's desktop, which the kernel tracks by
+[login tag](#who-a-process-runs-as); one login session usually holds many
+terminal sessions.) A terminal session has a *controlling terminal*, and at
+any moment one process group in it is the terminal's *foreground* group. The
+shell sets it with `tcsetpgrp` each time it starts a job in the foreground,
+and takes it back when the job finishes. A shell that starts a job with spawn
+can ask for a new group and the foreground in the same call, so the job has
+both before it runs a single instruction.
 
 The terminal does the rest:
 
@@ -235,28 +303,38 @@ The queue is limited per process and per thread. Once it is full, `sigqueue`
 fails with `EAGAIN`. A `kill` or a signal from the kernel is never refused
 for that reason: it is still delivered, only without its own record of who
 sent it. That record (`siginfo`) is always accurate when it exists, because
-the kernel fills in the sender's pid itself and refuses a `sigqueue` that
-tries to pass a signal off as coming from the kernel.
+the kernel fills in the sender's pid and real user id itself and refuses a
+`sigqueue` that tries to pass a signal off as coming from the kernel.
 
 ### Who may signal whom
 
-On Linux, whether you may signal a process depends on which user each of you
-runs as. SlopOS has no users yet (every process runs as user 0), so it uses a
-different rule, based on the special permissions some programs are started
-with:
+SlopOS checks two things before it lets one process signal another, and both
+must hold:
 
-- A program may signal another only if it holds every special permission the
-  other holds. So an ordinary program can't kill the compositor, but programs
-  without special permissions can signal each other freely.
-- Nothing may signal init, the first program the kernel starts.
-- Kernel threads aren't processes and can't be signalled at all.
+- **The user ids match**, as POSIX and Linux require: the sender's real or
+  effective user id is the target's real or saved user id. So you can signal
+  your own programs but not another person's.
+- **The sender holds every capability the target holds.** A program can't
+  stop or kill one more powerful than itself, even one running as the same
+  user. So a program you start can't kill the compositor of your own
+  session, which holds powers over the screen that your program doesn't.
 
+Two exceptions waive both halves. A holder of the `ProcSignal` capability may
+signal anything; privd's task-ending action uses it, which is how the System
+Monitor ends another person's program once an administrator allows it
+([Privileged actions](/docs/architecture/privd)). And `SIGCONT` to a process
+in the sender's own terminal session needs neither, so a shell can always
+resume a job it stopped.
+
+Beyond those rules, nothing may signal init, the first program the kernel
+starts, and kernel threads aren't processes and can't be signalled at all.
 A signal sent to a whole group skips the members the sender may not signal,
-and fails with `EPERM` only if it reached none of them.
-[Permissions](/docs/architecture/authority) explains where the special
-permissions come from. When memory runs out, the kernel's
-[out-of-memory killer](/docs/architecture/resource-accounting) uses the same
-rule to decide which process it may end.
+and fails with `EPERM` only if it reached none of them. The nice-value calls
+(`setpriority`) use the same rule to decide whose priority you may change,
+and setting a nice value below zero, below the task's current one, takes the
+`SchedHigh` capability. When memory runs out, the kernel's
+[out-of-memory killer](/docs/architecture/resource-accounting) uses the
+capability half of the rule to decide which process it may end.
 
 ### How a kill takes effect
 
@@ -278,11 +356,15 @@ Both are hard to combine with a program built around one event loop, such
 as a server waiting in `poll`. Linux added two kinds of file descriptor to
 fix that, and SlopOS has both.
 
-- **pidfd.** `pidfd_open(pid)` returns a descriptor for one of your
-  children. It becomes readable when the child exits, so you can wait for it
-  with `poll` or [SlopRing](/docs/abi/slopring) alongside everything else.
-  You still reap the child with `waitpid`. Asking for a process that isn't
-  your child fails with `EPERM`.
+- **pidfd.** `pidfd_open(pid)` returns a descriptor for any process, named
+  by its pid (a thread that isn't its process's first fails with `EINVAL`).
+  It becomes readable when the process exits, so you can wait for it with
+  `poll` or [SlopRing](/docs/abi/slopring) alongside everything else. For
+  your own child you still reap it with `waitpid`. Every pidfd is
+  close-on-exec. Because pids are never reused, a pidfd for a process that
+  has already gone names nothing else and is simply readable at once; the
+  peer of a Unix socket hands you such a descriptor through
+  `SO_PEERPIDFD`.
 - **signalfd.** `signalfd4` returns a descriptor you read signals from, in the
   same 128-byte record format Linux uses. You block the signals you want with
   `sigprocmask` (so they stay pending instead of running a handler), and then
@@ -295,20 +377,26 @@ fix that, and SlopOS has both.
 |---|---|---|
 | Process and thread numbers | Reused once free | Handed out in increasing order, never reused |
 | Orphaned children | Adopted and reaped by process 1 | Have no parent; cleaned up by the kernel when they exit |
-| Who may signal whom | Depends on user ids | Depends on special permissions; init can't be signalled |
+| What uid 0 may do | Nearly anything, through the capabilities root holds | Nothing special; powers are capabilities, held whatever the uid |
+| Set-user-ID and set-group-ID files | Run with the file owner's ids | The bits are ignored; only a spawner holding `SetId` starts a program as someone else |
+| Powers across `exec` | Kept by root, and added by file capabilities | Only the universal capabilities survive |
+| Who may signal whom | Depends on user ids | User ids, and the sender must hold every capability the target holds; init can't be signalled |
 | First realtime signal (`SIGRTMIN`) | Usually 34 (glibc keeps two) | 32 |
 | `vfork` | Supported | Not provided; use spawn or `posix_spawn` |
 | Spawn file actions | `posix_spawn` may open files for the child | The child only gets descriptors the parent already holds |
-| `pidfd_open` | Any process; accepts `PIDFD_NONBLOCK` | Your own children only; no flags |
+| `pidfd_open` flags | Accepts `PIDFD_NONBLOCK` and `PIDFD_THREAD` | No flags |
 
 ## How it is tested
 
 Kernel tests cover the rules one at a time: which `clone` flags are accepted,
-how `#!` lines are parsed, who may signal whom, how pending and queued signals
-behave. Userland tests run real programs through the paths a shell uses:
-starting programs each way, delivering signals, waiting through a pidfd,
-killing a program stuck in a loop, pressing Ctrl-C on a job blocked writing to
-a full terminal, and ending hundreds of processes at once on every CPU.
+how `#!` lines are parsed, which ids `exec` and spawn leave a process with,
+who may signal whom, how pending and queued signals behave. Userland tests
+run real programs through the paths a shell uses: starting programs each way,
+delivering signals, waiting through a pidfd, killing a program stuck in a
+loop, pressing Ctrl-C on a job blocked writing to a full terminal, and ending
+hundreds of processes at once on every CPU. Others run as an ordinary person
+(uid 1000, holding nothing) to check that the user-id and capability rules
+refuse what they should.
 
 ## For contributors
 
@@ -323,12 +411,14 @@ from a live process. A stale handle fails its generation check instead of
 naming whoever holds the slot now. A build-time gate refuses a bare pid
 parameter on those entry points.
 
-**The process object carries identity only.** `Process` (in `slopos-ostd`)
-holds ids, handles to itself and its parent, resource accounts, a live-task
-count and an exited flag; address spaces and descriptor tables keep their own
-storage, keyed on its registry slot. The wait parent and the accounting
-parent are separate fields on purpose: changing who waits for a process must
-never move whose budget it spends.
+**What the process object holds.** `Process` (in `slopos-ostd`) holds ids,
+handles to itself and its parent, resource accounts, a live-task count, an
+exited flag, the credentials (a `Cred` behind a sequence lock, so every
+thread reads one consistent set), the login tag, the attested program and
+the capabilities a `caps_drop` took from the whole process. Address spaces
+and descriptor tables keep their own storage, keyed on its registry slot. The
+wait parent and the accounting parent are separate fields on purpose:
+changing who waits for a process must never move whose budget it spends.
 
 **What is per process and what is per thread.**
 
@@ -337,24 +427,33 @@ never move whose budget it spends.
 | Address space | Process; shared by every `CLONE_VM` task |
 | Descriptor table | Process; close-on-exec descriptors close after `exec` passes its point of no return |
 | Working directory and umask | Process; held in a reference-counted `FsContext`, replaced whole by `chdir` |
+| Credentials and login tag | Process |
+| Capability mask | Task, but `exec` and `caps_drop` change every task of the process at once |
 | Signal dispositions | Thread group; shared under `CLONE_SIGHAND` |
 | Signal mask, pending set, signal queue | Task |
 
 **Clone flags.** The accepted set is `CLONE_SUPPORTED_MASK`. `CLONE_THREAD`
 requires `CLONE_VM` and `CLONE_SIGHAND`, and `CLONE_SIGHAND` and
 `CLONE_FILES` each require `CLONE_VM`. A `CLONE_VM` child joins the caller's
-process rather than creating one.
+process rather than creating one. A fork copies the parent's capability mask
+field by field, written out explicitly because an omission there is how a
+power would leak into a child.
 
 **Spawn.** The primitive is `spawn_path` (a SlopOS-private syscall number),
-with up to 64 descriptor actions: `CloneFd`, `TransferFd`, `Close`.
-Discriminant 4 was the retired `Open` action and must not be reused. Asking
-for a privileged spawn flag is `EPERM`; those come only from the program
-grant table (`core/src/exec/grants.rs`), keyed on the canonical path of the
-image actually loaded.
+taking a `SpawnAttrs` with up to 64 descriptor actions (`CloneFd`,
+`TransferFd`, `Close`). Its flag word may only ask for a new process group
+and the foreground (`SPAWN_USER_SETTABLE`); the kernel's own `NO_PREEMPT`
+answers `EPERM` and an undefined bit `EINVAL`, in that order, so probing
+reserved bits learns nothing. `caps` must be a subset of the spawner's mask,
+and `uid`, `gid`, `groups` and `login` take effect only under their `set`
+bits, ids the spawner doesn't hold and any login tag needing `SetId`. The
+spawned ids are saved as an `exec` saves them. The checks live in
+`Endowment::check` in `core/src/exec/mod.rs`.
 
-**Signals.** The signal-permission rule is `signal_dominates` plus
-`signal_is_init` in `core/src/syscall/signal.rs`, and the nice-value calls
-(`setpriority`) apply the same rule, so change them together.
+**Signals.** The rule is `signal_permitted` in `core/src/syscall/signal.rs`:
+init first, then `ProcSignal`, then the `SIGCONT` exception, then the uid
+half and `signal_dominates`. `setpriority` and the OOM killer call into the
+same code (the OOM killer only `signal_dominates`), so change them together.
 
 **Job-control objects.** `Session` and `ProcessGroup` are reference-counted.
 Each member task holds a strong reference to its group and each group one to
@@ -376,12 +475,16 @@ last member is reaped the reference upgrades to nothing.
 - [*A fork() in the road*](https://www.microsoft.com/en-us/research/uploads/prod/2019/04/fork-hotos19.pdf)
   by Baumann, Appavoo, Krieger and Roscoe, HotOS 2019. The case against
   `fork` as the way to start programs, and for spawn-style calls instead.
+- [`credentials(7)`](https://man7.org/linux/man-pages/man7/credentials.7.html).
+  Linux's overview of real, effective and saved ids and supplementary groups,
+  which SlopOS's credentials follow.
 - [`signal(7)`](https://man7.org/linux/man-pages/man7/signal.7.html). Linux's
   overview of signals: default actions, masks, realtime signals, and which
   system calls `SA_RESTART` restarts.
 - The man pages for [`fork(2)`](https://man7.org/linux/man-pages/man2/fork.2.html),
   [`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html) (including
   its rules for `#!` scripts), [`posix_spawn(3)`](https://man7.org/linux/man-pages/man3/posix_spawn.3.html),
+  [`kill(2)`](https://man7.org/linux/man-pages/man2/kill.2.html),
   [`pidfd_open(2)`](https://man7.org/linux/man-pages/man2/pidfd_open.2.html) and
   [`signalfd(2)`](https://man7.org/linux/man-pages/man2/signalfd.2.html), which
   SlopOS follows except where this page says otherwise.
@@ -390,10 +493,11 @@ last member is reaped the reference upgrades to nothing.
 
 | Where | What |
 |---|---|
-| `slopos-ostd/src/process/` | The process object, its registry and handles |
+| `slopos-ostd/src/process/` | The process object, its registry and handles, credentials (`cred.rs`) |
 | `sched/src/task/task_lifecycle.rs` | Creating tasks, exit, zombies and orphans |
-| `core/src/exec/` | Loading programs, `#!` scripts, the program grant table |
+| `core/src/exec/` | Loading programs, `#!` scripts, what a spawn may hand its child |
 | `core/src/syscall/process_handlers.rs` | `fork`, `clone`, spawn, `wait4`, process groups and sessions |
+| `core/src/syscall/cred_handlers.rs` | The `setuid` family and `getgroups` |
 | `core/src/syscall/signal.rs`, `slopos-ostd/src/task/sigqueue.rs` | Sending signals, the permission rule, pending and queued signals |
 | `drivers/src/tty/` | The terminal side of job control: Ctrl-C, Ctrl-Z, hangup |
 | `pidfd/`, `signalfd/` | The two descriptor types |
