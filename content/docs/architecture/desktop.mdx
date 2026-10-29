@@ -125,8 +125,9 @@ What makes them worth using is what comes with every one of them:
   `<document> — <App>`, any other by the app's name alone, and that name is
   the one its dock entry uses.
 - **Refusals say why.** When the computer refuses to open or change a file,
-  appkit works out the reason from what the kernel says about the file
-  (`statfs` and its flags, never its path): the system's own file, an
+  appkit works out the reason from what the kernel says about the file and
+  the filesystem it is on (`statfs` and the file's flags, never its path):
+  the system's own file, an
   extension's, one locked against changes, a disk that can't be written, or
   permissions. The app says which.
 
@@ -232,7 +233,8 @@ The compositor draws everything on screen that isn't an app's content.
   screen, the people as rows, five at a time), a password field and *Unlock*
   or *Log in*.
 - **Questions**, the consent dialog among them, are drawn over everything:
-  a card centred over the window of the app that asks, its headline
+  a card centred over the window of the app that asks when it has one, its
+  headline
   `<App> wants to <do something>.`, the app's icon, what follows from
   allowing it, *Cancel* and a button naming what it allows, filled with the
   danger tone when the action destroys something.
@@ -291,7 +293,7 @@ why).
 | App | Program | Where | What it is |
 |---|---|---|---|
 | Terminal | `terminal` | base | A shell on a *pseudo-terminal* (a pair of endpoints that look like a serial line to the shell), emulating an xterm closely enough for full-screen programs and mouse reporting. Resizing re-wraps long lines in the scrollback; Ctrl+Shift+PgUp and PgDn scroll it. |
-| System Monitor | `sysmon` | base | A *Performance* tab with a graph of the last minute for the processor, memory, each disk, each network adapter and the display, and a *Processes* tab listing every process with its threads folded in, which can end one (through privd when it belongs to someone else). `sysmon --page cpu`, `memory`, `disk`, `network`, `gpu` or `processes` opens on a page. |
+| System Monitor | `sysmon` | base | A *Performance* tab with a graph of the last minute for the processor, memory, each disk, each network adapter and the graphics adapter, and a *Processes* tab listing every process with its threads folded in, which can end one (through privd when it belongs to someone else). `sysmon --page cpu`, `memory`, `disk`, `network`, `gpu` or `processes` opens on a page. |
 | Install SlopOS | `installer-ui` | base | The installer's window, shown only when the computer started from the installer ([Installing SlopOS](/docs/self-hosting/installing)). |
 | Editor | `editor` | `/usr/local` | A text editor with tabs, a file tree, syntax highlighting, find and replace and a command palette. It saves through a synced copy renamed over the file, so a failed save never leaves half a file, and asks before replacing a file that changed since it was opened. Its manual is `share/slopos/doc/editor.md`. |
 | Files | `file_manager` | `/usr/local` | A file manager with places in a sidebar, a toolbar and a table of the folder. |
@@ -314,9 +316,9 @@ before and after a change. The audit and the tests are the gate.
 ## For contributors
 
 - **Name roles, never values.** An app names a `Tone`, a `Surface`, a
-  `TextRole`, a `space` step or an `inset`; appkit itself never constructs a
-  colour outside the theme. A new role goes in `theme-core`, with a contrast
-  test for every surface it may sit on.
+  `TextRole`, a `space` step or an `inset`, and appkit itself constructs no
+  colour (the checks behind a picture's transparent pixels aside). A new role
+  goes in `theme-core`, with a contrast test for every surface it may sit on.
 - **A new component owns its behaviour.** Its states, focus ring, overflow and
   hit target are the component's job, and it joins the gallery
   (`appkit::catalogue`), so `appkit_test` audits it at three widths.

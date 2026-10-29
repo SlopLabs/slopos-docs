@@ -135,6 +135,30 @@ table or in parentheses.
 **One aside per page at most.** A short, true remark a person would make,
 usually about why a number is what it is. Never in Reference or Guides.
 
+## Words
+
+Use the words the source uses for SlopOS's own ideas, as the
+[Glossary](content/docs/abi/glossary.mdx) defines them, and keep to one
+word per idea across pages: a *base* is the read-only userland and a
+*slot* holds only a kernel; a *person* is a human with an account and a
+*user* any account in the uid sense; *privd* runs an *action*'s
+*mechanism* for a *requester*. A new idea gets a glossary entry in the same
+change as the page that introduces it.
+
+When a page describes what a person sees or clicks, use the words SlopOS's
+own screens use (theme-core's glossary): computer, disk, installer,
+partition, restart, power off, administrator, log out, switch user, app.
+Technical prose may still say *reboot* or *firmware entry* where that is the
+precise term.
+
+Where SlopOS speaks an interface Linux defines (a syscall, a boot option, a
+signal rule, a device name), say where it differs, in a "Differences from
+Linux" table if there is more than one difference.
+
+Status pages say what they describe: the date and the SlopOS commit they
+were checked against. They grade in words ("Works", "Works with limits",
+"Not tested"), never in symbols.
+
 ## Don't
 
 - Marketing words: unleash, powerful, seamless, robust, blazing, world-class.

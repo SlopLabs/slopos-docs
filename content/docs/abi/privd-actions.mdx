@@ -73,6 +73,11 @@ no action: init runs it at boot, handing it `ExtensionUpdate` and `Seal`.
 | `org.slopos.accounts.password` | `/bin/users passwd` | `Seal` | `exclusive accounts` | `root`, `user confirm` |
 | `org.slopos.accounts.manage` | `/bin/users add *`, `remove *`, `rename *`, `passwd *`, `promote *`, `demote *`, `autologin *`, `remote *` | `Seal`, `DacOverride` | `exclusive accounts` | `root`, `admin confirm` |
 
+`users sync` has no action: init runs it at every boot, handing it `Seal`.
+`org.slopos.software.install` runs `tree-install` as uid 0 holding nothing
+gated; `tree-install` asks for it only to install at `/usr/local` when its
+caller does not own that directory.
+
 ## Logging in and unlocking
 
 | Action | Runs | Capabilities | Settings | Who may ask |

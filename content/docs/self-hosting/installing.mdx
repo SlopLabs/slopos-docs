@@ -91,7 +91,8 @@ in the firmware's settings first. Then start the computer
 from the stick, usually from the firmware's one-time boot menu.
 [Hardware](/docs/status/hardware-requirements) lists what SlopOS runs on.
 It drives NVMe drives, virtio disks in a virtual machine and USB disks, and
-has no SATA driver, so an install goes onto an NVMe drive on real hardware.
+has no SATA driver, so on real hardware an install goes onto an NVMe drive or
+a USB disk.
 
 You see the boot screen and the
 [Wheel of Fate](/docs/architecture/boot#the-wheel-of-fate), then a desktop
@@ -308,7 +309,13 @@ them for the installer.
 
 ## What isn't done
 
-- No SATA driver, so no install onto a SATA disk.
+- No SATA driver, so no install onto a SATA disk: on real hardware the disk
+  must be an NVMe drive or a USB disk. The computer needs UEFI firmware with
+  Secure Boot turned off.
+- An install from a live system with 512 MiB of memory, which is what
+  `just boot-live` gives QEMU by default, stops partway through writing the
+  startup files, a known defect (`plans/KNOWN_ISSUES.md`). Whether more
+  memory avoids it isn't known yet.
 - No resizing of another system's partitions or filesystems.
 - No Secure Boot signing.
 - No choice of filesystem: the root is always ext4, and SlopOS can't mount
