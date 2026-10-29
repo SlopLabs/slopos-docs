@@ -326,9 +326,10 @@ readable by everyone.
 ### The store
 
 Everything `extctl` keeps lives in `/var/lib/slopos/extensions`: the trusted
-keys as `keys.<n>`, and for each extension its record as `record.<n>` beside
-its current and previous images, each named by its root (`<root>.ext`, with
-`<root>.meta` and `<root>.meta.sig` when a key signed it).
+keys as `keys.<n>`, and for each extension a directory of its own, `<name>/`,
+holding its record as `record.<n>` beside its current and previous images,
+each named by its root (`<root>.ext`, with `<root>.meta` and
+`<root>.meta.sig` when a key signed it).
 
 Nothing in the store is ever renamed or rewritten in place. A changed record
 or key list goes in as the next numbered generation, is sealed and read back,

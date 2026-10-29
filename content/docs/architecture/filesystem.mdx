@@ -70,7 +70,7 @@ lead to them (`/usr`, `/etc`) can't be renamed or removed either, so no one
 can move `/usr/bin` aside and put a different one in its place.
 
 So updating the system means installing a new base, not editing files in
-`/bin`. The whole userland changes at once, the previous base stays on the
+`/bin`. The whole base changes at once, the previous base stays on the
 boot partition in case the new one doesn't work, and your files on the disk
 are untouched. A new base can even take over while the system runs: the
 kernel moves every base directory to it in one step, and a program that
@@ -92,11 +92,11 @@ how privd uses it.
 A few directories on the root disk hold records the system trusts: `/etc`
 holds the user database, and `/var/lib/slopos` holds the accounts record,
 the installed extensions with the keys trusted to sign them, and the record
-of which directories the first person owns. Sealing the files (see [below](#sealed-files)) stops anyone
-rewriting them, but a program allowed to mount disks could still cover the
-whole directory with another disk that holds different records, and a
-program allowed to bypass permissions could rename the directory aside and
-make a new one.
+of which directories the first person owns. Sealing the files (see
+[below](#sealed-files)) stops anyone rewriting them, but a program allowed to
+mount disks could still cover the whole directory with another disk that
+holds different records, and a program allowed to bypass permissions could
+rename the directory aside and make a new one.
 
 So once the root and the `mount=` volumes are up, the kernel *keeps* these
 directories (`/etc`, `/var/lib/slopos`, `/var/lib/slopos/extensions` and
