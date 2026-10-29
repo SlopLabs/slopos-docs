@@ -6,9 +6,9 @@ description: "Lay out an extension, pack and sign it, install it on a SlopOS mac
 By the end of this page you will have packed an extension called `hello`,
 installed it on a SlopOS machine, and seen its daemon write to its log and its
 command run from any shell. You will also have shipped an update and know how
-to have a key you trust install updates without anyone being asked.
-[Extensions](/docs/architecture/extensions) explains what an extension is
-and why it works the way it does; this page only covers what you do.
+to have a key you trust install updates without anyone being asked. For why
+extensions work the way they do, read
+[Extensions](/docs/architecture/extensions).
 
 ## What you need first
 
@@ -19,7 +19,7 @@ and why it works the way it does; this page only covers what you do.
   medium does not: extensions need a disk root.
 - A checkout of SlopOS on the host, to pack the extension with `just
   extension`. You can also pack it on the machine itself with `extctl build`,
-  but only the host signs it.
+  which does not sign it; `just extension` signs it when you ask.
 - To install from the host, the machine [paired](/docs/self-hosting/remote-control)
   with it, so that `just remote` reaches it.
 - To sign, `ssh-keygen` on the host.
@@ -193,8 +193,8 @@ extctl key add /var/tmp/slopos-extension.pub ceiling - user -
 ```
 
 The terminal prints `extctl: waiting for you to allow this on the screen`
-and the desktop asks you to allow it, showing the key's fingerprint and both
-ceilings.
+and the desktop asks you to allow it; *Show details* lists the command line,
+with the key's fingerprint and both ceilings. Choose *Change*.
 
 </Tab>
 </Tabs>
@@ -309,8 +309,8 @@ as `current` and the old one as `previous`, and `hello` prints the new
 message. `hellod` keeps running from the old image: nothing it runs or reads
 changed. Change `libexec/hellod` in the next version and init restarts it.
 
-Packing changed bytes under the same version number is refused, so raise the
-version every time:
+Installing changed bytes under a version number already installed is
+refused, so raise the version every time:
 
 ```text
 extctl: hello.ext: version 1 was installed with other bytes

@@ -310,10 +310,11 @@ this: they write a file, seal it, read it back and only then believe it.
 A disk image can carry a table of checksums at its end, one for each block (a
 *verity trailer*), so the kernel can tell when a block has changed since the
 image was built. It catches accidental corruption, not a deliberate
-attacker, because the checksums are CRC-32. A *protected* trailer (`VERITY=on`) makes the whole
-disk read-only; an *attested* one (`VERITY=rw`) allows writes and stops
-checking the blocks that were written. The boot option `verity=require`
-refuses to boot from a root disk that has no valid trailer.
+attacker, because the checksums are CRC-32. A *protected* trailer
+(`VERITY=on`) makes the whole disk read-only; an *attested* one
+(`VERITY=rw`) allows writes and stops checking the blocks that were written.
+The boot option `verity=require` refuses to boot from a root disk that has
+no valid trailer.
 
 Extension images are checked differently, against a tree of SHA-256 hashes
 in the layout Linux's dm-verity uses, whose root `extctl` recorded when it
