@@ -316,7 +316,7 @@ protect.
 | `just debug-monitor` | Connect to the QEMU monitor socket |
 | `just rr-record` | Record a deterministic test run to `builddir/replay.bin` (one CPU, no KVM) |
 | `just rr-replay` | Replay the recording under interactive GDB. Its script's breakpoints on a program's fault and on a kernel exception are not set (GDB wants the functions' full Rust paths), so set them yourself |
-| `just rr-gdb [<address>]` | Meant to replay to the fault unattended and, given an address, run backwards to the instruction that wrote it. At this commit it does neither: it never stops at the fault, and its script reads the fault's registers in C syntax GDB refuses in Rust code. Do the same steps by hand under `just rr-replay` |
+| `just rr-gdb [<address>]` | Meant to replay to the fault unattended and, given an address, run backwards to the instruction that wrote it. At this commit it does neither: it never stops at the fault, and its script reads the fault's registers in C syntax GDB refuses in Rust code, and the watchpoint it would set (`wpva`'s) watches the wrong address. Do the same steps by hand under `just rr-replay` |
 
 [Debugging with GDB](/docs/development/debugging-gdb-record-replay) shows
 how to use them, and [Go backwards from a
