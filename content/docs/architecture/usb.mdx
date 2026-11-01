@@ -318,8 +318,8 @@ to announce itself and has been quiet since, and every device that connected
 has reached an end: bound, declined, matched by no driver or given up on,
 with every new disk's partition table read. The USB threads run on the other
 processors while the boot waits, so on a machine with a single processor the
-wait is skipped and the log says so; under `tests=on` that fails the run,
-since the tests could not see the same bus every time.
+wait is skipped and the log says so, except under `tests=on`, where the
+`usb settle` step fails the run instead.
 
 `root=auto` and `root=disk` never choose a USB disk: they mean the machine's
 own disk, and a stick left in a port must not change what boots. A root on a

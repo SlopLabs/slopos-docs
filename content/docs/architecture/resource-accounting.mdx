@@ -19,8 +19,9 @@ machine out of memory, the kernel ends one process, chosen by a rule
 described below.
 
 The budgets for open files, processes, address space and pinned memory are
-Unix resource limits, read with `getrlimit` as on Linux. Refusing memory at the time it is promised is what Linux calls *strict
-overcommit accounting*, an option there and the default here.
+Unix resource limits, read with `getrlimit` as on Linux. Refusing memory at
+the time it is promised is what Linux calls *strict overcommit accounting*,
+an option there and the default here.
 
 ## What is limited
 

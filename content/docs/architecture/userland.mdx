@@ -101,17 +101,15 @@ them separately. Having one file means a process always has exactly one copy
 of the C library, however many shared libraries it loads, so there is only
 one `malloc` and one `errno` to get confused about.
 
-The loader looks for a library in `LD_LIBRARY_PATH`, then in the paths
-recorded in the executable or library that needs it (`RUNPATH` or `RPATH`,
-including `$ORIGIN`), then in `/lib` and `/usr/lib`, and then, for an
-extension's program, in that extension's own `lib` directory. Last come
-`~/.local/lib` and `/usr/local/lib`, which it searches only for a process that
-is neither running as uid 0 nor marked `AT_SECURE` by the kernel, so a library
-a person can write never reaches a program holding more power than they do.
-An `AT_SECURE` process also gets no `LD_LIBRARY_PATH` and no `$ORIGIN`.
+The loader searches where Linux's does (`LD_LIBRARY_PATH`, the `RUNPATH` or
+`RPATH` of the object that needs the library, `/lib`, `/usr/lib`), then an
+extension's own `lib` directory for that extension's programs, and last
+`~/.local/lib` and `/usr/local/lib`, which it skips for a process running as
+uid 0 or marked `AT_SECURE`, so a library a person can write never reaches a
+program holding more than they do.
 [Installed software](/docs/architecture/software#how-programs-and-libraries-are-found)
-explains the order and the reason for it. Two debugging switches help when a
-library doesn't load as you expect:
+gives the exact order and the reason for it. Two debugging switches help when
+a library doesn't load as you expect:
 
 ```bash
 LD_DEBUG=libs ./myprog         # the address each library was mapped at
