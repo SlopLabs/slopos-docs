@@ -121,7 +121,8 @@ grant - unasked - users hello commands hello
 ```
 
 `hello.ext` is the image and `hello.meta` its sidecar, which names the
-extension, its version and the image's root.
+extension, its version and the image's root: the SHA-256 digest every block
+of the image is checked against when the machine reads it.
 
 </Tab>
 <Tab value="On the machine">
@@ -349,17 +350,19 @@ hello removed; its record keeps version floor 1
 
 - **`/.extension/declare names /opt/hello/libexec/hellod, which the image
   does not hold`.** The program is missing, or not executable when it was
-  packed. `chmod +x` it and pack again.
+  packed. Make it executable (`chmod +x` on the host, `install` on the
+  machine) and pack again.
 - **`outside bin, libexec, lib and share`.** The tree holds something else at
   its top. Only those four directories and `.extension` may be there.
 - **`a service's log, state and runtime directory are its extension's first
   user's, so it declares a user`.** A service, `state` or `runtime` needs a
   `user` line, and so does an action.
-- **`statically linked, not against libc.so`** or **`binds <name>, which
-  nothing it needs exports`.** A compiled program was linked statically, or
-  needs a function the machine's `libc.so` does not have. `just extension`
-  checks against the host build's `libc.so`; a machine running an older base
-  may lack a function a newer one has.
+- **`statically linked, not against libc.so`** (from `just extension`,
+  `static, with no PT_INTERP`) or **`binds <name>, which nothing it needs
+  exports`.** A compiled program was linked statically, or needs a function
+  the machine's `libc.so` does not have. `just extension` checks against the
+  host build's `libc.so`; a machine running an older base may lack a function
+  a newer one has.
 - **`version 1 was installed with other bytes`** or **`is older than`**.
   Raise the version.
 - **`it is signed by SHA256:…, which the owner does not trust`.** Trust the
