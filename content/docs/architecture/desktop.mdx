@@ -111,8 +111,9 @@ says which to use when.
 What makes them worth using is what comes with every one of them:
 
 - **Text that doesn't fit is cut with `…`**, at its end or, for a path or a
-  file name, at its start, and the whole text shows in a tooltip. Wrapped
-  text never loses a word.
+  file name, at its start, and the whole text shows in a tooltip. Text set to
+  wrap breaks at spaces and shows every word, unless the app caps its number
+  of lines, when the last line is cut with `…` too.
 - **Every control has its states.** It lights under the pointer, shows when
   pressed, can be disabled and shows that too. Focus is one ring around the
   control, or around the row the keyboard is on in a list, table, tree or
@@ -216,11 +217,13 @@ The compositor draws everything on screen that isn't an app's content.
   maximised), with a dark hairline just outside and a light one along the
   top, and a shadow that is half as dark on a window without focus. The
   close, minimise and zoom buttons are coloured discs that show their glyphs
-  while the pointer is over the three of them, and turn grey on a window
-  without focus. A
-  resize takes a press up to 8 px outside the frame. Zoom fills the space
-  between the menu bar and the dock, or gives the window the nearest size its
-  limits allow; pressing it again puts the window back.
+  while the pointer is over the three of them, and are grey on a window
+  without focus until the pointer comes over them; a window that can't be
+  resized has a grey zoom button with no glyph. A resize takes a press up to
+  8 px outside the frame. Zoom fills the space between the menu bar and the
+  dock, or gives the window the nearest size its limits allow, centred;
+  pressing it again puts the window back, as long as it is still maximised
+  or still where zoom put it.
 - **The menu bar** is a strip of glass across the top. On the left,
   SlopOS's mark opens the system menu and the focused window's app is named;
   on the right, the network item opens the network panel and the clock shows
@@ -238,9 +241,10 @@ The compositor draws everything on screen that isn't an app's content.
 - **The lock and login screens** dim the wallpaper and show the time and
   date, the person's initial in a circle and their name (or, on the login
   screen, the people as rows, five at a time), a password field and *Unlock*
-  or *Log in*.
-- **Questions**, the consent dialog among them, are drawn over everything:
-  a card centred over the window of the app that asks when it has one, with
+  (beside *Switch user…*) or *Log in*.
+- **Questions** are drawn over everything: the ones the system menu asks
+  before it ends something, and privd's consent dialog. The consent dialog is
+  a card centred over the window of the app that asks, when it has one, with
   the headline `<App> wants to <do something>.`, the app's icon, what
   follows from allowing it, *Cancel*, and a button naming what it allows,
   filled with the danger tone when the action destroys something.
