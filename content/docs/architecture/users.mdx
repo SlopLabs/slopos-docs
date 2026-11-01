@@ -39,9 +39,10 @@ Where SlopOS differs from Linux:
   per thread, and its C library copies a change to every thread.
 - There are no separate filesystem ids (`setfsuid`): the effective ids are the
   ones checked.
-- Set-user-ID and set-group-ID bits on a program are stored and stripped
-  exactly as Linux strips them, but never honoured. No program gains an
-  identity or a capability by being run.
+- Set-user-ID and set-group-ID bits on a program are stored, and `chown`,
+  `chmod` and file creation clear them where Linux does (a write to the file
+  doesn't), but they are never honoured. No program gains an identity or a
+  capability by being run.
 - `DacOverride` is Linux's `CAP_DAC_OVERRIDE`, `CAP_FOWNER` and `CAP_CHOWN` in
   one bit, since one broker hands all three out.
 

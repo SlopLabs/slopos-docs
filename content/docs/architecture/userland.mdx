@@ -77,15 +77,17 @@ anything away. That interface is `libc.so`. Its exports only grow:
 `check_libc_exports.sh` holds every function and variable it exports to a
 recorded list, and the size, alignment and field offsets of every structure
 its headers define to another, and fails when anything recorded is removed or
-changes. An addition is recorded by a reviewed change to those lists; a
-removal can only land as a hand edit someone has to approve. The private
+changes, or when something new is not recorded yet. An addition is recorded
+by a reviewed change to those lists; a removal can only land as a hand edit
+someone has to approve. The private
 system calls behind the library can then change freely, as long as the
 library keeps its promises.
 
 So a program built outside the base should not make system calls itself.
-The apps are held to that: a check after every build fails one that is
-statically linked, does not list `libc.so` among the libraries it needs, or
-contains a `syscall` instruction of its own. The desktop toolkit the apps use
+The apps are held to that: a check after every userland build on the host
+fails one that is statically linked, names another loader, does not list
+`libc.so` among the libraries it needs, or contains a `syscall` instruction
+of its own. The desktop toolkit the apps use
 reaches the system through `slopos-cabi`, a thin layer of safe Rust over
 functions `libc.so` exports, so the same toolkit code links into a static
 base program against slibc's Rust library and into an app against
@@ -109,9 +111,9 @@ The loader searches where Linux's does (`LD_LIBRARY_PATH`, the `RUNPATH` or
 extension's own `lib` directory for that extension's programs, and last
 `~/.local/lib` and `/usr/local/lib`, which it skips for a process running as
 uid 0 or marked `AT_SECURE` (the kernel's mark on a program that starts
-holding a capability beyond those every program has, or as other ids than
-its starter's), so a library a
-person can write never reaches a program holding more than they do.
+holding a capability beyond those every program has, or running with ids
+other than the real ids of whoever started it), so a library a person can
+write never reaches a program holding more than they do.
 [Installed software](/docs/architecture/software#how-programs-and-libraries-are-found)
 gives the exact order and the reason for it. Two debugging switches help when
 a library doesn't load as you expect:

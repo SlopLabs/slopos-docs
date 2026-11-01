@@ -183,10 +183,10 @@ one node per partition. It understands both formats in common use:
 A disk with neither has no partitions, and a filesystem on it covers the
 whole disk. A disk whose table is there but can't be used (both GPT copies
 damaged, or the placeholder MBR that GPT disks carry with no readable GPT
-behind it) gets no partition nodes either, and the kernel logs
-`BLOCK: <disk> partition table unusable` rather than treating it as an
-unpartitioned disk. Its own node stays, so a tool holding `RawBlock` can
-still reach it to repair it.
+behind it) gets no partition nodes either. The kernel logs why
+(`BLOCK: sda partition table unusable: ProtectiveMbrWithoutGpt`), and the
+disk's own node stays, so a tool holding `RawBlock` can still reach it to
+repair the table.
 
 The kernel, the boot manager (`bootctl`), the installer and the host's disk
 builder all read GPT with the same code, so they always agree about which
@@ -201,8 +201,8 @@ a panicking kernel leaves its record. These carry partition types that
 belong to SlopOS rather than the standard Linux ones, so a Linux on the same
 disk doesn't mistake them for its own and mount them. The running kernel
 itself looks at partition types in only two places: it finds its crash
-partition by type on the disk it was loaded from and holds it for the whole
-boot, and, booted from an [install medium](/docs/self-hosting/installing),
+partition by type on the disk it was loaded from and, when that disk is NVMe,
+holds it for the whole boot, and, booted from an [install medium](/docs/self-hosting/installing),
 it finds the medium's toolchain partition (the *payload*) by type and mounts
 it read-only. Otherwise the root is whatever the `root=` boot option names,
 and a boot entry names its root partition by `PARTUUID`.
@@ -284,15 +284,18 @@ So every request has a deadline, which the transport sets: 30 seconds on
 NVMe, 5 on virtio-blk, and on a stick the time a command and its recovery
 can take. A request the disk rejects with an error it marks as worth
 retrying is retried a few times. A request the disk hasn't answered by the
-deadline fails with an I/O error, and its slot gets fresh memory and goes
-back into service.
+deadline fails with an I/O error.
 
 The awkward part is that the disk may still be working on that request, and
 may still copy data into the memory the kernel gave it. So that memory isn't
 reused: it is put aside (*quarantined*) until the disk finally hands the
-request back. If the abandoned request was a write, every later write or
-flush that could land in the wrong order behind it waits until it comes back.
-Otherwise a late write could overwrite newer data with older data.
+request back, and the slot gets fresh memory and goes back into service.
+There is room to put aside two requests per queue; past that, a timed-out
+request keeps its slot, which serves nothing until the disk answers. If the
+abandoned request was a write, every later write or flush to that disk that
+could land in the wrong order behind it waits for it to come back, and fails
+in turn if it hasn't by its own deadline. Otherwise a late write could
+overwrite newer data with older data.
 
 Because an abandoned request costs a quarantine place, and an abandoned write
 holds up every later write, a program killed while its request is in flight

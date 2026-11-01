@@ -15,7 +15,8 @@ without booting anything, the long-running checks, and what CI runs on top of
 A working build and a passing `just test`; see
 [Quickstart](/docs/getting-started/quickstart). `just test` builds a test
 version of the kernel and base, boots them under QEMU, runs every registered
-test, and exits 0 if all of them passed.
+test but the few a host script drives (`FLAG_EXPLICIT`, below), and exits 0 if
+all of them passed.
 
 ## Choosing where a test goes
 
@@ -72,10 +73,11 @@ That is the name you filter on and the name you'll see in failures.
 
 Tests run in alphabetical order of their module path and then their name,
 except that tests named `bootstrap_…` run first, and some tests rely on that
-order. The test that makes the test filesystem ready is named
-`test_ext4_aaa_init` so that it runs before the filesystem tests that write
-files, and the lock-order tests
-live in a module called `zz_lockdep_tests` so that they run last.
+order. The kernel tests run before the boot mounts the root disk, so a kernel
+test that creates files writes to a filesystem in memory, which the test
+`slopos_fs::tests::test_ext4_aaa_init` sets up; its name puts it ahead of the
+filesystem tests that write files. The lock-order tests live in a module
+called `zz_lockdep_tests` so that they run last.
 
 Three flags change how a test is treated. Pass them as
 `flags = slopos_testing::FLAG_...` in `stest!`:
@@ -217,7 +219,7 @@ commas, matched against the full test names. `*` matches anything.
 ```bash
 just test 'slopos_drivers::tests::xe_logic_tests::*'   # one file of kernel tests
 just test '*utest_keymap*'                             # one userland test
-just test '*ext4_aaa*,slopos_fs::*'                    # the fs tests, with the mount first
+just test '*ext4_aaa*,slopos_core::syscall::tests::*'  # one module's kernel tests, with the set-up test
 ```
 
 <Callout type="warning">
@@ -226,8 +228,10 @@ the text `FILTER=slopos_mm::*` through as the pattern, which matches nothing
 you meant.
 </Callout>
 
-If your tests create or write files, include `'*ext4_aaa*'` in the filter, so
-that the test that sets up the test filesystem still runs first.
+If your kernel tests create or write files, include `'*ext4_aaa*'` in the
+filter, so that the test that sets up their in-memory filesystem still runs.
+Userland tests don't need it: they run on the root disk, which the boot
+mounts after the kernel phase.
 
 Other ways to run the suite:
 
@@ -235,7 +239,7 @@ Other ways to run the suite:
 just test-rerun-failed                         # only the tests that failed last time
 just test-verbose 'slopos_mm::*'               # also print the log of tests that passed
 just test-quiet                                # print only failures and the summary
-just test '*ext4_aaa*,slopos_core::utests::*'  # the userland test programs, and the disk mount
+just test 'slopos_core::utests::*'             # every userland test program
 just test-raw                                  # the raw serial output, unparsed
 just test-elf builddir/guest-tests.elf         # the suite on a kernel built elsewhere
 ```
@@ -273,8 +277,8 @@ The two `ok` numbers count separately because kernel tests and userland tests
 run in two phases. A case's note, when it set one, follows a `#` on its line.
 
 `just test` reads that stream and shows a progress bar. When a test fails, it
-prints a block for it at the end with the phase, the test's source file and
-line, how it ended (`Fail`, or a panic), and the log the test wrote while it
+prints a block for it at the end with the phase, the file and line where the
+test is registered, how it ended (`Fail`, or a panic), and the log the test wrote while it
 ran. That log is where the assertion macros' messages appear, such as
 `ASSERT_EQ: the leader's blocked pending set - expected …, got …` or
 `TEST FAIL: a7a8 must identify as a supported display`. For a userland test,
@@ -371,7 +375,7 @@ one reads the tests kernel itself:
 | Check | Fails when |
 |-------|-----------|
 | Test count | Fewer tests are planned than the baseline in `scripts/check_test_count.sh` |
-| Lock order | The lock-order checker (see [Diagnosing the kernel](/docs/development/diagnostics#a-lock-problem)) wasn't active, reported a violation, or registered lock types beyond the counts in `scripts/gates/lockdep/` |
+| Lock order | The lock-order checker (see [Diagnosing the kernel](/docs/development/diagnostics#a-lock-problem)) wasn't active, reported a violation, or went past a limit recorded in `scripts/gates/lockdep/` (how many lock types it registered, or how full its tables are) |
 | CPU spread | A CPU that is online can't be given tasks |
 | Authority | A system call can reach a power-off or reboot function without being classified `Power` or listed with a reason |
 
@@ -409,8 +413,9 @@ lists every check, including the ones that don't read a test log.
   `--emit-allowlist` option, commit it with your change, and say in the commit
   message what moved it. Never edit `scripts/gates/` by hand to make a run
   pass.
-- **A filtered run fails in a test that passes in the full suite.** It
-  probably writes files and your filter left out `*ext4_aaa*`.
+- **A filtered run fails in a test that passes in the full suite.** It is
+  probably a kernel test that writes files, and your filter left out
+  `*ext4_aaa*`.
 - **A userland test passes as uid 0 and the feature fails for a person.**
   The test ran holding every capability. Register it, or a second copy of it
   with an argument, with `caps = none, uid = 1000`.

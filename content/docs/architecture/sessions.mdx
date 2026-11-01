@@ -29,7 +29,7 @@ What belongs to a session:
   console login at its terminal (see
   [Privileged actions](/docs/architecture/privd)).
 - **Its processes.** Everything a session starts carries its *login tag*, so
-  logging out ends all of it and nothing else.
+  logging out ends all of it and nothing of another session's.
 
 Two things it does not give you. People are kept apart by the usual means,
 separate accounts, file permissions and process isolation (see
@@ -148,9 +148,10 @@ may hold both seats, but none takes them itself. Init hands them over with
 capability, which init hands to nothing it starts). The kernel then makes that
 compositor the holder of both seats, routes every input event to it, and
 drops events still queued for the one before, which would otherwise read
-them as typed the moment it came back. The kernel's own console outranks
-every compositor, so while it holds the screen (during the Wheel of Fate, or
-while the boot log is up) the switch waits.
+them as typed the moment it came back. The seat the Wheel of Fate draws from
+outranks every compositor, so while it is held the switch waits; and while
+the boot log is up on the screen, no compositor's frames are shown until it
+goes away.
 
 Init tells each compositor what happened over a pipe of its own, one word a
 line:
@@ -207,10 +208,12 @@ password; [Desktop](/docs/architecture/desktop) shows it.
 Ctrl+Alt+Delete reaches only the compositor, which holds the input seat, so
 no app can intercept it or put up a screen of its own in response: whatever
 asks for a password after it is the compositor's lock screen. On the login
-screen the same keys make it start over.
+screen the same keys make it start over, unless a login there is already
+under way.
 
 To unlock, the lock screen hands what you typed to privd's
-`org.slopos.session.unlock`, which only the base's compositor may ask for, and
+`org.slopos.session.unlock`, which only the base's compositor (and root) may
+ask for, and
 the mechanism checks it against the password of the person who asked, counting
 wrong ones as a login does. A person without a password unlocks by pressing
 *Unlock* with the field empty. Only a desktop's own compositor can tell init
@@ -276,7 +279,8 @@ session: after you log out, the login screen appears.
 On a live boot from the install medium, the desktop the boot opens shows the
 installer's welcome window instead of a terminal (see
 [Installing SlopOS](/docs/self-hosting/installing)). On a test boot, init
-starts no session at all until a test asks for one.
+starts no session at all until a test asks for one, or the tests fail and
+the screen comes up so that someone can look.
 
 ## What else follows the session
 
@@ -327,8 +331,9 @@ For programs:
   not depend on being seen.
 - `getlogin` names the person of the caller's session. To decide anything,
   use the process's uid instead; `/run/sessions` is information.
-- Nothing a session starts outlives it. A job forked away from the shell
-  still carries the session's tag and ends at log out.
+- Don't count on a process outliving the session that started it. A job
+  forked away from the shell still carries the session's tag and ends at log
+  out.
 
 ## How it is tested
 

@@ -96,14 +96,20 @@ kernel resolves it, and the program carries on without knowing.
 
 A page fault the kernel can't resolve, such as a read from an address with
 nothing mapped, becomes `SIGSEGV`. If the program has installed a handler for
-it, the kernel runs the handler; otherwise the program ends, with the signal
-as its exit status. Other faults end the program at once, even if it has a
-handler: an invalid instruction with `SIGILL`, a general-protection fault
-with `SIGSEGV`. Only the page-fault path is built to pause and to build the
-frame a handler runs on; the other fault handlers run with rescheduling held
-off, so SlopOS doesn't hand those faults to a handler. Either way, the rest
-of the system is unaffected. [Processes and signals](/docs/architecture/processes)
-explains signals and how a program ends.
+it, the kernel runs the handler, unless `SIGSEGV` is blocked (as it is while
+that handler runs); otherwise the program ends, with the signal as its exit
+status. An invalid instruction ends the program at once with `SIGILL`, and a
+general-protection fault with `SIGSEGV`, even if it has a handler. Only the
+page-fault path is built to pause and to build the frame a handler runs on;
+the other fault handlers run with rescheduling held off, so SlopOS doesn't
+hand those faults to a handler. In all of these cases the rest of the system
+is unaffected.
+
+Not every fault is handled that way yet. A divide error (dividing by zero,
+or the one division whose result overflows) or a stack fault in user mode is
+treated as a kernel error and stops the whole machine with a panic.
+[Processes and signals](/docs/architecture/processes) explains signals and
+how a program ends.
 
 ## How SlopOS crosses the boundary
 
@@ -130,7 +136,9 @@ it.
 
 **Interrupts and faults are handled where they land.** The trusted core's
 interrupt entry code saves the program's registers on the task's kernel stack
-and calls the kernel's handler. If the handler decides another task should
+(or, for the few vectors that have one, on a stack of their own; see
+[For contributors](#for-contributors)) and calls the kernel's handler. If the
+handler decides another task should
 run, the switch happens there, and the original task resumes later from the
 same point.
 
@@ -153,9 +161,12 @@ filling in succeeds, up to a fixed number of rounds, because another
 thread's `fork` can make a page shared again between the fill and the copy.
 If a fault interrupts the copy halfway, the routine stops and reports how far
 it got, and the same loop retries it. A buffer that still can't be copied
-makes the system call fail with `EFAULT`; it never crashes the kernel. A copy made where the kernel
-can't wait (with interrupts off, or with preemption held off) doesn't wait for
-a file page to be read in; it fails with `EFAULT` instead.
+makes the system call fail with `EFAULT`; it never crashes the kernel. A
+copy made where the kernel can't wait (in an interrupt handler, with
+interrupts off, or with preemption held off) fills in only what needs no
+waiting: a page that must be read from its file, or memory the
+out-of-memory killer would first have to free, makes it fail with `EFAULT`
+instead.
 
 **The legacy interface is closed.** Old 32-bit Linux programs make system
 calls with the `int 0x80` instruction. SlopOS installs no gate a program may

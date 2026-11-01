@@ -61,7 +61,10 @@ answers when nothing else does.
   monitor instead (see
   [Debugging with GDB](/docs/development/debugging-gdb-record-replay) for how
   to open it): `sendkey sysrq`, then `sendkey t`.
-- **From a serial line.** Send a BREAK, then the command key.
+- **From a serial line.** Send a BREAK, then the command key: the byte that
+  follows the BREAK is the command, however late it comes. QEMU's
+  `-serial stdio`, which the boot recipes use, gives you no way to send a
+  BREAK, so under QEMU use the keyboard or the monitor.
 - **From a program.** `/bin/kconsole` takes command keys as its argument,
   runs each one and prints what it added to the kernel log, for example
   `kconsole tw`. With no argument it runs `h`. It reaches the kernel through
@@ -100,8 +103,10 @@ answers when nothing else does.
   `refused: the command may change the machine`.
 - **The console is off.** `kconsole=off` turns it off entirely; the default,
   `kconsole=on`, allows the commands that only print.
-- **The key came too late.** The trigger stays armed for three seconds
-  (`kconsole.arm_ms`). A key no command takes logs a line starting
+- **The key came too late, or wasn't a command key.** On the keyboard the
+  trigger stays armed for three seconds (`kconsole.arm_ms`). A key after
+  that, or any key that is not a letter, a digit or a modifier such as
+  Shift, disarms it and reaches the program as usual. A letter or digit no command takes logs a line starting
   `kconsole: no command for`.
 - **The serial trigger is off.** `kconsole.serial=off` disarms BREAK.
 

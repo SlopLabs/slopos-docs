@@ -103,16 +103,20 @@ Installing the tree again compares the new manifest with the one recorded:
 1. If the recorded manifest has the same identity at the same destination,
    and every entry it names is still there with the kind and size it
    records, there is nothing to do: `tree-install: /home/user/.local already
-   holds this hello`. Contents are not read again, so a file you edited in
-   place is left as it is.
+   holds this hello`. The installed files' contents are not compared, so a
+   file you edited in place is left as it is, as long as its size did not
+   change; one whose size changed makes the install run again and replace
+   it.
 2. Otherwise `tree-install` plans the whole install before touching anything.
-   Each file the old manifest names is removed; each directory it names is
-   removed if nothing else is left in it; then each entry of the new tree is
-   put in place. Anything already at a path the new tree needs, which the old
-   manifest does not name, is a conflict, and so is anything of a different
-   kind than the manifest says (a directory where it recorded a file, say). A
-   single conflict refuses the install with nothing written, and names every
-   path in the way.
+   Each file and link the old manifest names is removed; each directory it
+   names is removed if nothing else is left in it and the new tree has no
+   directory there; then each entry of the new tree is put in place. Anything
+   already at a path the new tree needs, which the old manifest does not
+   name, is a conflict (a directory where the new tree also has one is
+   shared, not in the way), and so is anything of a different kind than the
+   manifest says (a directory where it recorded a file, say). A single
+   conflict refuses the install with nothing written, and names every path in
+   the way.
 3. Before the first change, the manifest is rewritten as *unfinished*: an
    identity of all zeros, listing both the old entries and the new. An
    install cut short by a crash therefore leaves a manifest that names
@@ -163,7 +167,7 @@ The `users add` that creates a second person (see
    only its name in `/usr/local`, since taking it would take another
    person's file. A symbolic link stays only if following it passes through
    directories only uid 0 may change and ends at something only uid 0 may
-   change.
+   change, and at a directory only if that directory is inside `/usr/local`.
 4. It records that the first person no longer holds `/usr/local`, then
    removes the mark.
 
@@ -212,7 +216,7 @@ library, linked dynamically against `libc.so`. Together with their app
 entries, icons and the editor's manual they form the tree `apps`, which every
 root holds at `/usr/local` beside the toolchain.
 
-Two checks keep them honest. After every userland build,
+Two checks keep them honest. After every userland build on the host,
 `check_loose_programs.sh` fails an app that is statically linked, names a
 loader other than `/lib/ld-slopos.so.1`, does not list `libc.so` among the
 libraries it needs, or contains a `syscall` instruction of its own, since a
@@ -286,6 +290,10 @@ a library by name in this order:
 5. `$HOME/.local/lib`, then `/usr/local/lib`, only for a process that is
    neither `AT_SECURE` nor running as uid 0.
 
+One step differs from glibc: glibc tries an object's `RPATH` before
+`LD_LIBRARY_PATH` (and its `RUNPATH` after, as here), while SlopOS's loader
+always tries `LD_LIBRARY_PATH` first.
+
 `AT_SECURE` is a flag the kernel sets for a program that starts holding any
 gated [capability](/docs/architecture/authority), or running as other ids
 than its starter's real ones, and for a program `exec` loads while the
@@ -333,11 +341,13 @@ image's ownership with `check_fs_image.sh --map`.
   something new from the system, export it from `libc.so` (and record it with
   `check_libc_exports.sh --record`) and wrap it in `slopos-cabi`.
 - **Never trust a manifest you did not write.** Code that installs trees
-  must keep the rule that only uid 0's manifest, or the installer's own, is
-  believed.
-- **Nothing with power searches what people can write.** A new search path,
-  for commands or libraries, must leave out `/usr/local` and home
-  directories for a process that is `AT_SECURE` or uid 0's.
+  must keep the rule that only uid 0's manifest, or the installing user's
+  own, is believed.
+- **Nothing with power searches what people can write.** The loader leaves
+  out `/usr/local/lib` and home directories for a process that is
+  `AT_SECURE` or uid 0's, and `priv` takes commands from `/usr/local/bin`
+  only once uid 0 has held it since the boot began. A new search path, for
+  commands or libraries, must keep the same rule.
 
 ## Further reading
 

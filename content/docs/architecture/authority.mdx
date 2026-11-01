@@ -207,11 +207,12 @@ raw stream of keyboard and pointer events. SlopOS calls these two resources
 matching seat, and if it gets it, it receives a descriptor it needs for drawing
 or reading input. A request succeeds if the seat is free, if the caller already
 holds it (asking twice is harmless), or if the caller outranks the holder.
-There are two ranks: a compositor's, and the kernel console's, which
-`/bin/roulette` also uses. The console outranks every compositor, so the
-kernel log can always take the screen back from a compositor that has hung. An
-equal rank is refused, so two compositors can't trade the screen back and
-forth.
+There are two ranks: a compositor's, and the console's, which only
+`/bin/roulette` takes, to draw the Wheel of Fate. The console outranks every
+compositor. An equal rank is refused, so two compositors can't trade the
+screen back and forth. The kernel log needs no seat: while it is on screen
+the kernel holds back every compositor's frames, so it shows even over a
+compositor that has hung.
 
 When several people are logged in, each person's desktop has its own
 compositor, and they all have the same rank. Init decides which one the person
