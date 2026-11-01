@@ -103,8 +103,10 @@ just test
 This builds a kernel with the test harness compiled in, boots it in QEMU with
 no window, and runs every kernel test and then every userland test. A progress
 bar shows how far it is. When QEMU exits, the runner prints a summary and
-exits 0 if every test passed and 1 otherwise. Each run starts from a freshly
-built test disk, so no run depends on what the last one wrote.
+exits 0 if every test passed and 1 if any failed. It exits 2 when the run
+proves nothing: QEMU never reached the test harness, or the harness planned
+no tests although nothing filtered them. Each run starts from a freshly built
+test disk, so no run depends on what the last one wrote.
 
 ### 2. Read a failure
 
@@ -200,7 +202,7 @@ recipe's own description.
 | `just extension <dir>` | Pack the extension laid out in `<dir>` into `builddir/extensions/<name>.ext` and its sidecar, signed when `EXTENSION_KEY` names a key ([Package an extension](/docs/development/packaging-an-extension)) |
 | `just icons` | Render the shipped app icons at 64 and 128 pixels |
 | `just clean` | Remove compiler output under `builddir/target`, the `builddir/kernel-*.elf` files and the gates' probe builds under `builddir/gates` |
-| `just distclean` | `clean`, then remove `builddir/`, `test_output.log`, `fs/assets/ext4.img`, `fs/assets/ext4-tests.img` and the extracted llvm-project, rustc and vendored-crate trees under `third_party/`. Leaves the persistent root alone |
+| `just distclean` | `clean`, then remove `builddir/`, `test_output.log`, `fs/assets/ext4.img`, `fs/assets/ext4-tests.img` and the extracted llvm-project, rustc and vendored-crate trees under `third_party/`. Leaves the persistent root, the self-hosting and capacity images and `fs/assets/guest-push.git` alone |
 
 ### Boot
 
@@ -239,7 +241,7 @@ base the guest installed survives guest reboots but not the next `just boot`.
 | `just test-quiet ['glob']` | Print only failures and the summary |
 | `just test-raw` | Pass QEMU's output through unchanged, KTAP and kernel log mixed |
 | `just test-json <path>` | Also write one JSON event per line to `<path>`, replacing what it held |
-| `just test-userland-only` | Skip the kernel tests; run only the userland tests |
+| `just test-userland-only` | Runs no tests at this commit. It boots the tests ISO with `tests.run=__userland_only__`, a pattern that names no test, and the harness applies `tests.run` to the userland phase as well as the kernel phase, so both plan nothing and the runner exits 2. To run only the userland tests, filter by their module: `just test '*ext4_aaa*,slopos_core::utests::*'` |
 | `just test-elf [ELF=]<kernel> [BASE=<base.cpio>] ['glob']` | Run the suite on a tests kernel and base built elsewhere, such as inside the guest |
 | `just test-host` | Unit tests of the pure-logic crates and of `slopos-ostd`, on the host, no QEMU |
 | `just check-tests-host` | Unit tests of the Go test runner |
@@ -309,11 +311,13 @@ protect.
 | `just debug-bt` | Backtraces of every CPU into `builddir/freeze-gdb.log` |
 | `just debug-monitor` | Connect to the QEMU monitor socket |
 | `just rr-record` | Record a deterministic test run to `builddir/replay.bin` (one CPU, no KVM) |
-| `just rr-replay` | Replay the recording under interactive GDB |
-| `just rr-gdb [<address>]` | Run the replay to the fault; with an address, find the instruction that last wrote it |
+| `just rr-replay` | Replay the recording under interactive GDB. Its script's breakpoints on a fault and a panic are not set (GDB wants the functions' full Rust paths), so set them yourself |
+| `just rr-gdb [<address>]` | Meant to replay to the fault unattended and, given an address, run backwards to the instruction that wrote it. At this commit it does neither: it never stops at the fault, and its script reads the fault's registers in C syntax GDB refuses in Rust code. Do the same steps by hand under `just rr-replay` |
 
 [Debugging with GDB](/docs/development/debugging-gdb-record-replay) shows
-how to use them.
+how to use them, and [Go backwards from a
+crash](/docs/development/debugging-gdb-record-replay#go-backwards-from-a-crash)
+gives the replay steps by hand.
 
 ### Toolchain for SlopOS
 

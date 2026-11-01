@@ -358,15 +358,16 @@ Both are hard to combine with a program built around one event loop, such
 as a server waiting in `poll`. Linux added two kinds of file descriptor to
 fix that, and SlopOS has both.
 
-- **pidfd.** `pidfd_open(pid)` returns a descriptor for any process, named
-  by its pid (a thread that isn't its process's first fails with `EINVAL`).
-  It becomes readable when the process exits, so you can wait for it with
-  `poll` or [SlopRing](/docs/abi/slopring) alongside everything else. For
-  your own child you still reap it with `waitpid`. Every pidfd is
-  close-on-exec. Because pids are never reused, a pidfd for a process that
-  has already gone names nothing else and is simply readable at once; the
-  peer of a Unix socket hands you such a descriptor through
-  `SO_PEERPIDFD`.
+- **pidfd.** `pidfd_open(pid)` returns a descriptor for any process that
+  hasn't been reaped yet, named by its pid (a thread that isn't its
+  process's first fails with `EINVAL`, a process already reaped with
+  `ESRCH`). `poll` reports it readable once the process exits, so you can
+  wait for it with `poll` or [SlopRing](/docs/abi/slopring) alongside
+  everything else; there is nothing to `read` from it. For your own child
+  you still reap it with `waitpid`. Every pidfd is close-on-exec. Because
+  pids are never reused, a pidfd for a process that has already gone names
+  nothing else and is simply readable at once; the peer of a Unix socket
+  hands you such a descriptor through `SO_PEERPIDFD`.
 - **signalfd.** `signalfd4` returns a descriptor you read signals from, in the
   same 128-byte record format Linux uses. You block the signals you want with
   `sigprocmask` (so they stay pending instead of running a handler), and then
@@ -385,6 +386,7 @@ fix that, and SlopOS has both.
 | Who may signal whom | User ids, or `CAP_KILL`, which root holds | User ids, and the sender must hold every capability the target holds; `ProcSignal`, or `SIGCONT` within the terminal session, waives both; init can't be signalled |
 | First realtime signal (`SIGRTMIN`) | Usually 34 (glibc keeps two) | 32 |
 | `vfork` | Supported | Not provided; use spawn or `posix_spawn` |
+| `clone`'s termination signal (the low byte of its flags) | Names the signal the parent gets, usually `SIGCHLD` | Must be zero, or `clone` fails with `EINVAL` |
 | Spawn file actions | `posix_spawn` opens files in the child | The kernel's spawn call hands the child only descriptors the parent holds; slibc's `posix_spawn` opens a file `addopen` names in the parent and hands it over |
 | `pidfd_open` flags | Accepts `PIDFD_NONBLOCK` and `PIDFD_THREAD` | No flags |
 | `signalfd` on an existing descriptor | Replaces its signal mask | Refused with `EINVAL`; each call makes a new descriptor |

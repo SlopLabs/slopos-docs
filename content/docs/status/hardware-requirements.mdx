@@ -17,7 +17,7 @@ LLVM toolchain of version 18 or later with CMake, Ninja, `make` and
 `pkg-config` (every base carries the e2fsprogs tools, cross-compiled with
 clang, and building them first builds the C++ runtime) and enough memory for
 the guest. The [Quickstart](/docs/getting-started/quickstart) has one
-install command per platform. Go runs the test harness behind `just test`, and
+install command per platform. Go builds the test runner behind `just test`, and
 `openssl` and `ssh-keygen` are needed for the TLS tests in `just test-host`.
 
 QEMU is much faster when it can use the processor's virtualisation support:
@@ -29,19 +29,19 @@ guest takes many times longer.
 
 | What you boot | Guest memory | Change it with |
 |---------------|--------------|----------------|
-| Live ISO (`just boot-live`, `boot-log`) | 512 MB | `QEMU_MEM` |
-| Test suite (`just test`), `test-persist`, `test-rude-exit`, `test-usb` | 1 GB | `QEMU_MEM` |
-| Development machine (`just boot`, `just boot-fast`) | 6 GB | `DEV_QEMU_MEM` or `QEMU_MEM` |
-| Self-hosting checks, `test-installer`, `test-install-guest` | 6 GB | `DEV_QEMU_MEM` or `QEMU_MEM` |
-| `test-capacity` | 2 GB | `CAPACITY_QEMU_MEM` or `QEMU_MEM` |
-| `test-install`, `ui-shots` | 2 GB | Fixed in the recipe |
-| `test-remote` | 1 GB | Fixed in the recipe |
+| Live ISO (`just boot-live`, `boot-log`) | 512 MiB | `QEMU_MEM` |
+| Test suite (`just test`), `test-persist`, `test-rude-exit`, `test-usb` | 1 GiB | `QEMU_MEM` |
+| Development machine (`just boot`, `just boot-fast`) | 6 GiB | `DEV_QEMU_MEM` or `QEMU_MEM` |
+| Self-hosting checks, `test-installer`, `test-install-guest` | 6 GiB | `DEV_QEMU_MEM` or `QEMU_MEM` |
+| `test-capacity` | 2 GiB | `CAPACITY_QEMU_MEM` or `QEMU_MEM` |
+| `test-install`, `ui-shots` | 2 GiB | Fixed in the recipe |
+| `test-remote` | 1 GiB | Fixed in the recipe |
 
 The guest gets 4 CPUs by default (`QEMU_SMP`, which must be a power of two).
-The development machine runs at 6 GB because a link that maps more than an
-eighth of memory fails, and the debug tests kernel's link does at 4 GB
+The development machine runs at 6 GiB because a link that maps more than an
+eighth of memory fails, and the debug tests kernel's link does at 4 GiB
 ([Known limitations](/docs/status/known-limitations#memory-and-scheduling)).
-So it wants a host with comfortably more than 6 GB free. Every QEMU setting is
+So it wants a host with comfortably more than 6 GiB free. Every QEMU setting is
 listed on [QEMU options](/docs/getting-started/qemu-options).
 
 ## The emulated machine
@@ -63,12 +63,12 @@ tried.
 
 | Part | What SlopOS needs or drives |
 |------|-----------------------------|
-| Processor | x86-64 with a local APIC and an I/O APIC; the kernel stops at boot when it finds no I/O APIC. Hardware frequency control (Intel HWP) and core types are used where the CPU reports them |
+| Processor | x86-64 with a local APIC and an I/O APIC (the interrupt controllers of a modern PC); the kernel stops at boot when it finds no I/O APIC. Hardware frequency control (Intel HWP) and core types are used where the CPU reports them |
 | Firmware | UEFI, with Secure Boot off. Installing needs UEFI: the installer puts the loader on the EFI system partition and registers it as a firmware boot entry, and on a machine started without UEFI the firmware's variables answer nothing. Nothing in the tree signs the loader, so Secure Boot refuses it. The live ISO also carries Limine's BIOS loader, but booting has been tried under UEFI only |
 | Display | Intel integrated graphics of the Tiger Lake, Alder Lake and Raptor Lake generations that the driver's table lists; otherwise the firmware's framebuffer |
 | Disks | NVMe, and USB sticks and drives (Bulk-Only). SATA disks have no driver |
 | Network | Realtek RTL8168h and RTL8168M, and USB Ethernet adapters that speak CDC-ECM or CDC-NCM. Other Realtek versions are declined, naming their id in the log |
-| USB | Up to eight xHCI controllers with MSI-X or MSI, 64-bit addressing and 4 KiB pages; any other is left to the firmware, and older USB controllers have no driver |
+| USB | Up to eight xHCI controllers with MSI-X or MSI, 64-bit addressing, 4 KiB pages, and that ask for at most 512 pages of scratch memory (scratchpad buffers); any other is left to the firmware, and older USB controllers have no driver |
 | Keyboard and pointer | The i8042 (PS/2) keyboard and mouse, USB keyboards, mice and tablets, and an I²C-HID touchpad on the DesignWare I²C controller, found through the firmware's ACPI tables |
 
 ## The tested laptop

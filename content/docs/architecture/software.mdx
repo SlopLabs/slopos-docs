@@ -300,7 +300,9 @@ path.
   `~/.local/bin` is already on your `PATH`, and the programs you start find
   its libraries.
 - **Software for everyone goes in through privd** once the machine has two
-  people. Make the tree readable by everyone and keep its links relative.
+  people. Make the tree readable by everyone, keep its links relative, and
+  keep it where everyone can reach it, such as `/var/tmp`: the hand-over
+  closes your home to others, so a tree inside it is refused.
 - **A reinstall is safe to repeat.** It does nothing when nothing changed, and
   refuses rather than overwrite a file it did not put there; move that file
   aside and run it again.

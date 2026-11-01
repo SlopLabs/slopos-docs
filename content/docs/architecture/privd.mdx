@@ -25,9 +25,10 @@ You can rely on four things:
 - **The job runs fresh.** The program privd starts (the action's *mechanism*)
   holds exactly the action's capabilities and inherits nothing of the caller's
   but the descriptors it sent.
-- **Only the person answers.** A question appears in a dialog the compositor
-  draws, and no program can type into it, click it or read what is typed
-  there.
+- **Only the person answers.** On a desktop, a question appears in a dialog
+  the compositor draws, and no program can type into it, click it or read
+  what is typed there. At a console login, where there is no dialog, only
+  the person's own password answers.
 
 This page walks through the policy, one request from start to finish, how
 privd identifies the requester, who may ask for what, the dialog, `priv` and

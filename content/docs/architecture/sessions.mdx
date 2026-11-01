@@ -1,6 +1,6 @@
 ---
 title: "Sessions and login"
-description: "How several people can be logged in to one SlopOS computer at once, each in a session of their own, and how the screen, the keyboard and the clipboard follow the one in front."
+description: "How several people can be logged in to one SlopOS computer at once, each in a session of their own, and how the screen and the keyboard follow the one in front."
 ---
 
 import { SessionLogin } from '@/components/diagrams/session-login';
@@ -21,7 +21,9 @@ What belongs to a session:
 
 - **The screen and the input.** Only the session in front sees keys and
   pointer events. A desktop behind draws nothing and receives nothing.
-- **The clipboard.** What you copy in your session can be pasted only there.
+- **The clipboard.** Each desktop has a compositor of its own, which keeps
+  the clipboard its apps copy to and paste from, so what you copy in your
+  session can be pasted only there.
 - **Permission questions.** privd asks only the session the request came
   from: on a desktop only while it is in front and unlocked, and in a
   console login at its terminal (see
@@ -283,10 +285,16 @@ starts no session at all until a test asks for one.
   removed after their last. The first person's lives for the whole boot,
   since the boot's own programs run as them. It holds the socket of the
   person's compositor, which apps find through `XDG_RUNTIME_DIR`.
-- **The clipboard.** The kernel keeps a clipboard per login tag, and only for
-  tags in the sessions' range, so `remoted`, privd's mechanisms and
-  extensions' services have none. It keeps eight; when a ninth session copies,
-  the one copied into longest ago is dropped.
+- **The clipboard.** Apps copy and paste through their compositor, over the
+  window protocol ([Window protocol](/docs/abi/window-protocol#clipboard)),
+  and only in answer to a key the person pressed in their window. Since every
+  desktop runs its own compositor, every desktop has its own clipboard, which
+  ends with it. Separately, the kernel keeps a small clipboard per login tag
+  behind the `clipboard_copy` and `clipboard_paste` system calls, which no
+  shipped app uses. It has one only for tags in the sessions' range, so
+  `remoted`, privd's mechanisms and extensions' services have none, and it
+  keeps eight: when a ninth session copies, the one copied into longest ago
+  is dropped.
 - **A share of the machine.** Each person's processes are counted against an
   account of their own, which may hold a quarter of the machine's processes
   and a quarter of its threads. One person's fork bomb stops there and leaves
@@ -329,7 +337,8 @@ For programs:
 seat and that exists only on a test boot. It checks that a one-person boot goes
 straight to the desktop; that a second person logs in at the login screen
 while the first desktop goes behind and locks, and gets a private runtime
-directory; that the keyboard and the clipboard follow the desktop in front;
+directory; that the keyboard follows the desktop in front and that each
+session's kernel clipboard is its own;
 that a request from the session behind is refused unasked; that a locked
 desktop refuses a wrong password; that a console login gets a shell of its
 own whose `priv` asks at its terminal; that one person's fork bomb leaves the
@@ -380,5 +389,6 @@ receives and where it asks.
 | `userland/src/sessions.rs` | `/run/sessions` |
 | `userland/src/apps/compositor/gate.rs` | The login and lock screens, Ctrl+Alt+Delete |
 | `priv-core/src/sessions.rs` | The table as privd receives it, and where a request is asked |
-| `core/src/syscall/ui_handlers.rs` | `seat_switch` and the per-session clipboard |
+| `core/src/syscall/ui_handlers.rs`, `drivers/src/input_event.rs` | `seat_switch`, and the kernel's clipboard per login tag |
+| `userland/src/apps/compositor/protocol.rs` | The desktop's clipboard, which apps use |
 | `slopos-ostd/src/process/quota/persons.rs` | Each person's share of processes and threads |

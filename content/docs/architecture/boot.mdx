@@ -118,8 +118,9 @@ runs on each core: programs, and the kernel's own background threads.
 
 If a required step fails, the kernel stops with a panic rather than
 continuing on a half-built machine. A few requirements are absolute: SlopOS
-needs a local APIC, an IOAPIC and an HPET, and panics with a message naming
-the missing one, for example
+needs a local APIC and an IOAPIC (the per-core and the shared interrupt
+controllers) and an HPET, and panics with a message naming the missing one,
+for example
 `SlopOS requires HPET — ACPI HPET table not found or hardware unavailable`.
 [Hardware](/docs/status/hardware-requirements) lists what a machine needs.
 
@@ -157,7 +158,9 @@ line decides:
   can be mounted read-write (under QEMU that is `nvme0n1`), so a stick left in
   a port never changes what boots. It falls back to memory otherwise, and
   when a disk is present but refused writes, mounts it read-only at `/mnt`.
-- `root=disk` insists on the disk, and fails the boot without one.
+- `root=disk` insists on the disk, and fails the boot without one. A disk it
+  insists on that refuses writes is mounted read-only with its own programs,
+  since the kernel lays the base over a writable disk only.
 - `root=initramfs` builds `/` in memory from the base, so nothing written to
   it survives a reboot. The kernel mounts no disk it wasn't asked to with a
   `mount=` option, except the install medium's own, so a live system mounts
@@ -169,8 +172,8 @@ line decides:
   A device that is still missing makes the boot fall back to memory, with a
   line in the log saying so.
 
-Either way, the system's own programs come from the base that Limine loaded,
-not from the disk: the kernel mounts the base read-only over `/bin`, `/sbin`,
+Whether `/` is a writable disk or memory, the system's own programs come
+from the base that Limine loaded, not from the disk: the kernel mounts the base read-only over `/bin`, `/sbin`,
 `/lib`, `/usr/bin`, `/usr/share` and `/etc/ssl`, where no program can unmount
 or cover it, whatever the disk holds at those paths. The disk holds
 everything else: settings, home directories, software installed under
@@ -249,6 +252,8 @@ drawn, so a slow machine shows fewer frames of the same seven seconds rather
 than a longer spin. If the kernel log is on screen, the spin waits until you
 dismiss it. With no framebuffer at all, the wheel says its result on the
 console in words.
+
+## What the log tells you
 
 Most of what matters is in the serial log, which `just boot-log` saves to
 `test_output.log`. These lines tell you what booted and how far it got:

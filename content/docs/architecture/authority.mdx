@@ -98,7 +98,7 @@ yet hands them out more finely.
 | Capability | Allows |
 |---|---|
 | `ConsoleIo` | Writing to the kernel log without a descriptor |
-| `ClipboardGlobal` | Copying to and pasting from the clipboard of the caller's session |
+| `ClipboardGlobal` | Copying to and pasting from the kernel's clipboard for the caller's session (the desktop's apps use their compositor's clipboard instead) |
 | `Fate` | Spinning the Wheel of Fate and reporting its result |
 
 They protect nothing today. They are capabilities rather than plain system
@@ -206,8 +206,7 @@ raw stream of keyboard and pointer events. SlopOS calls these two resources
 *seats*. A program holding `DisplaySeat` or `InputSeat` may ask for the
 matching seat, and if it gets it, it receives a descriptor it needs for drawing
 or reading input. A request succeeds if the seat is free, if the caller already
-holds it (so a restarted compositor gets it back), or if the caller outranks
-the holder. There are two ranks: a compositor's, and the kernel console's,
+holds it (asking twice is harmless), or if the caller outranks the holder. There are two ranks: a compositor's, and the kernel console's,
 which `/bin/roulette` also uses. The console outranks every compositor, so the
 kernel log can always take the screen back from a compositor that has hung. An
 equal rank is refused, so two compositors can't trade the screen back and
@@ -242,7 +241,8 @@ target, and a signal goes through only if both of these hold:
 
 Holding `ProcSignal` waives both. `SIGCONT` to a process in the sender's own
 POSIX session (the processes sharing a terminal, which `setsid` starts) needs
-neither, so a shell's `fg` can resume a job that holds more than the shell. Nobody may signal init (`EPERM`), and naming a kernel thread gives
+neither, so a shell's `fg` can resume a job that holds more than the shell.
+Nobody may signal init (`EPERM`), and naming a kernel thread gives
 `ESRCH`, as if it didn't exist. A signal aimed at a whole group skips the
 members the sender may not signal.
 

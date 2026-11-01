@@ -14,10 +14,10 @@ get is fine control over who goes first: there are a few fixed priority
 levels, ordinary programs can choose between two of them, and `nice` values
 are recorded but have no effect yet.
 
-Waiting follows the check-then-sleep order of the Linux kernel's
-`wait_event`. The rest of the page covers how threads take turns, how a
-thread waits without missing what it waits for, and what happens when a
-waiting thread is killed.
+Waiting takes its steps in the same order as the Linux kernel's
+`wait_event`, which is what keeps a wakeup from being lost. The rest of the
+page covers how threads take turns, how a thread waits without missing what
+it waits for, and what happens when a waiting thread is killed.
 
 ## Sharing the CPUs
 
@@ -28,7 +28,7 @@ something happens.
 
 ### Time slices and preemption
 
-A timer interrupts each busy CPU every 10 milliseconds. On each of these *ticks*
+A timer interrupts each CPU every 10 milliseconds. On each of these *ticks*
 the kernel counts down the running task's *time slice*, which is ten ticks by
 default. When the slice runs out and another task is ready, the kernel saves
 the running task's registers, puts it back in line and switches to the next
@@ -48,9 +48,12 @@ CPU it last ran on if that CPU is idle, because its caches probably still
 hold the task's data, and otherwise to an idle or lightly loaded one. And a
 CPU with nothing to run takes a waiting task from any CPU that has at least
 two more than it does, while every few ticks a busy CPU checks whether it
-should hand work to a quieter one. An idle CPU drops its regular tick and sleeps
-until something wakes it, so a CPU that queues a task behind a running one sends an idle CPU an
-interrupt to come and take it.
+should hand work to a quieter one. An idle CPU halts until its next tick or
+some other interrupt, so a CPU that queues a task behind a running one sends an
+idle CPU an interrupt to come and take it at once rather than up to a tick
+later. When a sleeping task is due before the next tick, an idle CPU also sets
+a one-off timer for it before halting, so a 1 ms sleep ends after 1 ms, not
+10.
 
 On a processor whose CPUs are not all alike (fast and slow cores, or two
 hardware threads sharing one core), "idle" isn't enough: the scheduler ranks

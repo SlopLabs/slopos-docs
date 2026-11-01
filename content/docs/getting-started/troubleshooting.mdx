@@ -29,7 +29,7 @@ or a local copy:
 | OVMF firmware for the live ISO | `third_party/ovmf/` | `OVMF_BASE_URL`, a mirror of the pinned edk2 nightly |
 | OVMF firmware for boot disks | `third_party/ovmf-nv/` | `OVMF_NV_PKG_URL`, a copy of the pinned `edk2-ovmf` package |
 | `libc` crate for the `slopos` toolchain | `$CARGO_HOME/registry/cache` | Fill the cargo cache, or set `LIBC_URL` |
-| `llvm-project` sources, for the C++ runtime every build needs | `third_party/llvm-project-<version>.src.tar.xz` | Place the pinned tarball there, or set `LLVM_URL` |
+| `llvm-project` sources, for the C++ runtime that building any base needs | `third_party/llvm-project-<version>.src.tar.xz` | Place the pinned tarball there, or set `LLVM_URL` |
 | Source tarballs of the programs ported to SlopOS (e2fsprogs for every base; the rest for `just recipes`) | `third_party/recipes/<name>-<version>.<ext>` | Place the pinned tarball there, or set `<NAME>_URL`, such as `E2FSPROGS_URL` |
 
 A different Limine release in `third_party/limine` is replaced with the
@@ -271,14 +271,19 @@ A filtered run whose tests create files must include `'*ext4_aaa*'`, because
 that test mounts the test disk for the tests after it.
 
 If a failure looks like memory corruption and still happens on one emulated
-CPU, record the run and find the instruction that wrote a given address:
+CPU, record the run and replay it under GDB:
 
 ```bash
 just rr-record
-just rr-gdb 0xffff800000123456
+just rr-replay
 ```
 
-[Debugging with GDB](/docs/development/debugging-gdb-record-replay) walks
-through it, and [Building and
-testing](/docs/getting-started/build-test-recipes#run-the-tests) explains the
-runner's output.
+GDB then waits at the start of the recording. Set the breakpoints and the
+watchpoint by hand, as [Go backwards from a
+crash](/docs/development/debugging-gdb-record-replay#go-backwards-from-a-crash)
+shows, and run backwards to the instruction that wrote the bad value.
+`just rr-gdb <address>` is meant to do this unattended but does not work at
+this commit: it never stops at the fault.
+
+[Building and testing](/docs/getting-started/build-test-recipes#run-the-tests)
+explains the runner's output.

@@ -81,7 +81,7 @@ SlopOS unchanged.
 Nothing is patched in place inside rustup's directories. The forks are kept as
 patch files, and the nightly version and a checksum of each patch are pinned
 in `toolchain/PIN`. Every build makes the sysroot again when it no longer
-matches the pin, and a gate fails if one has drifted anyway, so a stale copy
+matches the pin, and a check fails if one has drifted anyway, so a stale copy
 can't silently build the kernel. Running `just setup` again is cheap when
 nothing changed.
 
@@ -129,15 +129,22 @@ small, because LLVM has very little OS-specific code:
 - a clang driver for SlopOS, which turns `cc a.o -o a` into the full command
   that links a SlopOS program (startup code, the dynamic loader, the C library,
   compiler runtime);
-- one line in `config.guess`, so `./configure` scripts recognise a SlopOS
-  machine.
+- an entry in LLVM's own copy of `config.guess`, so LLVM's build recognises a
+  SlopOS machine when it runs on one.
 
-`just llvm-src` prepares the patched LLVM source (over a gigabyte on disk).
+The port is applied to two copies of LLVM. `toolchain/llvm-rustc/` patches
+the LLVM inside rustc's sources, which is what `just toolchain` builds the
+guest's LLVM and clang from. `toolchain/llvm/` patches the llvm-project
+release the C++ runtime (below) is built from. Only this second copy carries
+the `config.guess` entry, because the runtime's build is the one that asks
+what machine it runs on, and the guest builds that runtime too.
+`just llvm-src` prepares the second copy whole (over a gigabyte on disk) for
+the two checks that compile parts of it; `just toolchain` doesn't need it.
 
 ## The C++ runtime
 
 LLVM needs a C++ standard library, and SlopOS has one: LLVM's own libc++,
-built from the same pinned LLVM release. It ships as a single shared library,
+built from the llvm-project release `toolchain/cxx/PIN` names. It ships as a single shared library,
 `libc++.so`, that also contains the part that handles exceptions. Keeping them
 in one file matters because a C++ exception is matched by comparing type
 information, and two copies of that machinery in one process can leave an
@@ -153,10 +160,14 @@ compiler itself links its own copy in statically.
 
 ## Tools on the host
 
-SlopOS needs more on your Linux machine than Rust and QEMU in two places: the
-C++ runtime and the LLVM port, and the third-party programs below. One of
-those, e2fsprogs, is in every base, so every recipe that packs a base (each
-ISO, boot disk and test run) builds it and the C++ runtime first.
+Beyond Rust, QEMU and the disk-image tools
+[Quickstart](/docs/getting-started/quickstart) lists, two parts of the build
+need tools on your Linux machine: the C++ runtime (and the checks that compile
+the LLVM port), and the third-party programs below. One of those programs,
+e2fsprogs, is in every
+base, so every recipe that packs a base (each ISO, boot disk and test run)
+builds it and the C++ runtime first. That is why the first four rows below
+are needed even to boot.
 
 | Tool | Why |
 |------|-----|

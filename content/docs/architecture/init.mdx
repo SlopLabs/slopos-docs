@@ -82,8 +82,8 @@ Every program init starts is given exactly the capabilities it needs,
 beside the universal ones every program holds. Init itself holds them all,
 so the table below is the whole of what it hands out
 ([Capabilities](/docs/architecture/authority) explains the mask). The
-compositor also runs at the `High` scheduling tier, which init's
-`SchedHigh` lets it choose:
+compositor also runs at the `High` scheduling tier, which init can start it
+at because init holds `SchedHigh`:
 
 | Program | Runs as | Capabilities | Started again when it exits |
 |---|---|---|---|
@@ -143,7 +143,9 @@ not the screen.
 
 Other programs ask init for things through the socket `/run/init`, one
 request line per connection, answered with `ok` or a line starting
-`refused:`. The socket is open to everyone (mode 0666) because init judges
+`refused:`. Each uid may have four connections waiting to finish their
+line, which must arrive within two seconds, so one person cannot crowd out
+init's other callers. The socket is open to everyone (mode 0666) because init judges
 each connection by who made it: its uid, as the kernel recorded it at
 `connect` (`SO_PEERCRED`), and whether it still runs a program of the base
 when its request arrives (`SO_PEERPROGRAM`). Only uid 0 and people may ask
@@ -180,9 +182,6 @@ $ session status
 
 The first column is the session's login tag, then the user it runs as (its
 person, or `greeter` for the login screen) and its class.
-Each uid may have four connections waiting to finish their line, which must
-arrive within two seconds, so one person cannot crowd out init's other
-callers.
 
 ## Ending a session
 

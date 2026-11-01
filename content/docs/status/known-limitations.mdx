@@ -80,8 +80,8 @@ one is about CI.
   has mapped stays pinned until it is unmapped, and one process may pin at most
   an eighth of memory, so a linker mapping more than that dies on a refused
   fault, and the filesystem it was writing turns read-only. The debug tests
-  kernel's link does so in a 4 GB guest, which is why the development machine and the
-  self-hosting checks run at 6 GB ([Memory](/docs/architecture/memory)). Open
+  kernel's link does so in a 4 GiB guest, which is why the development machine and the
+  self-hosting checks run at 6 GiB ([Memory](/docs/architecture/memory)). Open
   defect.
 - **An idle CPU's page zeroing can fault.** Under heavy host load an idle CPU
   can take an invalid frame from its per-CPU cache and fault while zeroing it.
@@ -130,7 +130,7 @@ one is about CI.
   step that writes both kernel slots and the base and dies there (`SIGABRT`,
   right after the kernel logs `process_vm_mmap: Failed to insert VMA`).
   Whether more memory avoids it is not known; `just ui-shots` and
-  `just test-installer` install at 2 GB and 6 GB
+  `just test-installer` install at 2 GiB and 6 GiB
   ([Installing SlopOS](/docs/self-hosting/installing)). Open defect.
 - **A new base gets no trial boot.** A kernel goes into the spare slot and is
   tried once before it becomes the default, but a base that passes its checks
@@ -143,7 +143,8 @@ one is about CI.
   loader that deletes it makes Limine boot its first entry, and one that sets
   it to a name Limine does not offer makes `bootctl install` refuse until
   `bootctl set-default` names a slot. Registering SlopOS's firmware entry can
-  also add a second one when the first sits outside the firmware's boot order.
+  also add a second one, when the first sits outside the firmware's boot
+  order at a number past the first free one.
   Open defect.
 - **Installing for everyone through privd is bounded.** A tree installed into
   `/usr/local` for everyone is copied before it is installed, both counting

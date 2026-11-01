@@ -10,7 +10,7 @@ clone of the checkout you booted from. Inside it you pull the host's commits, bu
 running machine to the programs you just built, try a new kernel for one boot
 and keep it, and push your commits back to the host. You work as an ordinary
 person, `user`, and the machine asks you before anything replaces its kernel
-or its base.
+or its *base* (the read-only image the system's own programs come from).
 
 An operating system that can build itself is called *self-hosting*. It is
 the most practical test of whether a system is complete: a compiler, a
@@ -50,8 +50,8 @@ On the root disk you find:
 | `/etc`, `/var` | The machine's own state, as on any Unix machine |
 
 The system's own programs (`/bin`, `/sbin`, `/lib`, `/usr/bin`, `/usr/share`,
-`/etc/ssl`) don't come from the root disk. They come from the *base*, a
-read-only image on the boot disk that the kernel mounts over those
+`/etc/ssl`) don't come from the root disk. They come from the base, which
+lives on the boot disk and which the kernel mounts read-only over those
 directories. So a new base replaces all of them at once, and nothing you write
 to the root disk can replace a system program by accident.
 [Base system](/docs/architecture/base) explains how that works.
@@ -279,7 +279,8 @@ this:
 | `TOOLCHAIN_STAGE=<dir>` | Install the toolchain from this directory instead of `builddir/slopos-toolchain/install` |
 
 `just boot-fast` is the same machine without the Wheel of Fate, and
-`just boot-debug` adds QEMU's debugger stub (see
+`just boot-debug` boots it on the debug kernel, without the wheel, with
+QEMU's debugger stub listening (see
 [Debugging with GDB](/docs/development/debugging-gdb-record-replay)).
 [QEMU options](/docs/getting-started/qemu-options) lists the rest.
 

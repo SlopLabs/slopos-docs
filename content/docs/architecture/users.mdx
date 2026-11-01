@@ -274,8 +274,10 @@ can't be changed.
 A password is hashed with Argon2id at the second cost RFC 9106 recommends
 (64 MiB of memory, 3 passes, 4 lanes) under a random 16-byte salt, and stored
 in the standard PHC string form shown above. A password is optional: a person
-without one confirms their own requests with a click where someone else would
-type theirs.
+without one confirms their own requests with a click at their own desktop,
+where someone else would type theirs. Anywhere else, at another person's
+desktop or at a console login, they have nothing to type, so a request that
+asks them is refused.
 
 One program reads a hash back: `/sbin/authcheck`. It takes a name and a
 password on standard input, one per line, and answers with its exit status
@@ -285,8 +287,9 @@ may read `/etc/shadow`, so `authcheck` answers only when it runs as uid 0, as
 privd and the accounts programs run it, and whoever asks it never sees a hash.
 A password never appears on a command line: programs hand it over on a pipe,
 or read it from a terminal whose echo they turned off first. How the login
-screen and privd slow down repeated wrong passwords is on
-[Sessions and login](/docs/architecture/sessions).
+screen slows down repeated wrong passwords is on
+[Sessions and login](/docs/architecture/sessions), and how privd does on
+[Privileged actions](/docs/architecture/privd#passwords).
 
 ## Managing people
 
@@ -307,8 +310,9 @@ screen and privd slow down repeated wrong passwords is on
 Changing your own password is privd's `org.slopos.accounts.password` action,
 which any person may ask for and confirms with a click at their own desktop
 (at a console login, privd asks for their password instead). Everything else
-is `org.slopos.accounts.manage`: an administrator confirms with a click, and a
-person who isn't one needs an administrator to type their password
+is `org.slopos.accounts.manage`: an administrator confirms it the same way,
+and a person who isn't one (a *standard user*) needs an administrator to type
+their password into the desktop's dialog
 ([privd actions](/docs/abi/privd-actions)). A few rules hold whoever asks:
 
 - A name is a lowercase letter followed by lowercase letters, digits, `-` and

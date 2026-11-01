@@ -50,12 +50,15 @@ division. SlopOS has no libgcc, so those helpers come from
 ### Static and dynamic linking
 
 SlopOS keeps its own programs in the [base](/docs/architecture/base), a
-read-only image that is installed and replaced as a whole. Those programs are
-linked statically: each carries its own copy
+read-only image that is installed and replaced as a whole. The programs we
+write for it are linked statically: each carries its own copy
 of slibc and may make SlopOS's private system calls directly. That is safe
 because those calls are numbered as a whole, the *base interface*: a base
 names the one it was built against, and a kernel boots only a base whose
-interface it serves.
+interface it serves. The e2fsprogs tools the base carries (`mke2fs`,
+`e2fsck` and the rest) are the exception: they are upstream's C programs,
+built from its release, and link `libc.so` like any program outside the
+base.
 
 Everything else is linked dynamically against `libc.so`. That includes the
 apps that ship outside the base (the editor, the file manager, the image
@@ -105,8 +108,10 @@ The loader searches where Linux's does (`LD_LIBRARY_PATH`, the `RUNPATH` or
 `RPATH` of the object that needs the library, `/lib`, `/usr/lib`), then an
 extension's own `lib` directory for that extension's programs, and last
 `~/.local/lib` and `/usr/local/lib`, which it skips for a process running as
-uid 0 or marked `AT_SECURE`, so a library a person can write never reaches a
-program holding more than they do.
+uid 0 or marked `AT_SECURE` (the kernel's mark on a program that starts
+holding a capability beyond those every program has, or as other ids than
+its starter's), so a library a
+person can write never reaches a program holding more than they do.
 [Installed software](/docs/architecture/software#how-programs-and-libraries-are-found)
 gives the exact order and the reason for it. Two debugging switches help when
 a library doesn't load as you expect:

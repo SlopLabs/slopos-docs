@@ -357,7 +357,7 @@ there before the kernel that needs it.
 
 If the new kernel fails at step 3, the next boot lands on the old default
 kernel. It doesn't serve the new base, so it boots the previous one, and the
-machine comes back exactly as it was before step 1.
+machine comes back running the kernel and base it ran before step 1.
 
 ## How the boot loader is told what to boot
 
@@ -436,10 +436,9 @@ most one of the commands that change what boots at a time.
 
 A person who isn't an administrator can still ask for the actions an
 administrator may run, and privd then asks, in a dialog on their desktop, for
-an administrator's password.
-uid 0 running a base program, and the paired agent of
-[remote control](/docs/self-hosting/remote-control), run all of them without
-being asked.
+an administrator's password. The paired agent of
+[remote control](/docs/self-hosting/remote-control), and uid 0 running a base
+program, run all of them without being asked.
 [privd actions](/docs/abi/privd-actions) lists each one exactly.
 
 Even with `Power`, the kernel only lets a program reach the Boot Loader
@@ -494,7 +493,7 @@ shut down ([Development machine](/docs/self-hosting/development-machine)).
   `just toolchain` and a working tree with no uncommitted changes.
 - `just test-remote` installs a base that runs at once and then a kernel into
   the spare slot, boots and commits it, all through privd as the paired
-  remote host.
+  agent of remote control.
 - `just test-installer` installs SlopOS from the install medium onto a blank
   disk, beside another system and onto a reused partition, and once more from
   a CD drive, then boots each disk and takes the same install, try and commit

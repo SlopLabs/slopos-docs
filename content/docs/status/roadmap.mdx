@@ -31,16 +31,18 @@ on it.
 the runner minutes every push costs low. (`plans/ci-latency.md`)
 
 **Where it stands:** CI runs four jobs side by side, each a chain of steps
-over one set of inputs, sized to finish near the longest one: the boot lane
-(the tests build, the boot, the checks that read its log, and the
+over one set of inputs, each meant to finish near the boot lane: the boot
+lane itself (the tests build, the boot, the checks that read its log, and the
 persistence, crash, USB and self-hosting-root boots), the gates (host tests,
-kernels and the framekernel gates), the toolchain (the C++ runtime, the LLVM
-port and the cross-build checks), and the proofs (Miri and Verus). Compiler
-output is cached by content, never by timestamp. Still to do:
+kernels, the framekernel gates and the offline build), the toolchain (the C++
+runtime, the LLVM port and the cross-build checks), and the proofs (Miri and
+Verus). Compiler output is cached by content, never by timestamp. The gates
+job is the longest today, because its builds run without the cache. Still to
+do:
 
 1. Split the gates recipe so its expansion builds can use the compiler cache
-   and its compiler probes cannot, which takes the gates job below the boot
-   lane.
+   and its compiler probes cannot (a cached answer from a probe would prove
+   nothing), which takes the gates job below the boot lane.
 2. Stop every job paying its own toolchain install, with a runner image that
    has it built in.
 
