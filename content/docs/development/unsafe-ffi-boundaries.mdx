@@ -22,11 +22,16 @@ just check-framekernel-gates
 
 ## Where `unsafe` may live
 
-Only in `slopos-ostd` (OSTD). Every other crate the kernel links starts with
-`#![forbid(unsafe_code)]`, and `just check-framekernel-gates` also checks the
-macro expansion of each crate, so `unsafe` arriving through a macro is
-rejected too. The table
-shows where each kind of low-level code goes:
+Only in `slopos-ostd` (OSTD). Every other SlopOS crate the kernel links
+starts with `#![forbid(unsafe_code)]`, and `just check-framekernel-gates` also
+checks the macro expansion of each crate, so `unsafe` arriving through a
+macro is rejected too. Two third-party crates OSTD uses for panics are the
+exception: the stack unwinder (`vendor/unwinding`) and the DWARF reader under
+it (`vendor/gimli`), which `check_vendor_pin.sh` holds to their pinned
+upstream commits. Other crates.io dependencies keep whatever `unsafe` they
+have inside themselves; the gates only stop it reaching SlopOS crates
+through a macro or a linker section. The table shows where each kind of
+low-level code goes:
 
 | You need to | Put it in |
 |---|---|
@@ -111,7 +116,10 @@ If the API you need already exists in OSTD, use it and stop here.
    just check-miri
    ```
 
-   Both should pass with your test listed. If Miri reports undefined
+   `just test-host` lists your test as it passes. `just check-miri` runs
+   OSTD's tests four times (two aliasing models, library and integration
+   tests), prints `── KernMiri <model>-<shard>: ok ──` for each, and keeps
+   the full output in `builddir/kernmiri-*.log`. If Miri reports undefined
    behaviour, fix the primitive, not the test.
 
 6. **Use it from safe code.** Call the new API from the kernel crate that
@@ -162,8 +170,9 @@ Adding a whole new registry touches several files, because the linker script,
 OSTD and two gates all have to agree on it:
 
 1. Declare the output section and its start and stop symbols in `link.ld`.
-2. Add a variant to `RegistryId`, its bounds to `bounds()` and an arm to
-   `registry_entry!`, all in `slopos-ostd/src/ffi/registry.rs`.
+2. In `slopos-ostd/src/ffi/registry.rs`, add a variant to `RegistryId` and
+   its section name to `section()`, declare the start and stop symbols and
+   return them from `bounds()`, and add an arm to `registry_entry!`.
 3. Add the section and its entry size to `ENTRY_SIZE` in
    `scripts/check_registry_sections.sh`.
 4. Add the section to `SECTION_ALLOWLIST` in `scripts/check_unsafe_expansion.sh`.
@@ -217,8 +226,8 @@ Each command should finish without an error. CI runs all four.
 |---|---|
 | `unsafe` in a kernel crate outside OSTD, or `#[allow(unsafe_code)]` | `check_unsafe_outside_ostd.sh` |
 | A new kernel crate without `#![forbid(unsafe_code)]` | `check_unsafe_outside_ostd.sh` |
-| A macro from another crate that expands to `unsafe` in a kernel crate | `check_unsafe_expansion.sh` |
-| `#[unsafe(link_section = "...")]` or `#[unsafe(no_mangle)]` by hand outside OSTD | `check_unsafe_expansion.sh` |
+| `#[unsafe(link_section = "...")]` or `#[unsafe(no_mangle)]` by hand outside OSTD | The compiler, through `#![forbid(unsafe_code)]` |
+| A macro from another crate that expands to `unsafe` in a kernel crate, to a `link_section` that isn't a registry's, or to `no_mangle` on any name but the three above | `check_unsafe_expansion.sh` |
 | A safe OSTD function with a `# Safety` section | `check_safe_contract_surface.sh` |
 | A crates.io dependency that places data in its own linker section | `check_registry_sections.sh` |
 | A registry entry type whose size changed without updating `ENTRY_SIZE` | `check_registry_sections.sh` |
