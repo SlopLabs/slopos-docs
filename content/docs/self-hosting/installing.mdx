@@ -10,9 +10,9 @@ the computer from it, and SlopOS runs from memory; a window asks whether you
 want to try it or install it. An install puts SlopOS on a disk you choose, in
 one of three ways: over the whole disk, in free space beside another system,
 or on one partition you name. Nothing is written until you have reviewed
-what will happen to each partition, and the installer writes only the
-partitions it made or was given, plus SlopOS's own directory on a shared
-EFI system partition. The same stick can later repair the installed system from a
+what will happen to each partition, and on the disk the installer writes
+only the partition table, the partitions it made or was given, and SlopOS's
+own directory on a shared EFI system partition. The same stick can later repair the installed system from a
 rescue shell. This page covers making the stick, what the installer does,
 the first boot of the installed system, and the rescue shell.
 
@@ -182,11 +182,11 @@ An erase asks you to type the disk's name; any other install asks for `yes`.
 | `--disk /dev/<disk>` | The disk to install onto (`nvme0n1` works too) |
 | `--mode erase\|free\|reuse` | Erase the disk, install in free space, or install on a partition |
 | `--region <n>` | Which free space new partitions go into, by its number in the disk's listing (default: the largest) |
-| `--root-size <size>` | The new root's size in decimal units, such as `20GB`, `512MB` or `1.5TB`; a bare number is GB (default: all the free space gives) |
+| `--root-size <size>` | The new root's size in decimal units, such as `20GB`, `512MB` or `1.5TB`; a bare number is GB (default: all the free space gives). Not with `reuse`, whose root is the partition's size |
 | `--root /dev/<partition>` | The partition `reuse` installs SlopOS on |
 | `--keep-root`, `--format-root` | When that partition holds SlopOS: keep its accounts and their files, updating `/usr/local`, or erase it |
 | `--remote <url>` | The address `/src/slopos` fetches from and pushes to (default `https://github.com/SlopLabs/slopos`), with the payload only |
-| `--first`, `--not-first` | Put SlopOS first in the startup order, or leave the order as it stands |
+| `--first`, `--not-first` | Put SlopOS first in the startup order, or leave its entry where it stands (a new entry goes after the systems already there) |
 | `--person <name>` | The first account's name (default `user`) |
 | `--no-password` | Give it no password |
 | `--cmdline <words>` | The installed kernel's command line (default `panic=reboot`) |
@@ -201,9 +201,10 @@ answered.
 <InstallDisk />
 
 **Erase the disk** writes a new partition table and loses everything on the
-disk. It is the only way onto a disk with no GPT partition table: a blank
-disk, one with an old MBR table, or one holding a filesystem across the whole
-disk.
+disk. It is the only way onto a disk with no GPT partition table SlopOS can
+read: a blank disk, one with an old MBR table, one holding a filesystem across
+the whole disk, or one whose GPT is damaged in both copies or has more entries
+than SlopOS reads.
 
 **Install beside what's there** puts SlopOS's partitions into a run of free
 space and changes nothing else on the disk. It shares the disk's EFI system
@@ -213,8 +214,9 @@ already; if another system fills the disk, shrink it with that system's
 tools first.
 
 **Install on a partition** makes a partition you name SlopOS's root and
-erases it, and puts the boot and crash partitions into free space unless the
-disk has SlopOS's already. On a disk that already holds SlopOS, the window
+erases it, and puts the boot and crash partitions (and an EFI system
+partition, if the disk has none) into free space unless the disk has them
+already. On a disk that already holds SlopOS, the window
 offers *Reinstall SlopOS*, which reuses SlopOS's root partition. When that
 partition still holds an ext4 volume, the reinstall keeps its accounts and
 their files: both kernel slots and both bases are written afresh from the
@@ -240,16 +242,17 @@ shows as a list and the terminal prints as `[n/9]` lines:
 |---|---|
 | Partitioning the disk | The GPT: a protective MBR on a fresh table, then each copy of the table behind a flush, starting with the copy the old table was not read from |
 | Reading the new partitions | Nothing: the kernel re-reads the table |
-| Formatting the new partitions | FAT32 on a new ESP and a new boot partition, zeros over the crash partition, ext4 on the root unless it is kept (`mke2fs`) |
+| Formatting the new partitions | FAT32 on a new ESP and a new boot partition (or an existing one that holds no FAT32 volume yet), zeros over the crash partition unless a reinstall keeps it with the root, ext4 on the root unless it is kept (`mke2fs`) |
 | Copying the system | The root's directories and owners, the sealed mount points the base goes over, the apps and the developer tools at `/usr/local`, the clone at `/src/slopos`, the first person |
 | Copying the startup files | The kernel into both slots, the base as both current and previous, on the boot partition |
 | Setting up the startup menu | Limine and its configuration under `\EFI\SlopOS\` on the ESP |
-| Choosing what starts by default | `LoaderEntryDefault` set to `slopos-a` |
+| Choosing what starts by default | `LoaderEntryDefault` set to `slopos-a`, and any one-time boot of a SlopOS entry cleared |
 | Checking the installed system | Nothing: `e2fsck -fn` reads the root |
 | Adding SlopOS to the startup order | A firmware boot entry named `SlopOS`, first in the order only if you asked |
 
-It writes nothing outside the partitions it created or was given, and on a
-shared ESP nothing outside `\EFI\SlopOS\`. The removable-media path
+Apart from the partition table and the firmware's variables, it writes
+nothing outside the partitions it created or was given, and on a shared ESP
+nothing outside `\EFI\SlopOS\`. The removable-media path
 `\EFI\BOOT\BOOTX64.EFI`, which firmware falls back on, is written only on an
 ESP SlopOS created; on a shared one it belongs to whoever put a loader
 there. The installed configuration shows a five-second menu with both kernel
@@ -265,8 +268,8 @@ behind.
 ## The first boot of the installed system
 
 The firmware starts Limine from `\EFI\SlopOS\` through the new `SlopOS` boot
-entry. If you didn't put SlopOS first, the computer goes on starting the
-other system by default; choose *SlopOS* from the firmware's boot menu, or
+entry. If you didn't put SlopOS first, the computer goes on starting
+whatever it started before; choose *SlopOS* from the firmware's boot menu, or
 make it first later in the firmware's settings. Limine shows its menu for
 five seconds and boots slot a, which is the default.
 
@@ -321,8 +324,9 @@ them for the installer.
   Secure Boot turned off.
 - An install from a live system with 512 MiB of memory, which is what
   `just boot-live` gives QEMU by default, stops partway through writing the
-  startup files, a known defect (`plans/KNOWN_ISSUES.md`). Whether more
-  memory avoids it isn't known yet.
+  startup files, a known defect
+  ([Known limitations](/docs/status/known-limitations#installing-and-updating)).
+  Whether more memory avoids it isn't known yet.
 - No resizing of another system's partitions or filesystems.
 - No choice of filesystem: the root is always ext4, and SlopOS can't mount
   or install onto btrfs, XFS or others.

@@ -197,12 +197,14 @@ A base runs at once when both of these hold:
 - the system booted from the boot partition `bootctl` just wrote, and
 - the running kernel serves the base's interface.
 
-Otherwise it stays installed, and the next boot of a kernel that serves it
-takes it. The kernel can also refuse the switch even then, for instance while
-old generations of the base it has not yet freed fill its room for copies
+If either doesn't, the base stays installed, and the next boot of a kernel
+that serves it takes it. Even when both hold, the kernel can refuse the
+switch, for instance while old generations of the base it has not yet freed
+fill its room for copies
 ([Base system](/docs/architecture/base#when-an-old-generation-is-freed));
-`bootctl` then says the base could not run now, and why, and it too waits
-for the next boot. The last line of the output says which happened:
+`bootctl` then says the base could not run now, and why, and the base waits
+for the next boot too. The last line of the output says which happened. Here
+the default kernel, in slot a, is too old for the new base:
 
 ```text
 base installed: interface <N+1>, build tag -; slopos-a's kernel serves base interfaces <min>-<N>, so only a boot of one that serves <N+1> takes it
@@ -346,9 +348,10 @@ installed during that boot stays installed.
 ### A base that needs a newer kernel
 
 When a change touches both the kernel and SlopOS's own system calls, the new
-base needs the new kernel. Install the base first: `bootctl install` refuses
-a kernel that serves neither base on the partition, so the new base has to be
-there before the kernel that needs it.
+base needs the new kernel. Install the base first, so that the boot into the
+new kernel runs it. When the new kernel no longer serves the base you are
+running, no other order works: `bootctl install` refuses a kernel that serves
+neither base on the partition.
 
 1. `scripts/selfhost.sh install` writes the new base as current and moves the
    running one to previous. The running kernel doesn't serve the new base, so
@@ -376,7 +379,7 @@ set of them, and `bootctl` uses these, which Limine implements:
 | `LoaderEntryOneShot` | `bootctl oneshot` | Boot this entry on the next boot only. The boot loader deletes it when it acts on it |
 | `LoaderConfigTimeoutOneShot` | `bootctl oneshot` | How long that one boot's menu waits. `bootctl` sets `menu-disabled`, so a tried boot runs with no one at the keyboard |
 | `LoaderEntrySelected` | The boot loader | The entry that booted this time. `bootctl commit` reads it |
-| `LoaderEntryDefault` | `bootctl commit`, `bootctl set-default` | The entry to boot when nothing else is asked for |
+| `LoaderEntryDefault` | `bootctl commit`, `bootctl set-default`, the installer | The entry to boot when nothing else is asked for |
 | `LoaderEntries` | The boot loader | Every entry the menu offers |
 | `LoaderDevicePartUUID` | The boot loader | The ESP it was started from, which is how `bootctl` finds the right disk and its boot partition |
 

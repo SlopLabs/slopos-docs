@@ -9,7 +9,7 @@ Every program on SlopOS sees its own private memory, starting from the same
 addresses as every other program, and it can't read or damage anyone else's.
 Memory you ask for costs almost nothing until you use it, `fork` doesn't copy
 the parent's memory, and a hundred programs that load the same library share
-one copy of it in RAM. When the machine runs short, SlopOS usually refuses the
+one copy of its code in RAM. When the machine runs short, SlopOS usually refuses the
 request for memory rather than killing the program later; the exceptions are
 described on [Resource limits](/docs/architecture/resource-accounting).
 
@@ -58,8 +58,8 @@ Faulting one page at a time would be slow for a program that walks through a
 large buffer, so a fault in the heap or in an ordinary anonymous mapping also
 fills the untouched pages around it, up to 32 at a time, and a fault in a
 mapped file also maps the neighbouring pages already in memory. The stack, a
-`MAP_NORESERVE` mapping and the memory a `fork` child inherited are filled one
-page at a time. Idle processors also zero free frames ahead of time, and
+`MAP_NORESERVE` mapping and the anonymous memory a `fork` child inherited are
+filled one page at a time. Idle processors also zero free frames ahead of time, and
 faults take those first.
 
 ### How `fork` avoids copying memory
@@ -86,9 +86,14 @@ processes' writes; a private one (`MAP_PRIVATE`) is copy-on-write, so the
 first write gives the process its own copy of that page.
 
 This matters most for libraries: every dynamically linked program maps the C
-library, and they all share one copy. When the last process unmaps a file,
-its frames stay cached, so a compiler that loads the same libraries on every
-run finds them already in RAM.
+library, and they all share one copy of its code. A library's writable data
+is the exception, because the dynamic loader reads it into the program's own
+memory rather than mapping it: relocation rewrites nearly every page of it
+anyway. A program's own file isn't shared either. `exec` copies the program,
+and its dynamic loader, into fresh memory when it starts, so two running
+copies of one program each hold their own. When the last process unmaps a
+file, its frames stay cached, so a compiler that loads the same libraries on
+every run finds them already in RAM.
 
 ### Making memory executable
 
@@ -115,10 +120,11 @@ window's pixels live in a memfd that the application draws into and the
 compositor reads (see [Windowing](/docs/architecture/userland-windowing)).
 
 A memfd can be sized only once, to at most 64 MiB, and its frames are
-allocated at that moment. They count against the limits of the process that
-sized it. If that process exits while another still holds the descriptor, the
-memory lives on and is counted against the system as a whole. At most 64
-memfds exist at once in the whole system.
+allocated at that moment, so sizing one is refused with `ENOMEM` when the
+machine can't promise them. They are charged to the process that sized it,
+not to the processes that map it. If that process exits while another still
+holds the descriptor or a mapping, the memory lives on and is charged to the
+system as a whole. At most 64 memfds exist at once in the whole system.
 
 ### When RAM runs low
 
@@ -154,7 +160,8 @@ call fails with `EFAULT`.
 - **If `mmap` or `brk` succeeds, the memory is promised.** SlopOS checks that
   it can back private memory when you ask for it, so touching memory you were
   given never runs into that limit later. RAM itself can still run out,
-  because the kernel's own memory comes from the same RAM; that case, and the
+  because the kernel's own memory and the file pages programs map come from
+  the same RAM without being promised; that case, and the
   memory with no promise behind it (pages a `fork` child writes, stack growth,
   and mappings made with `MAP_NORESERVE`), are explained on
   [Resource limits](/docs/architecture/resource-accounting).
@@ -174,9 +181,11 @@ call fails with `EFAULT`.
 |---|---|---|
 | Asking for more memory than can be backed | Usually allowed; a process is killed later if memory runs out | Refused with `ENOMEM` at `mmap`, `brk` or `exec` |
 | Swap | Optional | None |
-| Huge pages | Available | Not supported; every page is 4 KiB |
+| Huge pages | Available | Not supported; every page a program gets is 4 KiB |
+| Shared anonymous memory (`MAP_SHARED` with `MAP_ANONYMOUS`) | Supported | Refused with `ENOMEM`; share memory through a memfd instead |
+| A program's own file at `exec` | Mapped from the file and shared between running copies | Copied into fresh memory for each process; only what the dynamic loader maps is shared |
 | memfd | Can be resized, sealed, read and written | Sized once, at most 64 MiB, and at most 64 in the whole system at once; no sealing; reached only through `mmap` (`read` and `write` fail with `EINVAL`) |
-| Address randomisation | Program, libraries, `mmap` area, stack and heap | Stack and heap only |
+| Address randomisation | Program (when built position-independent), libraries, `mmap` area, stack and heap | Stack and heap only |
 
 ## How it is tested
 
@@ -206,8 +215,9 @@ after it has handed the machine over, and nothing in SlopOS needs it.
 `slopos_ostd::mm::heap` (`KBox`, `KVec`, `KArc` and friends). Every
 constructor is fallible, so running out of memory is an error the caller
 handles, not a panic. Build large objects in place with `KBox::try_init` or
-`PinBox::try_init`: a gate fails the build if any stack frame in the final
-ELF exceeds 2 KiB.
+`PinBox::try_init`: a gate fails the build if a stack frame in the final ELF
+exceeds 2 KiB without a measured exemption, and none may pass the 4 KiB guard
+page.
 
 **Address spaces.** A `VmSpace` changes only through a `CursorMut`, which only
 the per-process VM lock hands out, so there is one writer at a time. Entries
@@ -258,7 +268,7 @@ is on [Resource limits](/docs/architecture/resource-accounting#for-contributors)
   in the Linux kernel documentation. The same ideas in Linux's terms.
 - The man pages for [`mmap(2)`](https://man7.org/linux/man-pages/man2/mmap.2.html)
   and [`memfd_create(2)`](https://man7.org/linux/man-pages/man2/memfd_create.2.html),
-  whose Linux semantics SlopOS follows.
+  whose Linux semantics SlopOS follows apart from the differences above.
 
 ## In the source
 

@@ -12,7 +12,7 @@ export function BootSlotTimeline() {
     <figure
       className="not-prose my-8"
       role="img"
-      aria-label="Trying a new kernel: install it into the spare slot, arm one boot of it, reboot into it, then commit it as the default. Until the commit, any reset boots the old default kernel."
+      aria-label="Trying a new kernel: install it into the spare slot, arm one boot of it, reboot into it, then commit it as the default. Once slot b has booted, until the commit, any reset boots the old default kernel."
     >
       <ol className="grid gap-2 md:grid-cols-4">
         {STEPS.map((step, i) => {
@@ -50,7 +50,7 @@ export function BootSlotTimeline() {
           className="border-t-2 pt-2 text-xs md:col-span-3"
           style={{ borderColor: 'var(--line-strong)', color: 'var(--ink-dim)' }}
         >
-          A crash or reset before the commit: the machine boots the old default kernel, slot a.
+          The first restart after arming boots slot b. A crash or reset after that, before the commit, boots the old default kernel, slot a.
         </p>
         <p
           className="border-t-2 pt-2 text-xs"

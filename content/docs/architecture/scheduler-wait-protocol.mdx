@@ -140,8 +140,10 @@ That last step relies on how the kernel stores a task's state. The status
 memory, which is only ever changed in a single indivisible step (an *atomic*
 compare-and-swap), together with a counter that goes up on every change. So
 a wake never sees half of a change, and a CPU acting on a stale value finds
-the counter has moved and reads it again. All blocking in the kernel goes
-through the same few wait functions, so this order is written once.
+the counter has moved and reads it again. Almost every wait in the kernel goes
+through one wait loop, so this order is written once; futexes and timed
+sleeps block by hand and repeat it, with one more check
+([For contributors](#for-contributors) says which).
 
 ### When a wait ends early: kills, signals and timeouts
 
@@ -151,11 +153,13 @@ chooses which of these reasons apply:
 - **The task was killed.** Almost every wait ends at once on a kill, which is
   what lets `kill -9` stop a program blocked in a system call.
 - **A signal arrived.** Waits inside a slow system call, such as reading from
-  an empty pipe, also end when a signal arrives that the program has not
-  blocked. If the program handles it, the call fails with `EINTR`, or is
-  restarted if the handler was installed with `SA_RESTART`. A signal with no
-  handler takes its default action instead, ending or stopping the program,
-  and a call it only stopped starts again when the program continues (see
+  an empty pipe, also end when a signal arrives that the program neither
+  blocks nor ignores. If the program handles it, the call fails with `EINTR`,
+  or is restarted if the handler was installed with `SA_RESTART`. A signal
+  with no handler takes its default action instead, ending or stopping the
+  program, and a call it only stopped starts again when the program
+  continues. Calls with a timeout (`poll`, `nanosleep`, `futex`, SlopRing's
+  `ring_enter`) are never restarted: they fail with `EINTR` in every case (see
   [Processes and signals](/docs/architecture/processes#how-a-signal-is-delivered)).
 - **Time ran out.** A wait can have a deadline, as `poll` with a timeout
   does.
@@ -229,7 +233,8 @@ resort at shutdown.
 - **Don't busy-wait.** A thread blocked in `read`, `poll`, `futex`,
   `waitpid` or `pthread_cond_wait` costs no CPU.
 - **Expect `EINTR`** from slow calls such as `read` on a pipe or terminal if
-  you install signal handlers without `SA_RESTART`.
+  you install signal handlers without `SA_RESTART`, and from `poll`,
+  `nanosleep` and futex waits whenever a signal interrupts them.
 - **Start background jobs at the Low tier** with spawn; `nice` has no effect
   yet.
 - **Killing works on a program blocked in a system call or spinning in its
@@ -353,8 +358,8 @@ warning and is waited for; nothing declares a stalled grace period complete.
   in the Linux kernel documentation, for the RCU mentioned under For
   contributors.
 - [*EEVDF Scheduler*](https://docs.kernel.org/scheduler/sched-eevdf.html),
-  for comparison. Linux's current scheduler weighs tasks against each other
-  instead of using strict tiers; the comment at the top of `sched/src/fair.rs`
+  for comparison. Linux's current scheduler for ordinary tasks weighs them
+  against each other instead of using strict tiers; the comment at the top of `sched/src/fair.rs`
   says why SlopOS doesn't.
 
 ## In the source

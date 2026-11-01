@@ -83,15 +83,15 @@ holds a Rust reference into memory the program can change.
 | `_pad0` | `u16` | Padding |
 | `fd` | `i32` | Target descriptor; `-1` for `OP_NOP` and `OP_TIMEOUT` |
 | `off` | `u64` | Nanoseconds for `OP_TIMEOUT`; no other opcode reads it, so `OP_READ` and `OP_WRITE` take no offset |
-| `addr` | `u64` | Buffer, `msghdr` or socket address; for `OP_CANCEL`, the `user_data` to cancel |
-| `len` | `u32` | Length of the buffer at `addr` |
+| `addr` | `u64` | Buffer, `msghdr`, path or socket address; for `OP_CANCEL`, the `user_data` to cancel |
+| `len` | `u32` | Length of the buffer, path or address at `addr` |
 | `op_flags` | `u32` | The poll mask for `OP_POLL_ADD`, the open flags for `OP_OPENAT`, `SLOPRING_ASYNC_CANCEL_ALL` for `OP_CANCEL`; the other opcodes ignore it |
 | `user_data` | `u64` | Copied unchanged into the completion |
 | `addr2` | `u64` | Where `OP_RECVFROM` writes the source address; unused by the other opcodes |
 | `sqe_flags2` | `u16` | `SLOPRING_SQE_MULTISHOT` (bit 0) |
 | `buf_group` | `u16` | Provided-buffer group, with `SLOPRING_SQE_BUFFER_SELECT`; `0` otherwise |
 | `buf_index` | `u16` | Fixed-buffer index, with `SLOPRING_SQE_FIXED_BUFFER` |
-| reserved | `u16`, `u64` | Must be zero |
+| reserved | `u16`, `u64` | Write zero; the kernel ignores them |
 
 ## Completion entry (`Cqe`, 16 bytes)
 
@@ -118,7 +118,7 @@ Bit 2 is unused.
 | 2 | `OP_WRITE` | `write` on a file or socket | At the descriptor's file position, which it advances, as `write` does |
 | 3 | `OP_RECVMSG` | `recvmsg` on a socket, including passed descriptors (`SCM_RIGHTS`) on a Unix socket | `addr` is the `msghdr`, and at most 4096 bytes move per operation; multishot. With a fixed or provided buffer the data goes into that buffer instead, up to its length, `addr` is unused and passed descriptors are closed |
 | 4 | `OP_SEND` | Send a buffer on a socket | At most 4096 bytes per operation from `addr`; a fixed buffer has no such limit |
-| 5 | `OP_ACCEPT` | Accept a connection and install its descriptor | The peer's address is not reported; multishot |
+| 5 | `OP_ACCEPT` | Accept a connection and install its descriptor | The peer's address is not reported, and the new descriptor is neither close-on-exec nor non-blocking; multishot |
 | 6 | `OP_POLL_ADD` | Wait until a descriptor is ready | `op_flags` is the poll mask, of which only `POLLIN` and `POLLOUT` are waited for; `POLLERR` and `POLLHUP` are always reported. The result is the ready events; multishot |
 | 7 | `OP_TIMEOUT` | A timer | `off` is nanoseconds from submission, rounded down to whole milliseconds. Stays in flight until it passes, then completes with `-ETIME` during a waiting `ring_enter`, which wakes for it |
 | 8 | `OP_CANCEL` | Cancel in-flight operations | See below |
@@ -134,8 +134,9 @@ Bit 2 is unused.
   widen it later. `ring_setup` currently allows all fourteen.
 - Every opcode has a capability class fixed at compile time, like a system
   call, and a compile-time check requires that none needs a gated capability.
-  A ring therefore carries no copy of its creator's capabilities; the one
-  opcode that resolves a path is checked as the task entering the ring. See
+  A ring therefore carries no copy of its creator's capabilities; the opcodes
+  that resolve a path, `OP_OPENAT` and `OP_CONNECT` to an `AF_UNIX` name, are
+  checked as the task entering the ring. See
   [Capabilities](/docs/architecture/authority).
 - Descriptors named in a submission are looked up in the creating process's
   descriptor table.
@@ -147,21 +148,25 @@ entry's own result: `0` if it found one, `-ENOENT` if not. With
 
 ## Completion rules
 
-- `ring_enter` first tries each submission without blocking. If it finishes,
-  the completion is posted at once. A multishot submission and an
-  `OP_TIMEOUT` are recorded rather than tried: unless refused at once, they
-  post nothing until a waiting `ring_enter`.
-- If it would block, the operation stays in flight. The kernel resolves its
+Completions are posted only inside `ring_enter`, at two points: when a
+submission finishes as it is tried, and when a `ring_enter` with
+`min_complete > 0` retries what is in flight. A `ring_enter` with
+`min_complete` 0 only submits, so an operation that has to wait completes
+only during a later call that waits. No kernel thread completes operations
+in the background, and the ring descriptor never becomes readable.
+
+- `ring_enter` tries each submission without blocking and posts its
+  completion at once if it finishes. A multishot submission and an
+  `OP_TIMEOUT` are recorded without being tried, so unless refused at once
+  they post nothing until a waiting `ring_enter`.
+- An operation that would block stays in flight. The kernel resolves its
   descriptor once, at submission, and holds the open file until the operation
   ends, so closing or reusing the descriptor number does not affect it.
-- With `min_complete > 0`, the caller sleeps until the files its in-flight
-  operations wait on become ready, the nearest `OP_TIMEOUT` passes or 50 ms
-  have gone by, retries them, and returns once the completion queue holds
-  `min_complete` completions or a signal arrives. An `OP_TIMEOUT`'s `-ETIME` counts as one
+- A waiting `ring_enter` sleeps until the files its in-flight operations wait
+  on become ready, the nearest `OP_TIMEOUT` passes or 50 ms have gone by,
+  retries them, and returns once the completion queue holds `min_complete`
+  completions or a signal arrives. An `OP_TIMEOUT`'s `-ETIME` counts as one
   completion; it does not end the wait by itself.
-- Completions are posted only inside `ring_enter`. No kernel thread completes
-  operations in the background, and the ring descriptor never becomes
-  readable.
 - A completion posted while the completion queue is full is dropped: the
   overflow word counts it and `SLOPRING_CQ_OVERFLOW` (bit 1) is set in the
   completion flags word. The kernel never clears the flag.
@@ -177,9 +182,8 @@ entry's own result: `0` if it found one, `-ENOENT` if not. With
   connection, per message, or for `OP_POLL_ADD` each time the set of ready
   events changes to a set that is not empty. An error, end of stream, or
   for `OP_POLL_ADD` `POLLERR` or `POLLHUP`, posts the last completion, with
-  the flag clear. Cancelling it
-  posts one `-ECANCELED` with the flag clear. A multishot submission that
-  also selects a buffer is `-EINVAL`.
+  the flag clear. Cancelling it posts one `-ECANCELED` with the flag clear.
+  A multishot submission that also selects a buffer is `-EINVAL`.
 
 ## Registering buffers
 
@@ -201,6 +205,12 @@ second is `-EEXIST`. A submission uses one by setting
 submission until the operation's final completion or cancellation: another
 submission naming it meanwhile completes with `-EBUSY`, and
 `RING_UNREGISTER_BUFFERS` returns `-EBUSY` while any reservation is held.
+
+Every page of a fixed buffer, a provided-buffer ring or a provided buffer
+must be anonymous memory that is already present (touched since it was
+mapped): registering one that is not is `-EFAULT`, and so is the completion
+of an `OP_RECVMSG` that picks such a provided buffer. Pinned pages count
+against the process's `RLIMIT_MEMLOCK` (`-ENOMEM` past it).
 
 **Provided buffers.** `RING_REGISTER_PBUF_RING` pins a ring of buffers in
 anonymous memory that the program refills, for one buffer group:
@@ -225,8 +235,10 @@ selects that group.
 ## Zero-copy send
 
 `OP_SEND_ZC` posts a result completion with `SLOPRING_CQE_F_MORE`, then a final
-completion with `SLOPRING_CQE_F_NOTIF` once the kernel has released the buffer.
-A send that fails posts one completion, the negated errno, with neither flag.
+completion, result 0, with `SLOPRING_CQE_F_NOTIF` once the kernel has released
+the buffer, which until then stays reserved. A final completion that has to
+wait for the network card is posted by a waiting `ring_enter`. A send that
+fails posts one completion, the negated errno, with neither flag.
 
 | Socket | Behaviour |
 |---|---|
@@ -236,8 +248,9 @@ A send that fails posts one completion, the negated errno, with neither flag.
 
 ## Ring descriptor
 
-- The descriptor can be closed and duplicated within the process. It is not
-  inherited across `fork` or `exec`.
+- The descriptor can be closed and duplicated within the process. No copy
+  of it is inherited across `fork`, the one `ring_setup` returns is
+  close-on-exec, and it cannot be passed in `SCM_RIGHTS` (`EOPNOTSUPP`).
 - `poll` reports it as `POLLNVAL`, and `read` and `write` on it return
   `-EINVAL`.
 - Rings live in a table of handles with generation numbers, so a closed and

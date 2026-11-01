@@ -12,13 +12,18 @@ where this page stops.
 
 ## Before you start: where the kernel's output goes
 
-Everything below appears in the kernel log. Under QEMU the log goes to the
-serial port, which `just boot` and the other boot recipes print in your
-terminal; `just boot-log` saves it to `test_output.log`. On a machine with no
-serial port, the kernel can draw the log on screen: press Esc while the boot
-screen is showing to toggle it. Once the desktop has drawn its first frame,
-Esc belongs to applications again. The on-screen log is drawn from the
-kernel's timer, so it keeps working when every program is stuck.
+Almost everything below appears in the kernel log, which the kernel also
+writes to the serial port. Under QEMU, `just boot` and the other boot recipes
+print the serial port in your terminal, and `just boot-log` saves it to
+`test_output.log`. The watchdog's reports ([below](#the-machine-is-stuck))
+are the exception: the watchdog writes them straight to the serial port, so
+they are not in the kernel log, not on screen and not in `just remote klog`.
+
+On a machine with no serial port, the kernel can draw the log on screen:
+press Esc while the boot screen is showing to toggle it. Once the desktop has
+drawn its first frame, Esc belongs to applications again. The on-screen log
+is drawn from the kernel's timer, so it keeps working when every program is
+stuck.
 
 On a machine paired with your host for
 [remote control](/docs/self-hosting/remote-control), read the log from the
@@ -131,7 +136,7 @@ trace from every CPU.
 **What you'll see.** A *watchdog* runs in the kernel and checks that every
 CPU keeps making progress: each CPU watches the next one and checks that its
 timer interrupt is still being handled. A CPU that misses about a second's
-worth of checks (100 samples by default) is reported:
+worth of checks (100 samples by default) is reported on the serial port:
 
 ```
 WATCHDOG: cpu 0 made no progress for 3 samples (watcher cpu 1)
@@ -155,12 +160,21 @@ section) and the CPU was left to carry on.
 While the CPU stays stuck, the report comes again each time the stall
 doubles (at 200, 400 and 800 samples with the default threshold). The first
 report at five times the threshold or more is fatal, which with the default
-is the one at 800 samples. A chain of CPUs waiting on each other in a circle
+is the one at 800 samples; a chain of CPUs waiting on each other in a circle
 (a deadlock) is fatal at its first report. Under a hypervisor, a CPU that
 the host didn't schedule looks exactly like a stuck one, so there the
-watchdog only reports unless you boot with `watchdog.panic=on`. A fatal
-stall ends the machine as a panic does, leaving a crash record (below) with
-the message `NMI watchdog: CPU made no progress, sustained`.
+watchdog only reports, adding `fatal escalation suppressed (hypervisor)`
+where it would have stopped, unless you boot with `watchdog.panic=on`.
+
+A fatal stall halts the stuck CPU for good. It prints `=== KERNEL ABORT ===`
+and `NMI watchdog: CPU made no progress, sustained` on the serial port and
+writes a crash record ([below](#the-crash-record)) carrying that message, but
+shows no panic screen; with `panic=reboot` it then resets the machine at
+once.
+
+On a machine without a serial port none of these lines reach you. SysRq `k`
+(or `kconsole k`) prints the longest stall each CPU has seen, and any chain
+of CPUs waiting on locks, into the kernel log instead.
 
 ## A program died with an oops
 
@@ -252,8 +266,8 @@ default slot ([Updating SlopOS](/docs/self-hosting/updating)). The
 development machine's boot disk leaves it out, so a panic there stays on
 screen.
 
-To see a panic on purpose, `panic.fatal_smoke=on` raises one right after
-boot.
+To see a panic on purpose, `panic.fatal_smoke=on` raises one at the end of
+the kernel's own start-up, before any program runs.
 
 ### The crash record
 
@@ -266,11 +280,13 @@ the kernel log. Then the next boot saves it as a file.
 
 1. **At boot, the kernel finds the store.** On the disk Limine loaded the
    kernel from, it claims the crash partition for itself and logs
-   `CRASH: records go to <partition> (<n> slots, <n> held)`. The development
-   machine's boot disk and every installed disk have one; the live ISO does
-   not, and a disk that isn't an NVMe drive keeps no records yet, because the
-   record is written through the NVMe driver's own polled queue, which needs
-   no interrupts, waits for no lock and allocates no memory.
+   `CRASH: records go to <partition> (<n> slots, <n> held)`. It does this once
+   the disks have been probed, so a panic earlier in boot leaves no record.
+   The development machine's boot disk and every installed disk have a crash
+   partition; the live ISO does not, and a disk that isn't an NVMe drive keeps
+   no records yet, because the record is written through the NVMe driver's own
+   polled queue, which needs no interrupts, waits for no lock and allocates no
+   memory.
 2. **At the panic, the kernel writes the record** before it waits or resets,
    and says how it went on serial and on the panic screen:
    `crash record: <n> written to <partition> slot <n>`, or

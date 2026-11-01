@@ -61,12 +61,17 @@ stores the return address in `rcx`.
   `-ENOSYS`.
 - A call whose capability the caller does not hold returns `-EPERM` before
   its handler runs.
-- `ERESTARTSYS` (512) and `ERESTARTNOHAND` (514) are kernel-internal and never
-  reach a program. When a signal interrupts a call that returned one of them,
-  the kernel restarts the call (after the handler, if one runs) or returns
-  `-EINTR`, following Linux's `SA_RESTART` rules; `ERESTARTNOHAND` restarts
-  only when no handler runs. `nanosleep`, `poll`, `futex` and `ring_enter`
-  always return `-EINTR` instead, because a restart would wait their whole
+- A call a signal interrupts fails with `-EINTR`, with or without
+  `SA_RESTART`, except two groups that the kernel restarts. `read`, `write`,
+  `readv` and `writev` on a pipe, FIFO, terminal or signalfd restart when no
+  handler runs or the handler has `SA_RESTART`. `select`, `pselect6`, `ppoll`
+  and `rt_sigsuspend` restart only when no handler runs, the first three once
+  the time left has been written back to the caller's timeout. The kernel
+  marks these returns with `ERESTARTSYS` (512) and `ERESTARTNOHAND` (514),
+  which never reach a program.
+- So a socket `read`, `accept`, `wait4` and `flock` fail with `-EINTR`,
+  though Linux restarts them under `SA_RESTART`. `nanosleep`, `poll`, `futex`
+  and `ring_enter` never restart, because a restart would wait their whole
   timeout again; `nanosleep` writes the time left to `rem`.
 
 ## Capability classes
@@ -93,6 +98,7 @@ Some calls check a further capability, or a seat, inside the handler
 | `setgroups` | `SetId` | Any call |
 | `spawn_path` | `SetId`, `SchedHigh` | A uid or gid for the child that is not one of the caller's own, a group list or a login tag; the `High` priority tier |
 | `setpriority` | `SchedHigh` | A nice value below both 0 and the task's current one |
+| `kill`, `tgkill`, `rt_sigqueueinfo`, `rt_tgsigqueueinfo`, `setpriority` | `ProcSignal` | A target the signal rule refuses (see `kill`'s note); init stays refused |
 | `net_query` | `NetAdmin` | The owner of a socket the caller does not own |
 | `efivar_get`, `efivar_set` | `BootEntry` | `Boot####`, `BootOrder`, `BootNext` and `BootCurrent` |
 | `ioctl` (`FS_IOC_SETFLAGS`) | `Seal` | Setting or clearing the immutable flag |
@@ -104,8 +110,8 @@ Some calls check a further capability, or a seat, inside the handler
 ## Linux-numbered calls
 
 Each takes Linux's arguments and follows its Linux man page. The notes
-record what SlopOS restricts or adds, as the source states it; an empty note
-does not promise every flag of the Linux call.
+record what SlopOS restricts or adds; an empty note does not promise every
+flag of the Linux call.
 
 | Number | Call | Class | Notes |
 |---|---|---|---|
@@ -118,14 +124,14 @@ does not promise every flag of the Linux call.
 | 6 | `lstat` | `NoneFd` | |
 | 7 | `poll` | `NoneFd` | `nfds` at most 256 |
 | 8 | `lseek` | `NoneFd` | |
-| 9 | `mmap` | `NoneSelf` | Anonymous mappings (`MAP_PRIVATE` only) and regular-file mappings (shared or private) are filled as they are touched; a memfd is mapped `MAP_SHARED` at offset 0 with every page present from the call; any other descriptor is `EINVAL`. An anonymous mapping that allows any access, or a writable private file mapping, is charged in full against the commit ceiling when it is made, or when `mprotect` first allows that access, and refused with `ENOMEM` past it; with `MAP_NORESERVE` an anonymous one is charged a page at a time as it is touched ([Memory](/docs/architecture/memory)) |
-| 10 | `mprotect` | `NoneSelf` | |
+| 9 | `mmap` | `NoneSelf` | Anonymous mappings (`MAP_PRIVATE` only) and regular-file mappings (shared or private) are filled as they are touched; a memfd is mapped `MAP_SHARED` at offset 0 with every page present from the call; any other descriptor is `EINVAL`. An anonymous mapping that allows any access, or a writable private file mapping, is charged in full against the commit ceiling when it is made, or when `mprotect` first allows that access, and refused with `ENOMEM` past it; with `MAP_NORESERVE` an anonymous one is charged a page at a time as it is touched ([Memory](/docs/architecture/memory)). An executable mapping of anything but a file of the base (or, for an extension's program, of its own activation) drops the kernel's record of which program the process runs until its next `exec` ([Making memory executable](/docs/architecture/memory#making-memory-executable)) |
+| 10 | `mprotect` | `NoneSelf` | Making a page executable that was not drops that record too, as an executable `mmap` does |
 | 11 | `munmap` | `NoneSelf` | |
 | 12 | `brk` | `NoneSelf` | |
-| 13 | `rt_sigaction` | `NoneSelf` | `sigsetsize` must be 8 |
+| 13 | `rt_sigaction` | `NoneSelf` | `sigsetsize` must be 8. A handler other than `SIG_DFL` or `SIG_IGN` needs an `sa_restorer` (`EINVAL` otherwise) |
 | 14 | `rt_sigprocmask` | `NoneSelf` | `sigsetsize` must be 8 |
 | 15 | `rt_sigreturn` | `NoneSelf` | |
-| 16 | `ioctl` | `NoneFd` | `FIOCLEX`, `FIONCLEX` and `FIONBIO` on any descriptor; block-device requests (`BLKGETSIZE64`, `BLKGETSIZE`, `BLKSSZGET`, `BLKPBSZGET`, `BLKROGET`, `BLKRRPART`); `FS_IOC_GETFLAGS` and `FS_IOC_SETFLAGS`; terminal requests. Anything else is `ENOTTY` |
+| 16 | `ioctl` | `NoneFd` | `FIOCLEX`, `FIONCLEX` and `FIONBIO` on any descriptor; block-device requests (`BLKGETSIZE64`, `BLKGETSIZE`, `BLKSSZGET`, `BLKPBSZGET`, `BLKROGET`, `BLKRRPART`); `FS_IOC_GETFLAGS` and `FS_IOC_SETFLAGS`; terminal requests, `FIONREAD` among them, which a pipe or socket does not answer. Anything else is `ENOTTY` |
 | 17 | `pread64` | `NoneFd` | |
 | 18 | `pwrite64` | `NoneFd` | |
 | 19 | `readv` | `NoneFd` | At most 1024 segments (`UIO_MAXIOV`) |
@@ -137,31 +143,31 @@ does not promise every flag of the Linux call.
 | 26 | `msync` | `NoneSelf` | `MS_INVALIDATE` is `EINVAL` |
 | 32 | `dup` | `NoneFd` | |
 | 33 | `dup2` | `NoneFd` | |
-| 35 | `nanosleep` | `NoneSelf` | |
+| 35 | `nanosleep` | `NoneSelf` | Rounded up to whole milliseconds |
 | 39 | `getpid` | `NoneSelf` | |
 | 41 | `socket` | `NoneSelf` | `AF_UNIX` with `SOCK_STREAM`; `AF_INET` with `SOCK_STREAM` (TCP) or `SOCK_DGRAM` (UDP, ICMP) |
-| 42 | `connect` | `NoneFd` | |
+| 42 | `connect` | `NoneFd` | On `AF_UNIX`, a path name only (an abstract one is `EINVAL`); `ECONNREFUSED` with no listener there, `EAGAIN` while its backlog is full |
 | 43 | `accept` | `NoneFd` | |
 | 44 | `sendto` | `NoneFd` | At most 4096 bytes per call; every `MSG_*` flag but `MSG_NOSIGNAL` is `EINVAL`; an address on an `AF_UNIX` socket is `EOPNOTSUPP` |
 | 45 | `recvfrom` | `NoneFd` | At most 4096 bytes per call; any `MSG_*` flag is `EINVAL` |
-| 46 | `sendmsg` | `NoneFd` | `AF_UNIX` only (`ENOTSOCK` otherwise): at most 4096 bytes and 4 descriptors (`SCM_RIGHTS`, the only control message) per call; every `MSG_*` flag but `MSG_NOSIGNAL` is `EINVAL` |
+| 46 | `sendmsg` | `NoneFd` | `AF_UNIX` only (`ENOTSOCK` otherwise): at most 4096 bytes and 4 descriptors (`SCM_RIGHTS`, the only control message) per call, none of them a socket or a ring (`EOPNOTSUPP`); every `MSG_*` flag but `MSG_NOSIGNAL` is `EINVAL` |
 | 47 | `recvmsg` | `NoneFd` | `AF_UNIX` only (`ENOTSOCK` otherwise): at most 4096 bytes and 4 descriptors per call; any `MSG_*` flag is `EINVAL` |
 | 48 | `shutdown` | `NoneFd` | `AF_INET` only; `ENOTSOCK` on an `AF_UNIX` socket |
-| 49 | `bind` | `NoneFd` | |
-| 50 | `listen` | `NoneFd` | |
+| 49 | `bind` | `NoneFd` | On `AF_UNIX`, a path name only (an abstract one is `EINVAL`), made with mode `0777` less the umask; `EADDRINUSE` if the name exists |
+| 50 | `listen` | `NoneFd` | The socket must be bound first (`EINVAL`). `AF_INET`: TCP only (`EPROTONOSUPPORT` for UDP). `AF_UNIX`: the backlog is 32 whatever `backlog` says |
 | 51 | `getsockname` | `NoneFd` | |
 | 52 | `getpeername` | `NoneFd` | |
 | 53 | `socketpair` | `NoneSelf` | `AF_UNIX` stream only; `EOPNOTSUPP` for `AF_INET` |
-| 54 | `setsockopt` | `NoneFd` | `AF_INET` only (`ENOTSOCK` on an `AF_UNIX` socket) |
-| 55 | `getsockopt` | `NoneFd` | On an `AF_UNIX` socket only `SO_ERROR`, `SO_PEERCRED`, `SO_PEERPIDFD`, and `SO_PEERPROGRAM` and `SO_PEEREXTENSION` at level `SOL_SLOPOS` ([Privileged actions](/docs/architecture/privd)) |
-| 56 | `clone` | `NoneSelf` | |
+| 54 | `setsockopt` | `NoneFd` | `AF_INET` only (`ENOTSOCK` on an `AF_UNIX` socket): `SO_REUSEADDR`, `SO_RCVBUF`, `SO_SNDBUF`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_KEEPALIVE`, `SO_OOBINLINE`, `TCP_NODELAY` and `IP_TOS`. Any other option is `EINVAL`, or `ENOPROTOOPT` at `IPPROTO_IP` |
+| 55 | `getsockopt` | `NoneFd` | On an `AF_INET` socket the options `setsockopt` takes and `SO_ERROR`. On an `AF_UNIX` socket only `SO_ERROR` (always 0), `SO_PEERCRED`, `SO_PEERPIDFD`, and `SO_PEERPROGRAM` and `SO_PEEREXTENSION` at level `SOL_SLOPOS` ([Privileged actions](/docs/architecture/privd)) |
+| 56 | `clone` | `NoneSelf` | Only `CLONE_VM`, `CLONE_FS`, `CLONE_FILES`, `CLONE_SIGHAND`, `CLONE_THREAD`, `CLONE_SETTLS`, `CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID` and `CLONE_CHILD_CLEARTID`; any other bit, an exit signal in the low byte included, is `EINVAL`. `CLONE_SIGHAND` and `CLONE_FILES` need `CLONE_VM`, and `CLONE_THREAD` needs both. A `CLONE_VM` child shares the caller's descriptor table whether or not `CLONE_FILES` is set; without `CLONE_VM`, `CLONE_CHILD_SETTID` is ignored |
 | 57 | `fork` | `NoneSelf` | Copy-on-write; never refused by the commit ceiling |
-| 59 | `execve` | `NoneSelf` | Every thread of the process keeps only the universal capabilities it held. The exception is init re-executing the base's `/sbin/init` as its only thread, which keeps its whole mask. No set-ID bit is honoured |
+| 59 | `execve` | `NoneSelf` | The process's other threads are not ended: they run on in the new image. Every thread keeps only the universal capabilities it held; the exception is init re-executing the base's `/sbin/init` as its only thread, which keeps its whole mask. No set-ID bit is honoured |
 | 60 | `exit` | `NoneSelf` | |
 | 61 | `wait4` | `NoneRelation` | A process-group wait (`pid` 0 or below -1) is `ESRCH` |
 | 62 | `kill` | `NoneRelation` | The sender must hold every capability the target holds, and its real or effective uid must be the target's real or saved uid. `ProcSignal` waives both; `SIGCONT` to the sender's own session needs neither. Init can never be signalled |
 | 63 | `uname` | `NoneSelf` | |
-| 72 | `fcntl` | `NoneFd` | |
+| 72 | `fcntl` | `NoneFd` | `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`, `F_GETLK`, `F_SETLK` and `F_SETLKW` (`EINVAL` otherwise). `F_SETFL` changes only `O_APPEND` and `O_NONBLOCK` |
 | 73 | `flock` | `NoneFd` | |
 | 74 | `fsync` | `NoneFd` | |
 | 75 | `fdatasync` | `NoneFd` | |
@@ -190,27 +196,27 @@ does not promise every flag of the Linux call.
 | 106 | `setgid` | `NoneSelf` | As `setuid`, for the group ids |
 | 107 | `geteuid` | `NoneSelf` | |
 | 108 | `getegid` | `NoneSelf` | |
-| 109 | `setpgid` | `NoneRelation` | |
+| 109 | `setpgid` | `NoneRelation` | Every refusal is `EINVAL`, where Linux answers some with `ESRCH` or `EPERM` |
 | 110 | `getppid` | `NoneSelf` | |
 | 112 | `setsid` | `NoneSelf` | |
 | 113 | `setreuid` | `NoneSelf` | Without `SetId`, Linux's unprivileged rules |
 | 114 | `setregid` | `NoneSelf` | As `setreuid` |
 | 115 | `getgroups` | `NoneSelf` | |
-| 116 | `setgroups` | `NoneSelf` | Takes `SetId` |
+| 116 | `setgroups` | `NoneSelf` | Takes `SetId`; at most 32 groups |
 | 117 | `setresuid` | `NoneSelf` | Without `SetId`, each new id must be one of the caller's real, effective and saved ids |
 | 118 | `getresuid` | `NoneSelf` | |
 | 119 | `setresgid` | `NoneSelf` | As `setresuid` |
 | 120 | `getresgid` | `NoneSelf` | |
 | 121 | `getpgid` | `NoneRelation` | |
 | 124 | `getsid` | `NoneRelation` | |
-| 127 | `rt_sigpending` | `NoneSelf` | |
-| 128 | `rt_sigtimedwait` | `NoneSelf` | |
+| 127 | `rt_sigpending` | `NoneSelf` | `sigsetsize` must be 8 |
+| 128 | `rt_sigtimedwait` | `NoneSelf` | `sigsetsize` must be 8 |
 | 129 | `rt_sigqueueinfo` | `NoneRelation` | |
-| 130 | `rt_sigsuspend` | `NoneSelf` | |
+| 130 | `rt_sigsuspend` | `NoneSelf` | `sigsetsize` must be 8 |
 | 131 | `sigaltstack` | `NoneSelf` | |
 | 133 | `mknod` | `NoneFd` | A FIFO or a regular file; `EPERM` for a device or socket node |
 | 137 | `statfs` | `NoneFd` | `EOPNOTSUPP` from a filesystem that keeps no counters. The base and the install medium report `BASEFS_MAGIC`, an extension's activation `EXTENSION_MAGIC` |
-| 138 | `fstatfs` | `NoneFd` | As `statfs` |
+| 138 | `fstatfs` | `NoneFd` | As `statfs`; `ENOSYS` for a descriptor that is no file on a filesystem (a pipe, socket, terminal or memfd) |
 | 140 | `getpriority` | `NoneRelation` | |
 | 141 | `setpriority` | `NoneRelation` | Only for the caller's own process and tasks it may signal (`EPERM` otherwise). A nice value below both 0 and the task's current one takes `SchedHigh` (`EACCES` otherwise). The value is kept and reported; the scheduler does not read it |
 | 153 | `vhangup` | `ConsoleConfig` | `EPERM` without a controlling terminal |
@@ -221,11 +227,11 @@ does not promise every flag of the Linux call.
 | 169 | `reboot` | `Power` | `LINUX_REBOOT_CMD_RESTART`, `_POWER_OFF` and `_HALT`, which does what `_POWER_OFF` does; `_CAD_ON` and `_CAD_OFF` succeed and change nothing |
 | 186 | `gettid` | `NoneSelf` | |
 | 202 | `futex` | `NoneSelf` | `WAIT`, `WAKE`, `REQUEUE`, `CMP_REQUEUE`, `WAIT_BITSET`, `WAKE_BITSET` |
-| 203 | `sched_setaffinity` | `NoneRelation` | |
-| 204 | `sched_getaffinity` | `NoneRelation` | |
+| 203 | `sched_setaffinity` | `NoneRelation` | Only a task of the caller's own process (`EPERM` otherwise); the mask covers the first 32 CPUs, and one naming no online CPU is `EINVAL` |
+| 204 | `sched_getaffinity` | `NoneRelation` | As `sched_setaffinity`; `EINVAL` when `cpusetsize` cannot hold a bit per CPU |
 | 217 | `getdents64` | `NoneFd` | |
 | 227 | `clock_settime` | `Clock` | `CLOCK_REALTIME` only |
-| 228 | `clock_gettime` | `NoneSelf` | `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, `CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID` |
+| 228 | `clock_gettime` | `NoneSelf` | `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, `CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID`. `CLOCK_REALTIME` reads the monotonic clock while the wall clock is unset (neither the RTC nor the bootloader gave a date, and no `clock_settime` has set one) |
 | 231 | `exit_group` | `NoneSelf` | |
 | 234 | `tgkill` | `NoneRelation` | As `kill` |
 | 257 | `openat` | `NoneFd` | |
@@ -242,11 +248,11 @@ does not promise every flag of the Linux call.
 | 269 | `faccessat` | `NoneFd` | |
 | 270 | `pselect6` | `NoneFd` | `nfds` at most 256 |
 | 271 | `ppoll` | `NoneFd` | `nfds` at most 256 |
-| 280 | `utimensat` | `NoneFd` | |
+| 280 | `utimensat` | `NoneFd` | `UTIME_NOW`, or a null `times`, is `EINVAL` while the wall clock is unset |
 | 288 | `accept4` | `NoneFd` | |
 | 289 | `signalfd4` | `NoneSelf` | `fd` must be -1 (no re-arming) and `sizemask` 8 |
-| 292 | `dup3` | `NoneFd` | |
-| 293 | `pipe2` | `NoneSelf` | |
+| 292 | `dup3` | `NoneFd` | Close-on-exec is set by bit 0 of `flags` (`FD_CLOEXEC`); `O_CLOEXEC` and every other bit are ignored |
+| 293 | `pipe2` | `NoneSelf` | `O_CLOEXEC` and `O_NONBLOCK` only (`EINVAL` otherwise) |
 | 297 | `rt_tgsigqueueinfo` | `NoneRelation` | |
 | 302 | `prlimit64` | `NoneRelation` | `pid` must be 0 or the caller's kernel process id (the `process_id` field `process_list` reports, not the id `getpid` returns); `EPERM` otherwise. `RLIMIT_NOFILE`, `_NPROC`, `_AS`, `_DATA` and `_MEMLOCK` only (`EINVAL` otherwise); the soft and hard limits read the same, and a limit can only be lowered (`EPERM`) |
 | 309 | `getcpu` | `NoneSelf` | `node` is always 0 |
@@ -254,7 +260,7 @@ does not promise every flag of the Linux call.
 | 319 | `memfd_create` | `NoneSelf` | `MFD_CLOEXEC` is the only flag. At most 64 memfds exist at once on the machine (`ENFILE` past that). `ftruncate` sizes one once, at most 64 MiB, and allocates its pages then; `read` and `write` on it are `EINVAL`, so it is reached through `mmap` |
 | 434 | `pidfd_open` | `NoneSelf` | Any process not yet reaped, by its leader's id (`EINVAL` for another thread's); `flags` must be 0. The descriptor is close-on-exec and polls readable once the leader thread has exited; `read` on it is `EINVAL` |
 | 439 | `faccessat2` | `NoneFd` | |
-| 452 | `fchmodat2` | `NoneFd` | |
+| 452 | `fchmodat2` | `NoneFd` | `AT_SYMLINK_NOFOLLOW` is the only flag (`EINVAL` otherwise) |
 
 ## SlopOS-only calls
 
@@ -262,7 +268,7 @@ The signature is the one the call's doc comment in `numbers.rs` states.
 
 | Number | Call | Class | Signature and effect |
 |---|---|---|---|
-| 1024 | `klog_write` | `ConsoleIo` | `klog_write(buf, len)`: writes to the kernel log, with no descriptor |
+| 1024 | `klog_write` | `ConsoleIo` | `klog_write(buf, len)`: writes up to 512 bytes to the serial console and the boot log on screen, returning how many, with no descriptor and never inside one of the kernel's own lines. The kernel log buffer that `/dev/kmsg` reads does not keep them |
 | 1025 | `sys_info` | `NoneSelf` | `sys_info(out: *mut UserSysInfo)`: page, task and scheduler counters, the boot flags (`BOOT_FLAG_*`), the commit ceiling's limit, promised total and headroom, the OOM killer's count and last victim, and the base interfaces this kernel serves |
 | 1026 | `process_list` | `NoneSelf` | `process_list(out: *mut UserTaskEntry, max) -> entries written`: every task, with its process id, state, login tag and effective uid |
 | 1027 | `cpu_info` | `NoneSelf` | `cpu_info(out: *mut UserCpuInfo)`: vendor, brand string, CPU count, family, model, stepping and feature bits |
@@ -271,32 +277,32 @@ The signature is the one the call's doc comment in `numbers.rs` states.
 | 1030 | `sigdefault` | `NoneSelf` | `sigdefault(mask)`: resets every signal in `mask` to `SIG_DFL` |
 | 1031 | `resolve` | `NoneSelf` | `resolve(host, host_len, out: *mut [u8; 4])`: an IPv4 address from the kernel's DNS client; `host` at most 253 bytes |
 | 1032 | `net_query` | `NoneSelf` | `net_query(what, ifindex, buf, len) -> bytes written`: interfaces, addresses, routes, neighbours, sockets, the resolver, global settings or the DHCP clients (`NET_Q_*`), as a header and fixed-size records. A socket's owner is named only to its owner or a `NetAdmin` holder |
-| 1033 | `net_iface_ctl` | `NetAdmin` | `net_iface_ctl(ifindex, op, arg)`: interface up and down, MTU, the DHCP client, flushes |
+| 1033 | `net_iface_ctl` | `NetAdmin` | `net_iface_ctl(ifindex, op, arg)`: an interface up or down, its MTU, its DHCP client, flushing its addresses or neighbours or deleting one neighbour; with `NET_IFINDEX_GLOBAL`, networking on or off and a connectivity recheck |
 | 1034 | `net_addr_ctl` | `NetAdmin` | `net_addr_ctl(op, ptr, len)`: adds or removes an address (`UserAddrReq`) |
 | 1035 | `net_route_ctl` | `NetAdmin` | `net_route_ctl(op, ptr, len)`: adds or removes a route (`UserRouteReq`) |
 | 1036 | `net_resolver_set` | `NetAdmin` | `net_resolver_set(ptr, len)`: sets or clears the static resolver (`UserResolverReq`) |
 | 1037 | `net_monitor` | `NoneSelf` | `net_monitor(mask, flags) -> fd`: a descriptor that turns readable when the network configuration changes and reads `NetEvent` records |
 | 1038 | `fb_info` | `NoneSelf` | `fb_info(out: *mut DisplayInfo)`: the display's geometry and format |
-| 1039 | `fb_flip` | `NoneFd` | `fb_flip(seat_fd, damage: *const DamageRect, count)`: copies the frame in the memfd the first argument names (`EINVAL` for any other descriptor, though `numbers.rs` calls it `seat_fd`) to the screen, the first 8 damage rectangles of it or, with none, all of it. Returns 0, or 1 when the kernel log covers the screen and nothing was shown. Screen seat holder only (`EPERM` otherwise) |
+| 1039 | `fb_flip` | `NoneFd` | `fb_flip(seat_fd, damage: *const DamageRect, count)`: copies the frame in the memfd the first argument names (`EINVAL` for any other descriptor, though `numbers.rs` calls it `seat_fd`) to the screen, the first 8 damage rectangles of it or, with none, all of it. Returns 0, or 1 when nothing was shown because the kernel log covers the screen or the last present is still in flight. Screen seat holder only (`EPERM` otherwise) |
 | 1040 | `cursor_set_image` | `NoneFd` | `cursor_set_image(image, len, hotspot)`: a 64 by 64 BGRA cursor; screen seat holder only |
 | 1041 | `cursor_move` | `NoneFd` | `cursor_move(pos)`: `(x << 16) \| y`; screen seat holder only |
 | 1042 | `set_display_mode` | `NoneFd` | `set_display_mode(width, height)`; screen seat holder only |
-| 1043 | `screen_acquire` | `DisplaySeat` | `screen_acquire(seat_id) -> fd`: takes the screen seat (`SEAT_COMPOSITOR_PRIMARY` 0, `SEAT_VIRTCON` 1, which outranks it); `EBUSY` while another task holds it at equal or higher rank |
+| 1043 | `screen_acquire` | `DisplaySeat` | `screen_acquire(seat_id) -> fd`: takes the screen seat (`SEAT_COMPOSITOR_PRIMARY` 0, `SEAT_VIRTCON` 1, which outranks it), from its holder when the rank asked is higher; `EBUSY` while another task holds it at equal or higher rank. The descriptor cannot be duplicated (`EINVAL`) and is not inherited across `fork` or `exec` |
 | 1044 | `input_sink_acquire` | `InputSeat` | `input_sink_acquire(seat_id) -> fd`: as `screen_acquire`, for the input stream |
 | 1045 | `input_poll_batch` | `NoneFd` | `input_poll_batch(out: *mut InputEvent, max) -> events written`; input seat holder only |
-| 1046 | `clipboard_copy` | `ClipboardGlobal` | `clipboard_copy(buf, len) -> bytes kept`: into the clipboard of the caller's login tag, at most 4096 bytes. Only a tag in `SESSION_LOGINS`, which init gives the sessions people log in to, has a clipboard; the kernel keeps eight, reusing the one copied into longest ago. Any other process, `remoted` and services included, keeps nothing |
+| 1046 | `clipboard_copy` | `ClipboardGlobal` | `clipboard_copy(buf, len) -> bytes kept`: into the clipboard of the caller's login tag, at most 4096 bytes. Only a tag in `SESSION_LOGINS`, which init gives each session (a desktop, the login screen, a console login), has a clipboard; the kernel keeps eight, reusing the one copied into longest ago. Any other process, `remoted` and services included, keeps nothing |
 | 1047 | `clipboard_paste` | `ClipboardGlobal` | `clipboard_paste(buf, len) -> bytes written`: from the caller's session's clipboard |
-| 1048 | `font_set` | `ConsoleConfig` | `font_set(data, width, height, glyph_count)`: the console font |
+| 1048 | `font_set` | `ConsoleConfig` | `font_set(data, width, height, glyph_count)`: the console font, a coverage map per glyph; `glyph_count` must be the kernel's `GLYPH_COUNT` and `height` at most 32 (`EINVAL` otherwise) |
 | 1049 | `keymap_load` | `ConsoleConfig` | `keymap_load(data, len)`: a serialised keyboard layout; `EINVAL` if malformed |
 | 1050 | `keymap_get_name` | `NoneSelf` | `keymap_get_name(buf, buf_len) -> bytes written`: the active layout's short name |
 | 1051 | `ring_setup` | `NoneSelf` | `ring_setup(entries, params: *mut RingParams) -> ring fd` ([SlopRing](/docs/abi/slopring)) |
 | 1052 | `ring_enter` | `NoneFd` | `ring_enter(ring_fd, to_submit, min_complete, flags) -> submissions` |
 | 1053 | `ring_register` | `NoneFd` | `ring_register(ring_fd, op, arg, nr_args)` |
 | 1054 | `roulette` | `Fate` | `roulette() -> (token << 32) \| fate`: spins the Wheel of Fate; an odd fate wins |
-| 1055 | `roulette_result` | `Fate` | `roulette_result(packed)`: reports the spin `token` names; a loss restarts the machine when `BOOT_FLAG_FATE_REBOOT` is set |
+| 1055 | `roulette_result` | `Fate` | `roulette_result(packed)`: reports the spin `token` names, `EINVAL` for any token but the caller's pending one. A win returns 0; a loss restarts the machine when `BOOT_FLAG_FATE_REBOOT` is set and otherwise returns 1 |
 | 1056 | `roulette_draw` | | Retired: `-ENOSYS`. `/bin/roulette` draws the wheel itself |
 | 1057 | `test_report` | `NoneSelf` | `test_report(status, name, name_len, msg, msg_len)`: one subtest result of a userland test (`0` pass, `1` fail, `2` skip); name cut at 64 bytes, message at 128 |
-| 1058 | `run_userland_tests` | `TestHarness` | `run_userland_tests() -> 0`: runs the userland test phase |
+| 1058 | `run_userland_tests` | `TestHarness` | `run_userland_tests() -> 0`: runs the userland test phase, then, under `tests.shutdown=on`, ends the machine; returns 0 at once on a boot without `tests=on` |
 | 1059 | `test_panic` | `TestHarness` | `test_panic()`: panics in syscall context; `ENOSYS` unless `panic.recover_smoke=on` |
 | 1060 | `efivar_get` | `Power` | `efivar_get(name, name_len, guid, buf, buf_len) -> len`: reads a UEFI variable of the Boot Loader Interface's namespace or SlopOS's own; `BootEntry` adds `Boot####`, `BootOrder`, `BootNext` and `BootCurrent`. `EPERM` for anything else, `ENOENT` when unset, `ENOBUFS` when `buf` is too small, `ENODEV` without UEFI runtime services |
 | 1061 | `efivar_set` | `Power` | `efivar_set(name, name_len, guid, attributes, data, data_len)`: writes or (empty `data`) deletes one, as `efivar_get` gates it. In the global namespace only non-volatile with boot and runtime access, and only values the firmware can parse (`EINVAL` otherwise); `BootCurrent` is `EPERM` |

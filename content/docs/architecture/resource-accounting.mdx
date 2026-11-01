@@ -10,8 +10,9 @@ runs shares one ceiling on processes and threads, so one person's runaway
 program can't stop anyone else from starting programs. A call that would go
 over budget fails with the error it already uses when that resource runs out
 (`ENOMEM`, `EMFILE`, `ENFILE`, `EAGAIN`, `ENOSPC`), so programs written for
-Linux need no changes. RAM is not divided up this way: it has one ceiling for
-the whole machine, so one program can still use most of it. But it is handled
+Linux need no changes. RAM is not divided up between programs or people: it
+has one ceiling for the whole machine, and one program can use as much of it
+as its address-space budget covers. But it is handled
 more strictly than on Linux: SlopOS refuses memory when a program asks for it,
 so a program that runs out almost always gets an error it can handle and is
 not killed. The main exception is `fork`, and when a forked child (or the
@@ -34,7 +35,7 @@ an option there and the default here.
 | Processes | Processes the program forks, their own forks, and so on down | `EAGAIN` |
 | Address space | Memory the program has mapped or reserved | `ENOMEM` |
 | Pinned memory | Memory that must stay in RAM, such as buffers registered for direct I/O and mapped files | `ENOMEM` |
-| Kernel memory | Kernel memory used on the program's behalf: thread stacks, page tables | `ENOMEM` |
+| Kernel memory | The kernel stacks of the program's threads (page tables and the kernel heap are charged to the system as a whole) | `ENOMEM` |
 | Disk blocks | Blocks the program has allocated on a mounted disk | `ENOSPC` |
 
 The process limit counts grandchildren too. If it counted only direct
@@ -50,9 +51,10 @@ root in one process, and an extension's installer stores whole images
 ([Capabilities](/docs/architecture/authority)).
 
 The pinned-memory limit is set at boot to an eighth of the machine's usable
-RAM (16 MiB at least), the share of the file-mapping cache one program may hold, because a
-compiler's shared libraries already go past a smaller fixed default before it
-starts and a linker maps every input at once.
+RAM, and at least 16 MiB. That is the share of the file-mapping cache one
+program may hold, and it is that large because a compiler's shared libraries
+already go past a smaller fixed default before it starts, and a linker maps
+every input at once.
 
 The kernel also counts each process's *resident* memory (the RAM it holds
 now) and *committed* memory (the private memory the kernel has promised to
@@ -101,11 +103,11 @@ memory than the machine has, no call is left to fail, so Linux kills a
 process, which may not be the one that asked for too much.
 
 SlopOS keeps a running total of the private memory it has promised. Each
-request (by `mmap`, `brk`, `exec`, or an `mprotect` that makes a reserved
-range usable) is added to it and refused with `ENOMEM` if the total would pass
-the ceiling, which by default is all of the machine's usable RAM. Memory
-already accounted for elsewhere, such as a shared file mapping or a memfd,
-isn't counted twice.
+request (by `mmap`, `brk`, `exec`, an `mprotect` that makes a reserved range
+usable, or the `ftruncate` that sizes a memfd) is added to it and refused with
+`ENOMEM` if the total would pass the ceiling, which by default is all of the
+machine's usable RAM. Mapping memory that is accounted for elsewhere, a file's
+pages or a memfd already sized, adds nothing.
 
 So a `malloc` that can't be backed fails in `malloc`, with an error the
 program can report. `exec` is checked before the old program is thrown away,
@@ -134,57 +136,61 @@ program can use more memory than it was promised.
 
 ## What the out-of-memory killer does
 
-When a write finds no memory, the kernel ends a process to make room and
-retries the write. A write finds none in two cases: one of those three kinds
-of write finds the commit ceiling reached, or RAM itself is full and nothing
-can be reclaimed. The second can meet any write, a promised one included,
-because the kernel's own memory (page tables, thread stacks, buffers) comes
-out of the same RAM the ceiling is measured against: at the default ceiling,
-the promises and the kernel together can ask for more than there is. This is
-the *out-of-memory killer* (OOM killer). It chooses a victim like this:
+When a program touches a page and no memory can be had for it, the kernel
+ends a process to make room and tries the access again. That happens in two
+cases: a page of one of those three kinds finds the commit ceiling reached,
+or RAM itself is full and nothing can be reclaimed. The second can meet any
+page, a promised one included, because memory the ceiling doesn't count (the
+kernel's own page tables, thread stacks and buffers, and the file pages
+programs have mapped) comes out of the same RAM the ceiling is measured
+against: at the default ceiling, the promises and everything else together
+can ask for more than there is. This is the *out-of-memory killer* (OOM
+killer). It chooses a victim for the program whose access found no memory
+like this:
 
-1. It considers only processes that hold no capability the writer lacks,
+1. It considers only processes that hold no capability that program lacks,
    the capability half of the test `kill` applies (see
    [Capabilities](/docs/architecture/authority#who-may-signal-whom)),
    so an ordinary program's memory use never takes down the compositor, privd
    or any other service holding a power the program lacks. Unlike `kill`,
    it doesn't look at user ids: the process it picks may belong to another
-   person. Init and kernel threads are never chosen.
+   person. Init, kernel threads and processes already dying are never chosen.
 2. Of those, it picks the one holding the most of what ran out: promised
-   memory if the ceiling was reached, RAM if RAM was. Shared memory counts
-   against its owner, so mapping someone else's doesn't make you look bigger.
-   A process holding none of it is passed over, since its death would free
-   nothing the write needs.
+   memory if the ceiling was reached, RAM if RAM was. A memfd counts against
+   the process that sized it, so mapping someone else's doesn't make you look
+   bigger. A process holding none of what ran out is passed over, since its
+   death would free nothing the access needs.
 3. It ends that process with `SIGKILL`, waits for its memory to be freed, and
-   retries the write. Nobody picks another victim while one is dying, and if
-   the victim still holds its memory five seconds after the kill, it stops
+   tries the access again. Nobody picks another victim while one is dying, and
+   if the victim still holds its memory five seconds after the kill, it stops
    holding back the choice of the next one.
 
-If nobody is eligible, a program whose own write it was dies with `SIGKILL`
-(not the `SIGSEGV` of a crash), and the kernel log says it ran out of memory
-with nothing left for the OOM killer to take. When the write was the kernel's,
-copying a system call's result into the program's memory, the call fails with
-`EFAULT` instead. Only init's write may take any process, because the machine
-can't run without init.
+If nobody is eligible, the program dies with `SIGKILL` (not the `SIGSEGV` of
+a crash), and the kernel log says it ran out of memory with nothing left for
+the OOM killer to take. When the access was the kernel's, copying to or from
+the program's memory for a system call, the call fails with `EFAULT` instead.
+The one exception to the first rule is init: when init itself needs the page,
+any process may be taken, because the machine can't run without init.
 
 ## How a program sees its limits
 
-Programs read their limits with `getrlimit` or `prlimit`, which both use the
-`prlimit64` system call, as does `ulimit` in bash (which comes with the
-toolchain; the base's own shell has no `ulimit`). These standard limits are
-supported:
+Programs read their limits with `getrlimit` and lower them with `setrlimit`,
+which both use the `prlimit64` system call, as does `ulimit` in bash (which
+comes with the toolchain; the base's own shell has no `ulimit`). The C
+library has no `prlimit` function. These standard limits are supported:
 
 | Limit | What it controls |
 |---|---|
 | `RLIMIT_NOFILE` | Open files |
 | `RLIMIT_NPROC` | Processes |
-| `RLIMIT_AS`, `RLIMIT_DATA` | Address space |
+| `RLIMIT_AS`, `RLIMIT_DATA` | Address space (one limit under two names) |
 | `RLIMIT_MEMLOCK` | Pinned memory |
 
 Any other limit fails with `EINVAL`, so a program can tell "not supported"
 from "unlimited". The soft and hard limits are always equal. A program may
 lower its own limits, naming itself as pid 0 the way `getrlimit` and
-`setrlimit` do, but can't raise them or change another process's (`EPERM`).
+`setrlimit` do, but can't raise them, and can't read or change another
+process's (`EPERM`).
 
 A build driver deciding how many jobs to run can call `sys_info` for the
 commit ceiling, how much of it is promised, and the OOM killer's count of
@@ -201,15 +207,15 @@ enforcement off or into warnings, for measuring what a workload needs, and
 
 - **A successful `mmap`, `brk` or `exec` is promised.** Touching that memory
   never meets the commit ceiling. It can still meet a full RAM, since the
-  kernel's own memory comes out of the same RAM, and then the OOM killer runs
-  as it does for a fork. Memory mapped with `MAP_NORESERVE` has no promise
+  kernel's own memory and mapped file pages come out of the same RAM, and then
+  the OOM killer runs as it does for a fork. Memory mapped with `MAP_NORESERVE` has no promise
   behind it, and stack the program grows into past what `exec` gave it is
   charged as it grows.
 - **`fork` is never refused at the commit ceiling**, but a child that writes
   much of its parent's memory can trigger the OOM killer.
 - **Limits fail with the errors programs already handle.**
-- **The OOM killer never takes a process holding a capability the writer
-  lacks.**
+- **The OOM killer never takes a process holding a capability the program
+  that ran out lacks**, unless that program is init.
 - **One person's programs can't use up the processes or threads of another.**
 
 ## How it is tested
@@ -219,7 +225,8 @@ error, and the OOM killer's tests cover each rule in its choice of victim. A
 userland test starts a fork bomb as one person and checks that it stops at
 their share, with their unreaped children counted against it, while another
 person's session keeps starting programs. An in-kernel audit cross-checks
-the running totals against the memory they describe. The ledger's arithmetic
+the running totals against each other and against the mappings they
+describe. The ledger's arithmetic
 has a machine-checked proof, as a sequential state machine (see
 [Proofs](/docs/verification/verus-status)); the per-row atomics and account
 release are covered by the audit, KernMiri and tests.
@@ -239,8 +246,10 @@ during a dying task's unwind. Tokens are unique by type, but only
 errno. `Process` and `CommitPages` count the whole subtree, the rest one
 process.
 
-**The account tree** has its own parent edge, separate from the wait parent,
-so a process whose parent dies keeps spending its original budget. A fork's
+**The account tree** has its own parent edge, separate from the wait parent.
+When a parent's account is released, its children's edges move up to the
+grandparent's, so an orphan stays counted against the same ancestors instead
+of moving to init's. A fork's
 edge is its parent's account; a spawned process's edge is its person's row
 (`quota::person_account`, keyed on the real uid) or the root. A person's row
 bounds everything charged through it, as the root does, and only for
@@ -287,12 +296,12 @@ cannot be pushed ends the task with `SIGSEGV`.
   but the chapter covers the page faults and memory pressure behind this page.
 - [*Overcommit accounting*](https://docs.kernel.org/mm/overcommit-accounting.html)
   in the Linux kernel documentation. Linux's three overcommit modes on one
-  page. SlopOS's default is close to strict mode, with `fork` handled
-  differently.
+  page. SlopOS's default is close to the "don't overcommit" mode, but `fork`
+  is not charged, and `MAP_NORESERVE` is honoured where that mode ignores it.
 - [*Taming the OOM killer*](https://lwn.net/Articles/317814/), LWN (2009). Why
   choosing a victim is hard.
 - The man page for [`getrlimit(2)`](https://man7.org/linux/man-pages/man2/getrlimit.2.html),
-  the limits interface programs use, including `prlimit`.
+  the limits interface programs use.
 
 ## In the source
 
