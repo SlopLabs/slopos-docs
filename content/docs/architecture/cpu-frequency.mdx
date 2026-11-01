@@ -111,13 +111,14 @@ the samples, the HWP settings, each CPU's core type and its position on its
 core through the `cpu_perf` system call; tools take the differences between
 two reads.
 
-The TSC is also the kernel's clock, which only works if every CPU's TSC
-reads the same. Firmware can leave them apart (on our laptop the other CPUs
-read most of a second ahead of the first, so the clock jumped whenever a task
-changed CPU), so every CPU clears the register that offsets its TSC, and each one
-that comes up is checked against the first. If one still disagrees, the
-kernel logs it as a `CLOCK:` line and takes its clock from the slower HPET
-timer from then on.
+On a processor whose TSC runs at a constant rate, the TSC is also the
+kernel's clock (otherwise the slower HPET timer is), which only works if
+every CPU's TSC reads the same. Firmware can leave them apart (on our laptop
+the other CPUs read most of a second ahead of the first, so the clock jumped
+whenever a task changed CPU), so every CPU clears the register that offsets
+its TSC, and each one that comes up is checked against the first. If one
+still disagrees, the kernel logs it as a `CLOCK:` line and takes its clock
+from the HPET from then on.
 
 ## How the scheduler places work
 

@@ -141,9 +141,10 @@ spot. Otherwise it goes on a list of dead tasks, which SlopOS calls the
 *graveyard*, and the CPU frees everything on that list at its next safe
 moment: when it releases its last lock, returns from a system call, or goes
 idle. Whether the moment is safe depends only on what the CPU is doing, never
-on the count. Linux defers the last release of a task too: its real-time
-configuration began handing the free to RCU when the release came where it
-couldn't run, and current kernels always do.
+on the count. Linux defers the last release of a task too
+(`put_task_struct`): its real-time configuration began postponing the free
+when the release came where the free couldn't run, and current kernels
+always postpone it.
 
 ## How Rust's ownership rules help
 

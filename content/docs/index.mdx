@@ -14,12 +14,13 @@ a new version of itself, install it beside the running one, and boot into it.
 Most of the code was written by AI agents. We named the project after what
 that usually produces, and then arranged things so that it wouldn't matter.
 An agent's claim that its code is correct is worth nothing, so the build
-checks instead. One crate (`slopos-ostd`) holds every line of `unsafe` Rust in
-the kernel, and the compiler refuses `unsafe` everywhere else. For selected
-parts of the kernel where a bug would corrupt memory rather than return an
-error, Verus, a proof checker for Rust, has checked a model of each mechanism
-against its rules, such as "a page is never freed twice". On every change,
-thousands of tests run against the kernel booted in QEMU.
+checks instead. One crate (`slopos-ostd`) holds all but a few lines of the
+kernel's own `unsafe` Rust, and the build fails if `unsafe` appears anywhere
+else in the kernel's code. For selected parts of the kernel where a bug would
+corrupt memory rather than return an error, Verus, a proof checker for Rust,
+has checked a model of each mechanism against its rules, such as "a page is
+never freed twice". On every change, thousands of tests run against the
+kernel booted in QEMU.
 
 <Frame>
   <img src="/images/slopos-on-hardware.jpg" alt="The SlopOS desktop running on a Lenovo laptop, showing the terminal, file manager, system monitor and image viewer" />

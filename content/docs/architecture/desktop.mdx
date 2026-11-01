@@ -90,8 +90,8 @@ table, with no change to any app.
 
 Interface text is set in Inter, code and the terminal in JetBrains Mono, and
 icons in Lucide, all loaded at run time from `/usr/share/fonts`. They are
-never compiled into a program, because the fonts' licences and SlopOS's own
-could not both govern one binary. Every glyph in a line sits on one baseline,
+never compiled into a program, because the text fonts' licence (the SIL Open
+Font License) and SlopOS's own could not both govern one binary. Every glyph in a line sits on one baseline,
 pairs are kerned from the font's own table, and measuring, fitting and
 drawing share one layout, so text that measured as fitting draws as fitting.
 
@@ -174,9 +174,10 @@ internals.
 
 ## Words
 
-Where words are data, they are checked too. The glossary in
-`theme_core::words` lists what a screen a person acts on never says, and what
-it says instead:
+Words are checked too, wherever a screen keeps them as data (a menu's
+entries, privd's policy, the installer's pages) rather than spelling them out
+in drawing code. The glossary in `theme_core::words` lists what a screen a
+person acts on never says, and what it says instead:
 
 | Never | Instead |
 |---|---|
@@ -215,7 +216,8 @@ The compositor draws everything on screen that isn't an app's content.
   maximised), with a dark hairline just outside and a light one along the
   top, and a shadow that is half as dark on a window without focus. The
   close, minimise and zoom buttons are coloured discs that show their glyphs
-  while the pointer is over them and turn grey on a window without focus. A
+  while the pointer is over the three of them, and turn grey on a window
+  without focus. A
   resize takes a press up to 8 px outside the frame. Zoom fills the space
   between the menu bar and the dock, or gives the window the nearest size its
   limits allow; pressing it again puts the window back.
@@ -266,25 +268,25 @@ They ship at 64 px and as `<id>@2x.png` at 128 px, and a host test fails when
 a shipped PNG is not what the code draws. An app that ships no icon is shown
 as a glyph of the icon font on a tile whose hue its app id picks.
 
-## Where the dock's apps come from
+## How the dock uses app entries
 
-The dock pins the *app entries* it finds when a desktop starts: files named
-`share/slopos/apps/<id>.app`, each a few `key=value` lines:
+The dock learns which apps exist from *app entries*, small files that name an
+app, the program it runs and its icon. It reads them once, when the desktop
+starts, so an app installed while you are logged in appears only once your
+desktop starts again (after you log out and back in, for example). It
+sorts them by name and shows at most 16 apps, pinned and running together. A
+window belongs to an entry when its app id is the entry's id, which is also
+how the menu bar names the focused window's app.
 
-```
-id=org.slopos.editor
-name=Editor
-exec=/usr/local/bin/editor
-icon=org.slopos.editor.png
-```
+A click on an app that has a window brings that window to the front,
+restoring it if it was minimised. A click on an app that isn't running starts
+the program its entry names, with the desktop's environment. A window whose
+app has no entry still gets an icon after the pinned ones, named by the
+window's title.
 
-`icon` names a PNG in the same share's `slopos/icons/`, and `boot=medium`
-marks an app shown only when the computer started from the installer. Entries
-are read from each extension's share, then `/usr/share` (the base),
-`/usr/local/share` and `~/.local/share`; a later entry with the same id
-replaces an earlier one, and the dock sorts them by name. An app's window is
-matched to its entry by app id. [Installed software](/docs/architecture/software)
-explains the places, and [Extensions](/docs/architecture/extensions) what an
+[Installed software](/docs/architecture/software#app-entries) describes the
+entry files, the places the dock reads them from and which entry wins when
+two share an id; [Extensions](/docs/architecture/extensions) says what an
 extension's entries may do.
 
 ## The apps that ship
@@ -298,7 +300,7 @@ why).
 |---|---|---|---|
 | Terminal | `terminal` | base | A shell on a *pseudo-terminal* (a pair of endpoints that look like a serial line to the shell), emulating an xterm closely enough for full-screen programs and mouse reporting. Resizing re-wraps long lines in the scrollback; Ctrl+Shift+PgUp and PgDn scroll it. |
 | System Monitor | `sysmon` | base | A *Performance* tab with a graph of the last minute for the processor, memory, each disk, each network adapter and the graphics adapter, and a *Processes* tab listing every process with its threads folded in, which can end one (through privd when it belongs to someone else). `sysmon --page cpu`, `memory`, `disk`, `network`, `gpu` or `processes` opens on a page. |
-| Install SlopOS | `installer-ui` | base | The installer's window, shown only when the computer started from the installer ([Installing SlopOS](/docs/self-hosting/installing)). |
+| Install SlopOS | `installer-ui` | base | The installer's window, shown only when the computer started from the install medium ([Installing SlopOS](/docs/self-hosting/installing)). |
 | Editor | `editor` | `/usr/local` | A text editor with tabs, a file tree, syntax highlighting, find and replace and a command palette. It saves through a synced copy renamed over the file, so a failed save never leaves half a file, and asks before replacing a file that changed since it was opened. Its manual is `share/slopos/doc/editor.md`. |
 | Files | `file_manager` | `/usr/local` | A file manager with places in a sidebar, a toolbar and a table of the folder. |
 | Image Viewer | `image_viewer` | `/usr/local` | Shows a PNG fitted to the window, zoomed with the wheel or `+` and `-`, `f` to fit again and `0` for actual size. |

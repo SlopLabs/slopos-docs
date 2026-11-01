@@ -45,14 +45,14 @@ under further reading, walks through this pattern from scratch.
 ### NVMe, virtio-blk and USB disks
 
 **NVMe** is the standard way an SSD plugged into the PCI Express bus talks to
-the computer. It defines those queues and the format of each request. The
-NVMe driver sets up one queue for management commands (asking the drive what
-it is, shutting it down), one pair for reads and writes that every
-namespace on the drive shares, and a second, small pair that only a kernel
-panic uses, so the panic can write its
+the computer. It defines those queues and the format of each request. A
+single drive can present several independent disks, called *namespaces*;
+most have one. The NVMe driver sets up one queue for management commands
+(asking the drive what it is, shutting it down), one pair for reads and
+writes that every namespace on the drive shares, and a second, small pair
+that only a kernel panic uses, so the panic can write its
 [crash record](/docs/development/diagnostics#the-kernel-panicked) without waiting on anything.
-A single drive can present several independent disks, called *namespaces*;
-most have one. Some cheaper drives have no memory of their own and ask to
+Some cheaper drives have no memory of their own and ask to
 borrow some of the computer's, which the driver grants. At power off and
 restart the driver takes that memory back and tells the drive to shut down
 cleanly.
@@ -105,8 +105,9 @@ There is one request engine for all three transports. A transport only has
 to say how to submit a request, how to collect completions and what the
 device's status codes mean. Everything about slots, retries, timeouts and
 ordering is shared, so a fix there fixes every driver, and the engine's tests
-run against all three. The one thing a transport chooses is how long a
-request may wait for a free slot: a quarter of a second for NVMe and
+run against all three. What a transport chooses is only numbers: how many
+slots it has, how long a request has to complete, and how long a request may
+wait for a free slot. That wait is a quarter of a second for NVMe and
 virtio-blk, whose requests complete in milliseconds, and as long as a
 Bulk-Only command and its recovery can take for a stick, which keeps one
 command on the wire and one queued.
@@ -275,10 +276,12 @@ Disks fail, and NVMe drives in particular can stop answering a request
 without reporting an error. If the kernel waited without a limit, the
 program would hang forever, and so would everything queued behind it.
 
-So every request has a deadline. A request the disk rejects with an error it
-marks as worth retrying is retried a few times. A request the disk hasn't
-answered by the deadline fails with an I/O error, and its slot gets fresh
-memory and goes back into service.
+So every request has a deadline, which the transport sets: 30 seconds on
+NVMe, 5 on virtio-blk, and on a stick the time a command and its recovery
+can take. A request the disk rejects with an error it marks as worth
+retrying is retried a few times. A request the disk hasn't answered by the
+deadline fails with an I/O error, and its slot gets fresh memory and goes
+back into service.
 
 The awkward part is that the disk may still be working on that request, and
 may still copy data into the memory the kernel gave it. So that memory isn't

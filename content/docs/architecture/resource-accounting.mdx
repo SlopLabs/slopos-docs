@@ -9,12 +9,12 @@ space, disk space and some kinds of kernel memory, and everything a person
 runs shares one ceiling on processes and threads, so one person's runaway
 program can't stop anyone else from starting programs. A call that would go
 over budget fails with the error it already uses when that resource runs out
-(`ENOMEM`, `EMFILE`, `EAGAIN`, `ENOSPC`), so programs written for Linux need
-no changes. RAM is not divided up this way: it has one ceiling for the whole
-machine, so one program can still use most of it. But it is handled more
-strictly than on Linux: SlopOS refuses memory when a program asks for it, so a
-program that runs out almost always gets an error it can handle and is not
-killed. The main exception is `fork`, and when a forked child does run the
+(`ENOMEM`, `EMFILE`, `ENFILE`, `EAGAIN`, `ENOSPC`), so programs written for
+Linux need no changes. RAM is not divided up this way: it has one ceiling for
+the whole machine, so one program can still use most of it. But it is handled
+more strictly than on Linux: SlopOS refuses memory when a program asks for it,
+so a program that runs out almost always gets an error it can handle and is
+not killed. The main exception is `fork`, and when a forked child does run the
 machine out of memory, the kernel ends one process, chosen by a rule
 described below.
 
@@ -141,10 +141,10 @@ killer). It chooses a victim like this:
 1. It considers only processes that hold no capability the writer lacks,
    the capability half of the test `kill` applies (see
    [Capabilities](/docs/architecture/authority#who-may-signal-whom)),
-   so an ordinary program's memory use never takes down the compositor or a
-   system service. Unlike `kill`, it doesn't look at user ids: the process it
-   picks may belong to another person. Init and kernel threads are never
-   chosen.
+   so an ordinary program's memory use never takes down the compositor, privd
+   or any other service holding a power the program lacks. Unlike `kill`,
+   it doesn't look at user ids: the process it picks may belong to another
+   person. Init and kernel threads are never chosen.
 2. Of those, it picks the one holding the most of what ran out: promised
    memory if the ceiling was reached, RAM if RAM was. Shared memory counts
    against its owner, so mapping someone else's doesn't make you look bigger.

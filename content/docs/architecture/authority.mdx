@@ -206,8 +206,9 @@ raw stream of keyboard and pointer events. SlopOS calls these two resources
 *seats*. A program holding `DisplaySeat` or `InputSeat` may ask for the
 matching seat, and if it gets it, it receives a descriptor it needs for drawing
 or reading input. A request succeeds if the seat is free, if the caller already
-holds it (asking twice is harmless), or if the caller outranks the holder. There are two ranks: a compositor's, and the kernel console's,
-which `/bin/roulette` also uses. The console outranks every compositor, so the
+holds it (asking twice is harmless), or if the caller outranks the holder.
+There are two ranks: a compositor's, and the kernel console's, which
+`/bin/roulette` also uses. The console outranks every compositor, so the
 kernel log can always take the screen back from a compositor that has hung. An
 equal rank is refused, so two compositors can't trade the screen back and
 forth.

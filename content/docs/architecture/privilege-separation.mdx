@@ -219,9 +219,9 @@ The rules any change to this boundary must keep:
 - **The `SYSCALL` trampoline (`__ostd_user_return`) never pushes onto the
   kernel stack.** The top of that stack is where the next interrupt's `IRETQ`
   frame goes, so user state is spilled through per-CPU scratch slots instead.
-  The kernel's user loop handles only `ReturnReason::Syscall`; interrupts and
-  exceptions from ring 3 enter through the OSTD IDT stubs and return with
-  their own `IRETQ`.
+  The round trip only ever ends in a system call, which the kernel's user
+  loop dispatches; interrupts and exceptions from ring 3 enter through the
+  OSTD IDT stubs and return with their own `IRETQ`.
 - **`SFMASK` clears** the interrupt, trap, direction, alignment-check, I/O
   privilege and nested-task flags on `SYSCALL`, and the trampoline re-enables
   interrupts. `STAR` follows the AMD64 selector order, with user data before

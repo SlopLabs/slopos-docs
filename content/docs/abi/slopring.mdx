@@ -13,8 +13,9 @@ binary-compatible with io_uring. The layouts, opcodes, flags and limits are
 defined in `abi/src/ring.rs`; the kernel side is the `ring` crate and
 `core/src/syscall/ring_handlers.rs`. SlopRing is for the base's own programs:
 its calls are private calls, and `libc.so` exports none of them, so a program
-outside the base cannot use a ring. [Userland](/docs/architecture/userland)
-describes the runtime that drives the ring.
+outside the base, which reaches the kernel only through `libc.so`, does not
+use rings. [Userland](/docs/architecture/userland) describes the runtime that
+drives the ring.
 
 ## System calls
 
@@ -23,7 +24,7 @@ All three are SlopOS-only calls (see [System call ABI](/docs/abi/syscalls)).
 | Call | Arguments | Returns |
 |---|---|---|
 | `ring_setup` | `entries`, pointer to a `RingParams` | A ring descriptor. Maps the shared region into the caller and copies the layout to the `RingParams` |
-| `ring_enter` | `ring_fd`, `to_submit`, `min_complete`, `flags` | The number of submissions consumed. Consumes up to `to_submit` submissions, then, if `min_complete > 0`, waits until that many completions are ready |
+| `ring_enter` | `ring_fd`, `to_submit`, `min_complete`, `flags` | The number of submissions consumed. Consumes up to `to_submit` submissions, then, if `min_complete > 0`, waits until the completion queue holds at least `min_complete` completions |
 | `ring_register` | `ring_fd`, `op`, `arg`, `nr_args` | `0`. Registers or unregisters buffers (see [Registering buffers](#registering-buffers)) |
 
 - `entries` is the submission queue size: a power of two from 1 to 4096
@@ -59,7 +60,7 @@ CQE array
 |---|---|
 | `sq_entries`, `cq_entries` | Queue sizes |
 | `_resv` | Reserved, 8 bytes, zero |
-| `sq_off_head`, `sq_off_tail`, `sq_off_mask`, `sq_off_dropped`, `sq_off_array` | Offsets of the submission queue's control words and array |
+| `sq_off_head`, `sq_off_tail`, `sq_off_mask`, `sq_off_dropped`, `sq_off_array` | Offsets of the submission queue's control words and array. The kernel never writes the dropped word, which stays zero |
 | `cq_off_head`, `cq_off_tail`, `cq_off_mask`, `cq_off_overflow`, `cq_off_array`, `cq_off_flags` | Offsets of the completion queue's control words and array |
 | `region_addr`, `region_bytes` | Where the region is mapped, and its size |
 
@@ -117,7 +118,7 @@ Bit 2 is unused.
 | 4 | `OP_SEND` | Send a buffer | |
 | 5 | `OP_ACCEPT` | Accept a connection and install its descriptor | Multishot |
 | 6 | `OP_POLL_ADD` | Wait until a descriptor is ready | `op_flags` is the poll mask; multishot |
-| 7 | `OP_TIMEOUT` | Deadline for the current wait | `off` is nanoseconds, kept to whole milliseconds; completes with `-ETIME` when it passes |
+| 7 | `OP_TIMEOUT` | A timer | `off` is nanoseconds from submission, kept to whole milliseconds. Stays in flight until it passes, then completes with `-ETIME` during a waiting `ring_enter`, which wakes for it |
 | 8 | `OP_CANCEL` | Cancel in-flight operations | See below |
 | 9 | `OP_RECVFROM` | Receive a datagram and its source address | Source address written to `addr2` |
 | 10 | `OP_OPENAT` | Open a path and install a descriptor | `addr` is the path, `len` its length, `op_flags` the open flags. Checked as `open` is, against the permissions of the task calling `ring_enter`; a file it creates takes mode `0666` less that task's umask. A relative path is resolved against `/`, since a ring has no working directory |
@@ -150,9 +151,10 @@ entry's own result: `0` if it found one, `-ENOENT` if not. With
   descriptor once, at submission, and holds the open file until the operation
   ends, so closing or reusing the descriptor number does not affect it.
 - With `min_complete > 0`, the caller sleeps until the files its in-flight
-  operations wait on become ready, retries them, and returns once
-  `min_complete` completions are ready, a signal arrives, or the nearest
-  `OP_TIMEOUT` passes.
+  operations wait on become ready or the nearest `OP_TIMEOUT` passes, retries
+  them, and returns once the completion queue holds `min_complete`
+  completions or a signal arrives. An `OP_TIMEOUT`'s `-ETIME` counts as one
+  completion; it does not end the wait by itself.
 - Completions are posted only inside `ring_enter`. No kernel thread completes
   operations in the background, and the ring descriptor never becomes
   readable.
@@ -169,7 +171,7 @@ entry's own result: `0` if it found one, `-ENOENT` if not. With
   `OP_RECVMSG` and `OP_POLL_ADD`; other opcodes ignore it) stays in flight and
   posts one completion per event with `SLOPRING_CQE_F_MORE` set: per accepted
   connection, per message, or for `OP_POLL_ADD` each time the set of ready
-  events changes. An error, end of stream, or for `OP_POLL_ADD` `POLLERR` or
+  events changes to a set that is not empty. An error, end of stream, or for `OP_POLL_ADD` `POLLERR` or
   `POLLHUP`, posts the last completion, with the flag clear. Cancelling it
   posts one `-ECANCELED` with the flag clear. A multishot submission that
   also selects a buffer is `-EINVAL`.

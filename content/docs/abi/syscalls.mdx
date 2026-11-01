@@ -63,10 +63,11 @@ stores the return address in `rcx`.
   its handler runs.
 - `ERESTARTSYS` (512) and `ERESTARTNOHAND` (514) are kernel-internal and never
   reach a program. When a signal interrupts a call that returned one of them,
-  the kernel either restarts the call after the signal handler runs or returns
-  `-EINTR`, following Linux's `SA_RESTART` rules. `nanosleep`, `poll`, `futex`
-  and `ring_enter` always return `-EINTR` instead, because a restart would
-  wait their whole timeout again; `nanosleep` writes the time left to `rem`.
+  the kernel restarts the call (after the handler, if one runs) or returns
+  `-EINTR`, following Linux's `SA_RESTART` rules; `ERESTARTNOHAND` restarts
+  only when no handler runs. `nanosleep`, `poll`, `futex` and `ring_enter`
+  always return `-EINTR` instead, because a restart would wait their whole
+  timeout again; `nanosleep` writes the time left to `rem`.
 
 ## Capability classes
 
@@ -88,9 +89,9 @@ Some calls check a further capability, or a seat, inside the handler
 
 | Calls | Needs | For |
 |---|---|---|
-| `setuid`, `setgid`, `setreuid`, `setregid`, `setresuid`, `setresgid` | `SetId` | An id other than the caller's real, effective or saved one |
+| `setuid`, `setgid`, `setreuid`, `setregid`, `setresuid`, `setresgid` | `SetId` | An id the call's unprivileged rule refuses (see each call's note below) |
 | `setgroups` | `SetId` | Any call |
-| `spawn_path` | `SetId`, `SchedHigh` | A uid, gid, group list or login tag for the child; the `High` priority tier |
+| `spawn_path` | `SetId`, `SchedHigh` | A uid or gid for the child that is not one of the caller's own, a group list or a login tag; the `High` priority tier |
 | `setpriority` | `SchedHigh` | A nice value below both 0 and the task's current one |
 | `net_query` | `NetAdmin` | The owner of a socket the caller does not own |
 | `efivar_get`, `efivar_set` | `BootEntry` | `Boot####`, `BootOrder`, `BootNext` and `BootCurrent` |
@@ -117,7 +118,7 @@ does not promise every flag of the Linux call.
 | 6 | `lstat` | `NoneFd` | |
 | 7 | `poll` | `NoneFd` | `nfds` at most 256 |
 | 8 | `lseek` | `NoneFd` | |
-| 9 | `mmap` | `NoneSelf` | Anonymous, memfd and regular-file mappings, all filled lazily. A private mapping is charged against the commit ceiling and refused with `ENOMEM` past it ([Memory](/docs/architecture/memory)) |
+| 9 | `mmap` | `NoneSelf` | Anonymous, memfd and regular-file mappings, all filled lazily. A private mapping is charged against the commit ceiling and refused with `ENOMEM` past it, except one with `MAP_NORESERVE`, which is charged a page at a time as it is touched ([Memory](/docs/architecture/memory)) |
 | 10 | `mprotect` | `NoneSelf` | |
 | 11 | `munmap` | `NoneSelf` | |
 | 12 | `brk` | `NoneSelf` | |
@@ -361,8 +362,10 @@ grow: `scripts/check_libc_exports.sh` holds them to
 - A new SlopOS-only call takes the next free `1024 + k`, and
   `SYSCALL_PRIVATE_TABLE_SIZE` grows to hold it. It takes the next base
   interface number.
-- Every struct passed between a program and the kernel is `#[repr(C)]` and has
-  compile-time checks on its size and field offsets.
+- A struct passed between a program and the kernel is `#[repr(C)]`. A new one
+  gets compile-time assertions of its size and field offsets, as `SpawnAttrs`
+  and the SlopRing entries have; some older ones, `DisplayInfo` and
+  `InputEvent` among them, have none.
 
 [Add a syscall](/docs/development/adding-a-syscall) walks through adding one.
 The Linux [`syscall(2)`](https://man7.org/linux/man-pages/man2/syscall.2.html)
