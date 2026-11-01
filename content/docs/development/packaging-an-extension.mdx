@@ -87,9 +87,10 @@ Make both executable, or the image will not count them as programs:
 chmod +x hello/bin/hello hello/libexec/hellod
 ```
 
-The base has no `chmod`, so on the machine write each script somewhere else
-first and copy it into place with `install`, which makes the copy
-executable: `install hellod.sh $HOME/hello/libexec/hellod`.
+The base has no `chmod`, so on the machine make the directories first
+(`mkdir -p $HOME/hello/.extension $HOME/hello/bin $HOME/hello/libexec`),
+write each script somewhere else and copy it into place with `install`,
+which makes the copy executable: `install hellod.sh $HOME/hello/libexec/hellod`.
 
 [Extension images](/docs/abi/extension-images) lists everything a
 declaration can say: more users, state and settings directories, sockets,
@@ -300,10 +301,11 @@ cat /var/log/hello/hellod.log
 hellod started
 ```
 
-followed by a line with the date for every minute it has run. `ls -l
-/var/log/hello` shows the log belongs to the user `hello`, not to you or to
-root. After a restart, `extctl status hello` still says `running`: init shows
-every enabled extension again at boot, checking it against its record first.
+followed by a line with the date for every minute it has run. The daemon
+runs as the user `hello`, and its log belongs to that user, not to you or to
+root (the base's `ls -l` shows no owners, so the shell can't show you). After a
+restart, `extctl status hello` still says `running`: init shows every enabled
+extension again at boot, checking it against its record first.
 
 ## 6. Ship an update
 

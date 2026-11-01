@@ -93,8 +93,8 @@ one (`BOOT: phase early_hw`, and so on).
 3. **Devices** (`drivers`). The kernel programs this core's interrupt
    controller, sets its clock speed policy
    ([CPU frequency](/docs/architecture/cpu-frequency)), starts the other CPU
-   cores (each sets its own speed as it comes up and starts scheduling work at
-   once), finds the shared interrupt controller, and starts the clocks: it
+   cores (each sets its own speed as it comes up, then enters the scheduler),
+   finds the shared interrupt controller, and starts the clocks: it
    uses the HPET, a high-precision timer, to measure how fast the CPU's local
    timer runs, and then sets every core's local timer to interrupt 100 times a
    second, which drives the scheduler. The framebuffer comes up here, and
@@ -106,11 +106,11 @@ one (`BOOT: phase early_hw`, and so on).
    finds the boot disk's crash partition, so that a panic from here on can
    leave a record. If the command line asks for them, the kernel's own tests
    run at the end of this phase.
-4. **Services** (`services`). The kernel creates the scheduler's data
-   structures and the idle task, sets up the base and the root filesystem
-   (next sections), applies any extra mounts the command line asks for,
-   serves the install medium if Limine carried one, and loads `/sbin/init`,
-   the first program. The log line `USERLAND: launched /sbin/init as task <n>`
+4. **Services** (`services`). The kernel finishes the scheduler's data
+   structures and creates the bootstrap processor's idle task, sets up the
+   base and the root filesystem (next sections), applies any extra mounts the
+   command line asks for, serves the install medium if Limine carried one,
+   and loads `/sbin/init`, the first program. The log line `USERLAND: launched /sbin/init as task <n>`
    means the kernel has reached this point.
 
 When the last phase is done the log prints `=== KERNEL BOOT SUCCESSFUL ===`,
@@ -209,8 +209,9 @@ then starts [privd](/docs/architecture/privd) (and `remoted` on a machine
 paired for [remote control](/docs/self-hosting/remote-control)), runs the
 Wheel of Fate (next section), and only then starts the extensions' services
 and puts a session on the screen: the desktop of the person the accounts
-record logs in automatically, or the login screen. On a live boot from the install medium, that desktop opens the
-installer's welcome in place of a terminal. A test boot (`tests=on`) runs the
+record logs in automatically, or the login screen. On a live boot from the
+install medium, that desktop opens the installer's welcome in place of a
+terminal. A test boot (`tests=on`) runs the
 userland tests in place of the wheel and starts a session only if they fail
 or something asks init for one. [Init and services](/docs/architecture/init)
 describes what init starts, in what order and how it keeps it running, and

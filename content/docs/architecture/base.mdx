@@ -327,13 +327,14 @@ programs. Every other generation that is no longer current is freed once
 nothing holds it: no open file, no memory mapping, no running program. A
 kernel thread, `basefs-reap`, checks for that and frees a generation once two
 checks a second apart both find it unheld, which gives a lookup that was just
-starting time to open the file it found. While a generation stays held, the
-checks come further apart, up to a minute, so it can outlast its last holder
-by about that long. The log says so:
+starting time to open the file it found. The log says so:
 
 ```text
 BASE: generation <n> freed
 ```
+
+While a generation stays held, the checks come further apart, up to a
+minute, so a generation can outlast its last holder by about that long.
 
 Copies have limits, so that bases held by long-running programs can't pile
 up. At most 16 generations are in memory at once, and all their copies

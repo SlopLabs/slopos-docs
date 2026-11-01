@@ -78,8 +78,9 @@ Then, under `cpufreq=hwp` (the default), each CPU with HWP:
    sustain), most efficient, and lowest;
 3. asks to choose for itself anywhere between its lowest and highest level,
    or up to the guaranteed level if the firmware disabled turbo, with the
-   energy-performance preference `balance_performance` (128 on a scale where
-   0 is all performance and 255 all energy saving).
+   energy-performance preference `cpufreq.epp=` names, `balance_performance`
+   by default (128 on a scale where 0 is all performance and 255 all energy
+   saving).
 
 `cpufreq=firmware` writes nothing at all. A CPU without HWP keeps the
 firmware's settings either way, and SlopOS has no speed governor of its own
@@ -90,7 +91,8 @@ CPUs either. The kernel records the new settings under a new *generation*
 number, applies them on the calling CPU, and wakes the others, each of which
 applies them at its next timer tick or just before it next goes idle. So
 nothing ever waits for another CPU with interrupts off. `cpufreq set` waits
-until every CPU reports the new generation.
+up to a second for every CPU to report the new generation, and fails naming
+any CPU that hasn't.
 
 ## How the real speed is measured
 
@@ -193,8 +195,9 @@ Since HWP can't be switched off once on, comparing it with the firmware's
 settings takes a boot under `cpufreq=firmware` and then `cpufreq set hwp`
 within that boot. On a machine whose boot entries are fixed, a kernel built
 with `SLOPOS_BUILTIN_CMDLINE='cpufreq=firmware'` carries the option itself
-(see [Boot options](/docs/abi/boot-options)). The System Monitor shows each
-CPU's type and clock, and the profiler's report includes each CPU's busy share
+(see [Boot options](/docs/abi/boot-options)). The System Monitor graphs each
+CPU's load, names its core type on a hybrid processor and shows the clock the
+processor ran at, and the profiler's report includes each CPU's busy share
 and clock over the span it covers (see
 [Diagnostics](/docs/development/diagnostics)).
 

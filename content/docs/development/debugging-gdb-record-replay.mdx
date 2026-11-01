@@ -96,13 +96,13 @@ just rr-replay
 (gdb) continue
 ```
 
-Use `hbreak` (a hardware breakpoint) rather than `break` this early. When
-you set it the kernel has not been loaded yet, and a hardware breakpoint is
-held in the CPU's debug registers, so it needs only the address, not the
-code that will be there. Name the function by its full path, as
-above: GDB doesn't find a Rust function by its bare name. If GDB can't tell
-which of several Rust functions with the same name you mean, break on a file
-and line instead (`hbreak early_init.rs:<line>`).
+The kernel is not in memory yet when you set this, and that doesn't matter:
+under the software emulation the replay runs on, QEMU keeps every breakpoint
+itself and stops when the CPU reaches its address, whether you set it with
+`hbreak` (a hardware breakpoint) or `break`. Name the function by its full
+path, as above: GDB doesn't find a Rust function by its bare name. If GDB
+can't tell which of several Rust functions with the same name you mean, break
+on a file and line instead (`hbreak early_init.rs:<line>`).
 
 The replay runs the test kernel on one CPU under QEMU's software emulation,
 so this catches anything that happens the same way there. A problem that
@@ -120,24 +120,25 @@ which you can load into any session with `source scripts/gdb/slopos_mmu.py`;
 |---------|--------------|
 | `udinfo` | Prints where the CPU is stopped: the instruction and stack pointers, the address space (`cr3`), whether it is running a program or the kernel, and a backtrace |
 | `v2p <cr3> <va>` | Translates an address in a program into the physical memory address behind it, printing each step of the lookup |
-| `wpva <cr3> <va>` | Sets a watchpoint on the physical memory behind an address, so any write to it stops the machine, whichever program or kernel path does it. It works only while GDB's language is C (below) |
+| `wpva <cr3> <va>` | Meant to set a watchpoint on the physical memory behind an address. It doesn't work (below) |
 
 The `<cr3>` argument names the address space, because the same address
 means different memory in different programs. In a fault you are usually
 asking about the current one, so pass `$cr3`.
 
-`wpva` exists because an ordinary watchpoint watches an address, and in a
-kernel the same memory can be reached through several addresses. Watching
-the physical memory catches a stray write from anywhere. It leaves GDB in
-physical-memory mode, and it tells you so; run
+`wpva` was written because an ordinary watchpoint watches an address, and in
+a kernel the same memory can be reached through several addresses. It
+translates the address with `v2p`, switches GDB into QEMU's physical-memory
+mode and sets a watchpoint on the physical address. But that mode only
+changes how GDB reads and writes memory: QEMU matches a watchpoint against
+the address the CPU uses, so `wpva` watches the virtual address whose number
+happens to equal the physical one, and the write you are looking for never
+trips it. It also fails while GDB reads expressions as Rust
+(`No symbol 'unsigned' in current context`), and it leaves GDB in
+physical-memory mode whether or not it succeeds; run
 `maintenance packet Qqemu.PhyMemMode:0` before going back to symbols and
-stack traces.
-
-`wpva` sets its watchpoint with a C expression, and when GDB is stopped in
-the kernel's Rust code it reads expressions as Rust and refuses that one
-(`No symbol 'unsigned' in current context`), after it has already switched to
-physical-memory mode. So run `set language c` before `wpva`, and
-`set language auto` when you are done with it.
+stack traces. Until it is fixed, set the watchpoints yourself, as the next
+section does. `v2p` works.
 
 ## Go backwards from a crash
 
@@ -197,27 +198,40 @@ When GDB stops in `terminate_user_task`, the CPU is in the kernel's fault
 handler, still in the faulting program's address space. `udinfo` shows that,
 and `print *frame` shows the registers the program had when it faulted,
 `rip` and `rsp` among them. Then watch the memory that holds the wrong value
-and run backwards until something writes it:
+and run backwards until something writes it. The watch expression is C, so
+switch GDB's language first:
 
 ```
 (gdb) set $victim = $cr3
 (gdb) set language c
-(gdb) wpva $cr3 0x4090fe
+(gdb) watch *(unsigned long *)0x4090fe
+(gdb) v2p $cr3 0x4090fe
+(gdb) watch *(unsigned long *)(<HHDM offset> + <physical address>)
 (gdb) reverse-continue
 ```
 
 Good addresses to try first are the program's `rip`, if its code itself was
-overwritten, or a stack slot near its `rsp`. GDB stops on the writing
-instruction. Two values say who it was: the low two bits of `cs` (3 for a
-program, 0 for the kernel), and whether `cr3` is still the victim's. A write
-from another address space usually means a page of memory was given to two
-owners at once. Then leave physical-memory mode and look at the writer's
-stack:
+overwritten, or a stack slot near its `rsp`. QEMU stops on a watchpoint when
+any CPU writes that address, in any address space. So the first watchpoint
+catches the program's own writes and the kernel writing through the
+program's address. The second catches the kernel writing the same memory
+through its own map of all physical memory: `v2p` prints the physical
+address (`RESULT PA = …`), and the serial log gives the map's offset
+(`grep -i 'hhdm offset' builddir/rr-serial.log`). A write through some
+other program's mapping of the same memory is caught by neither.
+
+GDB stops on the writing instruction. Two values say who it was: the low two
+bits of `cs` (3 for a program, 0 for the kernel), and whether `cr3` is still
+the victim's. Every test program loads at the same address, so a hit on the
+first watchpoint from another address space is usually another program
+writing its own memory; `reverse-continue` again. A kernel write through its
+map of physical memory, from code with no business touching the program's
+page, usually means a page was given to two owners at once. Then look at the
+writer's stack:
 
 ```
 (gdb) print $cs & 3
 (gdb) print $cr3 == $victim
-(gdb) maintenance packet Qqemu.PhyMemMode:0
 (gdb) set language auto
 (gdb) bt
 ```
@@ -232,15 +246,18 @@ default is `builddir/io_capture_test.elf`.
 `WATCH=`) runs `scripts/gdb/find_corruptor.gdb`, which is meant to replay to
 the fault, print it, watch the address and run backwards to its writer
 unattended, saving the session to `builddir/rr-session.log`. But it sets the
-same two breakpoints by their bare names, so it never stops at the fault,
-and it reads the fault's registers as `frame->vector`, C syntax that GDB
-refuses in a Rust program. Until the script is fixed, follow step 2 by hand.
+same two breakpoints by their bare names, so it never stops at the fault; it
+reads the fault's registers as `frame->vector`, C syntax that GDB refuses in
+a Rust program; and its watchpoint is `wpva`'s, on the wrong address. Until
+the script is fixed, follow step 2 by hand.
 
 ## What usually goes wrong
 
 - **`just debug-bt` says the kernel file is missing.** It doesn't build
   anything; it attaches to a machine started with `just boot-debug`.
-- **Breakpoints early in boot never fire.** Use `hbreak`, not `break`.
+- **Breakpoints early in boot never fire.** On `just boot-debug` the
+  machine has run past them before you attach. Use a recorded run, whose
+  replay waits before the firmware starts.
 - **GDB says a function is not defined.** GDB finds a Rust function by its
   full path: `slopos_boot::user_fault::terminate_user_task`, not
   `terminate_user_task`. `just rr-replay`'s own breakpoints fail this way;
@@ -248,10 +265,12 @@ refuses in a Rust program. Until the script is fixed, follow step 2 by hand.
 - **GDB says `Syntax error near '->rip'`.** GDB reads expressions in Rust
   syntax while it is stopped in Rust code: write `frame.rip` or
   `(*frame).rip`, not `frame->rip`.
-- **`wpva` says `No symbol 'unsigned' in current context`.** GDB was reading
-  Rust. The failed `wpva` has left GDB in physical-memory mode, so run
-  `maintenance packet Qqemu.PhyMemMode:0`, then `set language c`, and
-  `wpva` again.
+- **`watch` says `No symbol 'unsigned' in current context`.** GDB was
+  reading Rust: run `set language c` and set the watchpoint again. If it was
+  `wpva` that failed, it has also left GDB in physical-memory mode, so run
+  `maintenance packet Qqemu.PhyMemMode:0` as well.
+- **The watchpoint never stops the replay.** It was set with `wpva`, which
+  watches the wrong address. Set it with `watch`, as in step 2.
 - **The replay no longer fails.** The bug depends on timing that recording
   changes, or needs more than one CPU. Debug it live instead, starting with
   `just debug-bt` and the diagnostic console.

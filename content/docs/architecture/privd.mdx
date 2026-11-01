@@ -107,7 +107,8 @@ action org.slopos.boot.install
 follow. `cwd` means the mechanism runs in the requester's directory, so a
 relative path such as `kernel.elf` names the file the person meant.
 `exclusive boot-slots` lets one mechanism of that group run at a time, so two
-writers never touch the boot partition at once. The `allow` lines say who may
+writers never touch the boot partition at once: a request that comes while one
+runs is refused, not queued. The `allow` lines say who may
 ask: uid 0 running a base program, an administrator who confirms, and the
 paired agent of [Remote control](/docs/self-hosting/remote-control).
 
@@ -458,15 +459,17 @@ not: the task belongs to the system, or holds powers.
 A new base can change privd's program, its policy or the pairing. When it
 does, init sends privd `SIGTERM`, and privd *drains*: it stops listening,
 refuses every request it reads from then on with
-`The system is being updated. Try again in a moment.`, withdraws any question
-on screen, and exits once every request it took has finished, so a mechanism
-in the middle of writing a boot slot is never cut off. Init starts the new
-base's privd when the old one exits, or beside it after five seconds. The new
-privd refuses requests for `exclusive` actions while a mechanism its predecessor started
-still runs, since it cannot know which groups that one holds. A requester
-waits up to two seconds for a privd that is restarting, and programs whose
-requests may span a base switch (the paired agent's commands, and the tests
-that run the self-hosting script) wait up to a minute.
+`The system is being updated. Try again in a moment.`, refuses any request
+still waiting for the person's answer, and exits once every request it took
+has finished, so a mechanism in the middle of writing a boot slot is never
+cut off. Init starts the new base's privd when the old one exits, or beside
+it after five seconds. The new privd refuses requests for `exclusive` actions
+while a mechanism its predecessor started still runs, since it cannot know
+which groups that one holds. A requester that finds nothing listening on
+`/run/privd` waits up to two seconds for a privd that init is starting again,
+and programs whose requests may span a base switch (the paired agent's
+commands, and the tests that run the self-hosting script) wait up to a
+minute. A request privd refused while draining is not sent again.
 
 When the extensions change, init sends privd `SIGHUP`, and privd reads their
 actions again and forgets every kept answer.
@@ -493,7 +496,8 @@ actions, and no program of an extension is handed the connection.
   `cpufreq set`, `ip`, `keymap`, `kconsole`, `prof`, `tree-install` and
   `installer` ask privd by themselves when they need to.
 - **For anything else that needs power, use `priv`.** It runs a command from
-  `/bin`, `/sbin` or another directory only uid 0 can change.
+  `/bin`, `/sbin` or another directory of the default search path that only
+  uid 0 can change.
 - **Read the reason.** A refusal is a sentence on standard error; the status
   is 126 if the person did not allow it and 127 otherwise. privd's own log says what it
   saw.

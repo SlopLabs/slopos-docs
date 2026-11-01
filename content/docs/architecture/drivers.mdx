@@ -133,7 +133,7 @@ Writing a driver step by step is covered in
 | virtio-net | Network inside a virtual machine | QEMU |
 | Realtek RTL8168 | Wired network on the RTL8168h/8111h and the RTL8168M. See [Networking](/docs/architecture/networking) | Laptop |
 | virtio-gpu | Display: picture, cursor and changing resolution | QEMU |
-| Intel Xe display | Display on Intel graphics with display version 12 or 13 (Tiger Lake, Alder Lake, Raptor Lake) | Laptop |
+| Intel Xe display | Display on the Tiger Lake, Alder Lake and Raptor Lake graphics chips in its table (display versions 12 and 13) | Laptop |
 | xHCI | USB controllers. See [USB](/docs/architecture/usb) | QEMU and laptop |
 | usb-hid | USB keyboards, mice and tablets | Wherever one is plugged in |
 | usb-storage | USB sticks and other USB disks, as `sda`, `sdb`, ... | Wherever one is plugged in |
@@ -144,8 +144,9 @@ Writing a driver step by step is covered in
 
 The Xe driver doesn't set the display mode itself. It takes over the mode the
 firmware already set and points the screen at the kernel's own picture. If
-the panel stops showing it, the driver falls back to the firmware's display
-on its own. The RTL8168 driver brings up only the chip versions it knows,
+the panel stops scanning in the moment after the switch, the driver puts the
+firmware's settings back and the screen stays on the firmware's display. The
+RTL8168 driver brings up only the chip versions it knows,
 because each Realtek version needs a start-up sequence of its own; another
 version is declined and named in the log.
 
@@ -170,7 +171,8 @@ through the matching step: the per-CPU interrupt controllers and the one that
 routes device interrupts, the timers (the HPET is required; the kernel stops
 at boot without one), the real-time clock, the serial port for logging, and
 the random number generator, seeded from the CPU's hardware random
-instructions. The terminal layer, with Linux-style line editing, sessions and
+instructions (on a CPU without them, from the timestamp counter, which is far
+weaker). The terminal layer, with Linux-style line editing, sessions and
 job control, also lives in the drivers crate.
 
 ## Keyboards and pointers
@@ -197,7 +199,7 @@ everyone:
   kernel repeats its last key after 500 ms, about 30 times a second.
 - **A few keys belong to the machine.** Alt+PrintScreen arms the
   [diagnostic console](/docs/development/diagnostics), Esc shows or hides the
-  kernel log during boot, and Shift+PageUp and Shift+PageDown scroll the
+  kernel log until the first desktop or login screen draws, and Shift+PageUp and Shift+PageDown scroll the
   console's history. A USB keyboard counts as the physical console as much
   as the built-in one does.
 - **A keyboard that leaves releases what it held.** Every key it held goes
@@ -238,8 +240,9 @@ What isn't merged is the stream of key events itself. A keyboard pulled while
 it holds Shift still produces a Shift release event, even though another
 keyboard holds Shift and the modifier state stays down; programs that read
 the modifier state, as the desktop does, aren't affected. Media keys
-(volume, play) aren't read at all, because the event format has no codes for
-them.
+(volume, play) aren't read at all: most keyboards send them as HID consumer
+usages, which the USB driver doesn't read, and the i8042's driver drops their
+scancodes.
 
 ## What is missing
 

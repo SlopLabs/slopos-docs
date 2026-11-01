@@ -200,7 +200,8 @@ registers and returns to user mode with the `IRETQ` instruction.
 - **Errors are Linux error numbers**, returned the Linux way, so `errno`,
   `strerror` and `perror` work unchanged.
 - **Interrupted calls behave as on Linux**, including `SA_RESTART` and
-  `EINTR`.
+  `EINTR`, except that the four waits listed above always return `EINTR`
+  where Linux would sometimes restart them.
 - **`int 0x80` is not supported.** Old 32-bit Linux programs use that
   instruction for system calls; on SlopOS it is a general-protection fault,
   and the program ends with `SIGSEGV`.

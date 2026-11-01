@@ -169,8 +169,8 @@ holding nothing gated, so `halt` can't call `reboot` itself. Like the base's
 other mechanisms, it notices that and asks privd instead: it connects to
 `/run/privd` and sends the action `org.slopos.power.poweroff` with the word it
 was called by, `halt`, which privd matches against the action's argument
-shapes. The policy lets an administrator run that one unasked, and anyone else
-while nobody else is logged in. privd then starts a second `/bin/halt`
+shapes. The policy lets an administrator run that one unasked, and any other
+person while nobody else is logged in. privd then starts a second `/bin/halt`
 as its own child, as uid 0 holding `Power` and no other gated capability, and
 that one powers the machine off. The first `halt` waits for it and exits with its
 status.

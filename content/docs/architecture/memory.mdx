@@ -55,9 +55,12 @@ the fault handler takes a zeroed frame, maps it and returns, so pages the
 program never touches never cost a frame. This is called *demand paging*.
 
 Faulting one page at a time would be slow for a program that walks through a
-large buffer, so when it is safe the fault handler maps a few neighbouring
-pages at once (the stack excepted, which grows one page at a time). Idle
-processors also zero free frames ahead of time, and faults take those first.
+large buffer, so a fault in the heap or in an ordinary anonymous mapping also
+fills the untouched pages around it, up to 32 at a time, and a fault in a
+mapped file also maps the neighbouring pages already in memory. The stack, a
+`MAP_NORESERVE` mapping and memory a `fork` child still shares with its parent
+are filled one page at a time. Idle processors also zero free frames ahead of
+time, and faults take those first.
 
 ### How `fork` avoids copying memory
 
@@ -67,7 +70,9 @@ straight away and throws the copy out. So SlopOS gives the child page tables
 that point at the parent's frames and marks every private page read-only in
 both processes. When either one writes a page, the processor faults, and the
 kernel copies that one frame and gives the writer the copy with write
-permission. The other keeps the original. This is *copy-on-write*, and even
+permission. The other keeps the original, and when it writes the page in turn
+the frame is no longer shared, so it gets write permission back without a
+copy. This is *copy-on-write*, and even
 `mprotect` won't make a shared copy-on-write page writable. To start a new
 program without copying an address space at all, SlopOS also has
 `posix_spawn` (see [Processes and signals](/docs/architecture/processes)).
@@ -118,8 +123,8 @@ memfds exist at once in the whole system.
 ### When RAM runs low
 
 SlopOS has no swap, so memory is never written out to disk to make room. When
-an allocation finds no free frame, the kernel first takes back memory it can
-drop without losing anything, in this order:
+a page fault or an `mmap` call finds no free frame, the kernel first takes
+back memory it can drop without losing anything, in this order:
 
 1. frames from recently unmapped pages, once every processor has discarded
    its cached translation for them;
@@ -127,9 +132,12 @@ drop without losing anything, in this order:
 3. cached files that no process has mapped.
 
 Changes that haven't reached the disk are never thrown away. Since most
-requests that can't be met are refused up front, running out here is rare;
-when it happens, the out-of-memory killer described on
-[Resource limits](/docs/architecture/resource-accounting) ends a process.
+requests that can't be met are refused up front, running out here is rare.
+When a program's page fault still finds no frame, the out-of-memory killer
+described on [Resource limits](/docs/architecture/resource-accounting) ends a
+process so that the fault can be served. Memory the kernel needs for its own
+work is not covered by the killer: the system call that needed it fails
+instead.
 
 ### How the kernel reaches into a program's memory
 
@@ -207,12 +215,16 @@ refused, so nothing frees it twice. The kernel's own half has one writer
 outside OSTD, `slopos_mm::kernel_mappings`, and a build check
 (`check_kernel_pml4_writer.sh`) refuses a second.
 
-**TLB flushing.** Unmapped frames wait in quarantine until every CPU that
-might cache the old translation has flushed it; mapping a previously empty
-page needs no shootdown, because x86 doesn't cache missing translations.
-`fork` flushes the CPUs running the parent's other threads before it releases
-the parent's address space: a sibling still holding a writable translation
-would otherwise write into the frame the child now shares. There is no
+**TLB flushing.** An unmap sends no interrupt to the other CPUs: the CPU
+doing it invalidates its own entries, and the freed frames wait in quarantine
+until every CPU has flushed its whole TLB since (`mm/src/mmu/quiesce.rs`).
+Mapping a page where nothing was mapped needs no shootdown, because x86
+doesn't cache missing translations, unless an earlier unmap in the same
+address space may still be cached on another CPU (`mmu::luf::may_hold_stale`);
+then the new mapping pays for one. `fork` flushes the CPUs running the
+parent's other threads before it lets go of the parent's address-space lock:
+a sibling still holding a writable translation would otherwise write into the
+frame the child now shares. There is no
 kernel page-table isolation (KPTI): the kernel half stays mapped,
 supervisor-only, in every process's table.
 

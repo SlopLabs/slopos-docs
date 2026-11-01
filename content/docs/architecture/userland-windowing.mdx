@@ -50,13 +50,14 @@ person's desktop and no one else's. (The login screen is a compositor too,
 but it opens no socket and serves no programs.)
 
 The first exchange is a version check. The compositor says which protocol
-version it speaks, the program answers with its own, and if they differ the
-connection ends with an error: a program built against another version must
-be rebuilt. Then the program asks for a *surface* (a rectangle it can draw
-into), gives it the *toplevel* role that makes it a window, and names it with
-a title and an *app id* such as `org.slopos.editor`, which is how the dock and
-the menu bar know which app the window belongs to. It can also state the
-smallest and largest size it can be laid out at.
+version it speaks and the program answers with its own; if they differ,
+whichever side notices first ends the connection, so a program built against
+another version must be rebuilt. Then the program asks for a *surface* (a
+rectangle it can draw into), gives it the *toplevel* role that makes it a
+window, and names it with a title and an *app id* such as
+`org.slopos.editor`, which is how the dock and the menu bar know which app
+the window belongs to. It can also state the smallest and largest size it
+can be laid out at.
 
 The window appears the first time the program commits a frame for it. That
 is when the compositor places it: an app's first window opens centred in the
@@ -83,10 +84,10 @@ the compositor reads the last one. It draws a frame into one and *commits* it
 committed, the compositor hands the first one back. If the program draws
 again before that hand-back reaches it, the library reuses the buffer it
 committed last, so a program that redraws faster than the compositor answers
-can tear. The windowing library
-also tracks how old each buffer's contents are, so a program that redraws
-only what changed knows what a recycled buffer has missed (its *age*: how
-many frames ago it was last shown).
+can show a half-drawn frame. The windowing library also tracks how old each
+buffer's contents are, so a program that redraws only what changed knows
+what a recycled buffer has missed (its *age*: how many frames ago it was
+last shown).
 
 ### Redrawing only what changed
 
@@ -143,10 +144,9 @@ The compositor then decides who gets each event, in this order:
    compositor and locks the desktop (on the login screen, it starts the login
    screen over, unless a password is being checked or a desktop is starting),
    and while the lock or login screen is up it takes every key and the
-   pointer. This is a *secure attention key*: no program can
-   intercept it, so the password prompt you get after pressing it is really
-   the system's. [Sessions and login](/docs/architecture/sessions) explains
-   locking.
+   pointer. This is a *secure attention key*: no program can intercept it,
+   so the password prompt you get after pressing it is really the system's.
+   [Sessions and login](/docs/architecture/sessions) explains locking.
 2. **A question.** While privd's consent dialog, or a question such as
    *Power off the computer?*, is on screen, it takes the keyboard and the
    pointer, and keys pressed into it stay away from every program, their
@@ -209,11 +209,11 @@ new holder; the desktop that goes behind stops drawing and locks.
 There are two seat ranks. Compositors hold the lower one, and only
 `/bin/roulette`, the Wheel of Fate that runs at boot, takes the higher one.
 Asking for a seat that another program holds at the same or a higher rank
-fails with `EBUSY`. The kernel's own log takes no seat: while it is on screen, the
-kernel holds back every compositor's frames, so it shows even over a stuck
-compositor. Below the seats, the kernel picks which display driver
-shows the frame: Intel graphics, virtio-gpu in QEMU, or the plain framebuffer
-the firmware left behind ([Drivers](/docs/architecture/drivers)).
+fails with `EBUSY`. The kernel's own log takes no seat: while it is on
+screen, the kernel holds back every compositor's frames, so it shows even
+over a stuck compositor. Below the seats, the kernel picks which display
+driver shows the frame: Intel graphics, virtio-gpu in QEMU, or the plain
+framebuffer the firmware left behind ([Drivers](/docs/architecture/drivers)).
 
 ## What it means for an app
 
@@ -228,8 +228,9 @@ windowing library (`slopos-windowing`) directly: it connects, makes the
 window and its two buffers, and hands over the events. Either way:
 
 - **Rebuild when the protocol changes.** The apps outside the base are built
-  against one protocol version, and a compositor of another refuses them with
-  "the compositor speaks another protocol version: rebuild this program".
+  against one protocol version; against a compositor of another, the
+  windowing library gives up at the version check with "the compositor speaks
+  another protocol version: rebuild this program".
 - **Expect to be told your size.** Draw at whatever size the last configure
   named. The compositor may shrink a window that doesn't fit when it first
   appears.
