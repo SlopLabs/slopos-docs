@@ -250,10 +250,10 @@ attested the program as the base's.
 | `program <path>` | a requester running the base program at that canonical path, whatever its uid, unless it is the paired agent | none |
 
 uid 0 alone is no principal: uid 0 running a program from outside the base
-is not `root`. The paired agent matches `paired` and nothing else. privd reads the requester's program
-from the kernel again before it judges, before it asks and before it starts
-the mechanism, and refuses a requester that has exec'd, mapped code from
-elsewhere or exited since it connected.
+is not `root`. The paired agent matches `paired` and nothing else. privd
+reads the requester's program from the kernel again before it judges, before
+it asks and before it starts the mechanism, and refuses a requester that has
+exec'd, mapped code from elsewhere or exited since it connected.
 
 ### Levels
 

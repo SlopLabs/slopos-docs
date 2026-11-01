@@ -69,8 +69,8 @@ name twice or whose `.` or `..` is wrong, and an inode at two names.
 The kernel's `ext_activate` refuses, with `EINVAL`, a volume that has no ext4
 superblock, has blocks other than 4 KiB, does not fill the image's data, is
 not marked `read-only`, has no metadata checksums, has a first inode other
-than 11, or has a journal that needs recovery. It refuses the same way a tree
-that holds more than 65536 entries, an inode at two names, a name twice in a
+than 11, or has a journal that needs recovery. It answers `EINVAL` too for a
+tree that holds more than 65536 entries, an inode at two names, a name twice in a
 directory, a `.` or `..` that names the wrong directory, an entry naming a
 reserved inode, an entry whose type is not its inode's, anything but
 directories, regular files and symlinks, or directories larger together than

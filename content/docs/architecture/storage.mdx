@@ -105,9 +105,9 @@ There is one request engine for all three transports. A transport only has
 to say how to submit a request, how to collect completions and what the
 device's status codes mean. Everything about slots, retries, timeouts and
 ordering is shared, so a fix there fixes every driver, and the engine's tests
-run against all three. What a transport chooses is only numbers: how many
-slots it has, how long a request has to complete, and how long a request may
-wait for a free slot. That wait is a quarter of a second for NVMe and
+run against all three. Beyond that a transport chooses only a few numbers,
+among them how many slots it has, how long a request has to complete, and
+how long a request may wait for a free slot. That wait is a quarter of a second for NVMe and
 virtio-blk, whose requests complete in milliseconds, and as long as a
 Bulk-Only command and its recovery can take for a stick, which keeps one
 command on the wire and one queued.

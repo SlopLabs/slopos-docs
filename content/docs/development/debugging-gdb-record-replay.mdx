@@ -96,10 +96,10 @@ just rr-replay
 (gdb) continue
 ```
 
-Use `hbreak` (a hardware breakpoint) rather than `break` this early. A
-normal breakpoint is placed in the kernel's code, which may not yet be mapped
-where GDB expects it; a hardware breakpoint is held in the CPU's debug
-registers and needs only the address. Name the function by its full path, as
+Use `hbreak` (a hardware breakpoint) rather than `break` this early. When
+you set it the kernel has not been loaded yet, and a hardware breakpoint is
+held in the CPU's debug registers, so it needs only the address, not the
+code that will be there. Name the function by its full path, as
 above: GDB doesn't find a Rust function by its bare name. If GDB can't tell
 which of several Rust functions with the same name you mean, break on a file
 and line instead (`hbreak early_init.rs:<line>`).
@@ -179,7 +179,8 @@ firmware runs, and prints:
 ```
 
 The script (`scripts/gdb/slopos.gdb`) also tries to stop where a program is
-killed by a fault and where the kernel panics, but it names the two
+killed by a fault and where the kernel panics on a CPU exception (a fault in
+kernel code; a `panic!` in Rust code does not pass there), but it names the two
 functions without their crate path, which GDB doesn't accept for Rust: a few
 lines earlier it printed `Function "terminate_user_task" not defined.` and
 `Function "panic_with_frame" not defined.`, and set neither. A plain
