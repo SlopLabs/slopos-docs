@@ -81,9 +81,9 @@ does nothing and waits for the answer, so a broken controller shows up here,
 at boot, rather than later as a device that never appears: one that never
 answers is taken off the bus and left unused, and one that answers but never
 raises its interrupt is kept and served by polling, with a line in the log
-saying so. On the laptop, a controller that works logs the lines below;
-QEMU's controllers have no firmware to take them from, so they log only the
-second:
+saying so. On the laptop a controller that works logs these two lines,
+among others; QEMU's controllers have no firmware to take them from, so they
+log only the second:
 
 ```text
 USB: xhci 1 taken from the firmware
@@ -262,7 +262,8 @@ When it does, its disk is unregistered and every request still waiting fails
 at once instead of timing out. The filesystem on it turns read-only, as ext4
 does on a disk that fails: it refuses every change with `EROFS`, fails every
 read that would need the stick, and stays mounted until you unmount it.
-Nothing unmounts it by force. What a program saved with `fsync` before the
+Nothing unmounts it by force ([Disks](/docs/architecture/storage#disks-that-come-and-go)
+describes this for any disk that leaves). What a program saved with `fsync` before the
 pull is on the stick, as [Crash recovery](/docs/architecture/crash-recovery)
 promises for any crash. The log records the departure:
 
@@ -354,9 +355,9 @@ boots one.
   usb:     ep 0x81 dci 3 queued 0
   ```
 
-  `kconsole` asks privd for the `SysInspect` capability it needs, which
-  privd grants an administrator without asking. The same listing is the
-  diagnostic console's `u` key.
+  `kconsole` needs the `SysInspect` capability, so it asks privd to run it
+  as the action `org.slopos.kconsole`, which an administrator may run
+  unasked. The same listing is the diagnostic console's `u` key.
 - **On a machine you don't know yet**, boot once with `usb=report` to see
   its controllers without taking them from the firmware.
 

@@ -64,8 +64,10 @@ When a device appears, a single matching step runs:
 3. If the driver accepts, it owns the device and no other driver sees it. If
    it declines or fails, the next candidate gets a turn.
 4. A PCI or ACPI driver that needs something that isn't ready yet can ask to
-   be tried again, once, after every other device has been offered. A USB
-   driver can't: for USB, asking to wait counts as declining.
+   be tried again. The next candidate still gets its turn, and if no driver
+   takes the device, the one that asked is offered it once more after every
+   other device on that bus. A USB driver can't ask: for USB, asking to wait
+   counts as declining.
 
 The same matching code serves all three buses. Only the question "does this
 declaration match this device?" differs between them.
@@ -131,7 +133,7 @@ Writing a driver step by step is covered in
 | virtio-net | Network inside a virtual machine | QEMU |
 | Realtek RTL8168 | Wired network on the RTL8168h/8111h and the RTL8168M. See [Networking](/docs/architecture/networking) | Laptop |
 | virtio-gpu | Display: picture, cursor and changing resolution | QEMU |
-| Intel Xe display | Display on Intel Gen12 and Gen13 graphics (Tiger Lake, Alder Lake, Raptor Lake) | Laptop |
+| Intel Xe display | Display on Intel graphics with display version 12 or 13 (Tiger Lake, Alder Lake, Raptor Lake) | Laptop |
 | xHCI | USB controllers. See [USB](/docs/architecture/usb) | QEMU and laptop |
 | usb-hid | USB keyboards, mice and tablets | Wherever one is plugged in |
 | usb-storage | USB sticks and other USB disks, as `sda`, `sdb`, ... | Wherever one is plugged in |
@@ -203,8 +205,9 @@ everyone:
 
 The layout turns a usage into text. US QWERTY is built in; others live in
 `/usr/share/keymaps/` (`us.layout`, `de_CH.layout`), and `keymap <name>`
-switches to one, which needs the `ConsoleConfig` capability, so the command
-asks privd for it ([Privileged actions](/docs/architecture/privd)). The
+switches to one. Installing a layout takes the `ConsoleConfig` capability,
+so `keymap` asks privd to run it as the action `org.slopos.console.keymap`
+([Privileged actions](/docs/architecture/privd)). The
 choice is saved in `/etc/keymap`, and init applies it at every boot. Layout
 files are parsed in userland, and the kernel accepts only a compact binary
 table that it checks before installing, so it never parses text from a file.

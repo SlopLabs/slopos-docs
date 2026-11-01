@@ -116,8 +116,8 @@ reads the same. Firmware can leave them apart (on our laptop the other CPUs
 read most of a second ahead of the first, so the clock jumped whenever a task
 changed CPU), so every CPU clears the register that offsets its TSC, and each one
 that comes up is checked against the first. If one still disagrees, the
-kernel logs it as a `CLOCK:` line and falls back to the slower HPET timer
-for its clock.
+kernel logs it as a `CLOCK:` line and takes its clock from the slower HPET
+timer from then on.
 
 ## How the scheduler places work
 

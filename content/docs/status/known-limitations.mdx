@@ -5,8 +5,8 @@ description: "What SlopOS does not do yet, and which of those gaps are recorded 
 
 As of 2026-10-29, SlopOS commit `fa0f8f79`.
 
-SlopOS is a research system. Everything is tested in QEMU, and one laptop runs
-an installed system. This page lists what is missing, what each gap means for
+SlopOS is a research system. Everything is tested in QEMU, and one laptop has
+run an installed system. This page lists what is missing, what each gap means for
 you, and its status:
 
 - **Open defect**: a bug recorded in the source tree's `plans/KNOWN_ISSUES.md`,
@@ -27,8 +27,9 @@ one is about CI.
 - **Few device drivers.** Besides QEMU's virtio devices, SlopOS drives NVMe
   disks, USB sticks, the Realtek RTL8168h and RTL8168M wired cards, USB
   Ethernet adapters, Intel integrated graphics of the Tiger Lake, Alder Lake
-  and Raptor Lake families, and USB, PS/2 and I²C-HID input. There is no driver for SATA disks, Wi-Fi, Bluetooth
-  or audio, no GPU acceleration and no suspend. No plan.
+  and Raptor Lake families, and USB, PS/2 and I²C-HID input. There is no
+  driver for SATA disks, Wi-Fi, Bluetooth or audio, no GPU acceleration and
+  no suspend. No plan.
 - **USB through xHCI only, and three kinds of device.** Older USB controllers
   have no driver, and only keyboards and pointers, Bulk-Only storage and
   CDC Ethernet adapters bind; anything else is enumerated and left alone
@@ -37,9 +38,9 @@ one is about CI.
   boot for up to 11 seconds, each of up to eight; a device that keeps
   reconnecting logs every attach and detach; a keyboard pulled out while
   another still holds Shift sends programs a Shift release, though Shift
-  stays held; and on a machine with no xHCI controller, a
-  keyboard-light update the PS/2 controller leaves unanswered is sent again
-  only at the next key or lock change. Open defect.
+  stays held; and on a machine with no xHCI controller, a keyboard-light
+  update the PS/2 controller leaves unanswered is sent again only at the next
+  key or lock change. Open defect.
 - **PCI devices are found once, at boot.** A USB device can come and go, but a
   PCI card is probed only while the kernel boots, and drivers cannot be
   unloaded ([Drivers](/docs/architecture/drivers)). No plan.
@@ -79,7 +80,7 @@ one is about CI.
   has mapped stays pinned until it is unmapped, and one process may pin at most
   an eighth of memory, so a linker mapping more than that dies on a refused
   fault, and the filesystem it was writing turns read-only. The debug tests
-  kernel's link does at 4 GB, which is why the development machine and the
+  kernel's link does so in a 4 GB guest, which is why the development machine and the
   self-hosting checks run at 6 GB ([Memory](/docs/architecture/memory)). Open
   defect.
 - **An idle CPU's page zeroing can fault.** Under heavy host load an idle CPU
@@ -124,12 +125,13 @@ one is about CI.
 
 ## Installing and updating
 
-- **An install from a 512 MiB live system fails.** Booted as `just boot-live`
-  boots it, with 512 MiB of memory, the installer reaches the step that writes
-  both kernel slots and the base and dies there (`SIGABRT`, right after the
-  kernel logs `process_vm_mmap: Failed to insert VMA`). Whether more memory avoids it is
-  not known; `just ui-shots` and `just test-installer` install at 2 GB and
-  6 GB ([Installing SlopOS](/docs/self-hosting/installing)). Open defect.
+- **An install from a 512 MiB live system fails.** Booted the way
+  `just boot-live` boots it, with 512 MiB of memory, the installer reaches the
+  step that writes both kernel slots and the base and dies there (`SIGABRT`,
+  right after the kernel logs `process_vm_mmap: Failed to insert VMA`).
+  Whether more memory avoids it is not known; `just ui-shots` and
+  `just test-installer` install at 2 GB and 6 GB
+  ([Installing SlopOS](/docs/self-hosting/installing)). Open defect.
 - **A new base gets no trial boot.** A kernel goes into the spare slot and is
   tried once before it becomes the default, but a base that passes its checks
   becomes current for every slot at once, and stays current when it then fails
@@ -162,9 +164,9 @@ one is about CI.
   relayed to a program stays in kernel pipe buffers and the compositor's
   memory until they are reused; no other program can read it there
   ([Privileged actions](/docs/architecture/privd)). Open defect.
-- **Console input after a signal key is lost.** Characters typed in the same
-  burst after one that sends a signal, such as Ctrl+C, are dropped. Open
-  defect.
+- **Console input after a signal key is lost.** On the text console and the
+  serial line, characters typed in the same burst after one that sends a
+  signal, such as Ctrl+C, are dropped. Open defect.
 
 ## Toolchain
 

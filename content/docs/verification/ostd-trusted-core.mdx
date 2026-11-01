@@ -135,9 +135,9 @@ Kernel stacks are small and fixed in size, and the build fails if a function
 needs more than 2 KiB of stack, apart from a short list of measured
 exceptions, none of them as large as the 4 KiB guard page below each stack
 (see [Safety gates](/docs/verification/tcb-discipline#kernel-image-gates)).
-That rules out the usual Rust way of building
-a large struct, `KBox::new(Big { .. })`, because the `Big` value is assembled
-on the stack before it is moved to the heap.
+That rules out the usual Rust way of building a large struct,
+`KBox::new(Big { .. })`, because the `Big` value is assembled on the stack
+before it is moved to the heap.
 
 So OSTD lets you describe how to build a value and then builds it directly in
 its heap allocation. The description is an *initialiser*, a value of a type

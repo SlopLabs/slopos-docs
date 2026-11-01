@@ -61,7 +61,8 @@ export function FramekernelLayers() {
       </div>
       <figcaption className="mt-3 text-xs" style={{ color: 'var(--ink-dim)' }}>
         Kernel services reach the hardware only through the trusted core, so a memory-safety bug in
-        the kernel has to start in the highlighted layer, not in the code above it.
+        the kernel starts in the highlighted layer, or in the few trusted pieces beside it that this
+        page lists, never in the code above it.
       </figcaption>
     </figure>
   );

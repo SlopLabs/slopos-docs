@@ -81,8 +81,8 @@ desktop, which locks behind them. A text console has a login prompt too
 What a program may do is a set of named capabilities it was handed when it
 started, never something its path or its user id earns
 ([Capabilities](/docs/architecture/authority)); there are 22 of them, the bits
-`abi/src/caps.rs` defines. The programs init starts for a person's session
-hold none that change the system: the most any of them holds is their
+`abi/src/caps.rs` defines. The desktop, terminal and shell init starts for a
+person hold none that change the system: the most any of them holds is the
 compositor's hold on the screen and the input. When one needs more (to
 install a kernel, add a person or power the machine off), it asks a broker,
 privd, which carries out one of 34 named actions (the `action` lines of the

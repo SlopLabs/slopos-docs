@@ -89,9 +89,9 @@ base program against slibc's Rust library and into an app against
 `libc.so`.
 
 A statically linked program of your own will still run, but it carries its
-own copy of the C library and the system calls compiled into it, so a new
-base whose private calls changed can break it. Only the dynamic link is
-promised.
+own copy of the C library and the private system calls compiled into it, so
+a later kernel that no longer serves the interface it was built against can
+break it. Only the dynamic link is promised.
 
 ### The loader
 
@@ -103,11 +103,12 @@ one `malloc` and one `errno` to get confused about.
 
 The loader looks for a library in `LD_LIBRARY_PATH`, then in the paths
 recorded in the executable or library that needs it (`RUNPATH` or `RPATH`,
-including `$ORIGIN`), then in `/lib` and `/usr/lib`. After those it searches
-an extension's own `lib` directory for that extension's programs, and
-`~/.local/lib` and `/usr/local/lib`, but only for a process that is neither
-running as uid 0 nor marked `AT_SECURE` by the kernel, so a library a person
-can write never reaches a program holding more power than they do.
+including `$ORIGIN`), then in `/lib` and `/usr/lib`, and then, for an
+extension's program, in that extension's own `lib` directory. Last come
+`~/.local/lib` and `/usr/local/lib`, which it searches only for a process that
+is neither running as uid 0 nor marked `AT_SECURE` by the kernel, so a library
+a person can write never reaches a program holding more power than they do.
+An `AT_SECURE` process also gets no `LD_LIBRARY_PATH` and no `$ORIGIN`.
 [Installed software](/docs/architecture/software#how-programs-and-libraries-are-found)
 explains the order and the reason for it. Two debugging switches help when a
 library doesn't load as you expect:
@@ -146,14 +147,11 @@ themselves run on SlopOS through this target.
 [Toolchain](/docs/self-hosting/toolchain) covers how to get the compiler and
 build for SlopOS.
 
-Starting a program is cheaper than on most Unixes when you go through
-`posix_spawn` or Rust's `Command::spawn`. Instead of copying the parent with
-`fork` and then replacing the copy with `exec`, slibc asks the kernel to
-create the new process directly with the files it should have open. Rust's
-`Command` uses this, and falls back to `fork` and `exec` only when you ask
-for something the direct path can't express, such as a `pre_exec` closure.
-[Processes and signals](/docs/architecture/processes) explains the kernel
-side.
+`posix_spawn` and Rust's `Command::spawn` start a program without copying the
+parent first: slibc asks the kernel to create the new process directly, and
+falls back to `fork` and `exec` only for something that path can't express,
+such as a `pre_exec` closure
+([Processes and signals](/docs/architecture/processes#starting-a-new-program-in-one-step-spawn)).
 
 ## The shell
 
@@ -274,7 +272,9 @@ non-blocking descriptors, as it would on any Unix.
 - **Expect POSIX, not every Linux extension.** Most of what portable Unix
   code uses is there. Some calls are missing, for example `epoll` and
   `inotify`, and networking is IPv4 only.
-  [Known limitations](/docs/status/known-limitations) keeps the list.
+  [System call ABI](/docs/abi/syscalls#linux-numbered-calls) lists the calls
+  that exist, and [Known limitations](/docs/status/known-limitations) the
+  larger gaps.
 - **Prefer `posix_spawn`** (or Rust's `Command`) to `fork` followed by
   `exec`. Both work, but spawning is the direct path.
 - **Use `fsync` and `rename`** to replace files safely, as on any Unix;

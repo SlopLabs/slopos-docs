@@ -180,9 +180,9 @@ x86-64. On CPUs without PCIDs, or with a known erratum that
 disables them, every switch empties the program part of the cache, which is
 slower but correct.
 
-## What SlopOS doesn't do
+## No kernel page-table isolation
 
-**No kernel page-table isolation.** In 2018 the Meltdown flaw showed that on
+In 2018 the Meltdown flaw showed that on
 many Intel CPUs a program could read memory that is mapped but marked
 kernel-only, by exploiting speculative execution. Linux's defence, KPTI,
 gives each process a second page table with the kernel almost entirely

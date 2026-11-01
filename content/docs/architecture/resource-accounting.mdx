@@ -18,8 +18,8 @@ killed. The main exception is `fork`, and when a forked child does run the
 machine out of memory, the kernel ends one process, chosen by a rule
 described below.
 
-The per-process budgets are Unix resource limits, read with `getrlimit` as on
-Linux. Refusing memory at the time it is promised is what Linux calls *strict
+The budgets for open files, processes, address space and pinned memory are
+Unix resource limits, read with `getrlimit` as on Linux. Refusing memory at the time it is promised is what Linux calls *strict
 overcommit accounting*, an option there and the default here.
 
 ## What is limited
@@ -78,8 +78,9 @@ children unreaped spends only their own share. Ending their session ends
 every process that carries its login tag, a fork bomb included, and gives
 back what they held ([Sessions and login](/docs/architecture/sessions)).
 The accounts are made as each person first runs something, for the first
-sixteen people in a boot; anyone after that shares the system's account. Memory isn't divided this way: it
-stays the machine's, under the one commit ceiling below.
+sixteen people in a boot; anyone after that shares the system's account.
+Memory isn't divided this way: it stays the machine's, under the one commit
+ceiling below.
 
 Linux reaches for the same goal with `RLIMIT_NPROC`, which it counts for each
 real user id rather than for each process tree. SlopOS keeps both: the
@@ -190,6 +191,8 @@ enforcement off or into warnings, for measuring what a workload needs, and
 
 - **A successful `mmap`, `brk` or `exec` is backed.** Touching the memory
   won't get the program killed, unless it was mapped with `MAP_NORESERVE`.
+  Stack the program grows into past what `exec` gave it is charged as it
+  grows.
 - **`fork` doesn't fail for lack of memory**, but a child that writes much of
   its parent's memory can trigger the OOM killer.
 - **Limits fail with the errors programs already handle.**

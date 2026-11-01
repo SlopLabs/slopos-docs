@@ -12,8 +12,8 @@ threads race on ordinary memory. So when the trusted core's tests pass under
 Miri, you know the `unsafe` code they exercise kept Rust's rules on those
 runs, which an ordinary passing test can't tell you. The limit is in "those
 runs": Miri only sees the code the tests execute, on a normal computer, and
-never the kernel booting on real hardware, and it skips the handful of tests
-it can't model.
+never the kernel booting on real hardware, and the handful of tests Miri
+can't model are skipped.
 
 We call the setup *KernMiri*, after the tool of that name the Asterinas
 authors describe in their [ATC '25 paper](https://arxiv.org/abs/2506.03876):

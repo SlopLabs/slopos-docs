@@ -95,7 +95,8 @@ Because the check happens in the dispatcher, before the handler runs, a
 handler can't forget it. Some powers are finer than a whole call, and the
 handler checks those itself against the same mask: any caller may call
 `setuid`, but taking a user id it doesn't already hold needs `SetId`;
-`setpriority` needs `SchedHigh` only to lower a nice value below zero; and
+`setpriority` needs `SchedHigh` only to set a nice value below both zero and
+the one the task has; and
 any owner may change a file's flags, but moving its seal needs `Seal`. And a
 call that names a file by its path also checks the file's owner and
 permission bits against the caller's user and group ids, as Unix always has.
@@ -179,9 +180,10 @@ kernel decides what the program sees, the same way Linux does:
 - otherwise the call fails with `EINTR` ("interrupted system call") and the
   program decides what to do.
 
-Calls that take a timeout and don't report how much of it is left
-(`nanosleep`, `poll`, `futex` and the SlopRing wait) always fail with `EINTR`
-instead of restarting, because restarting would begin the full timeout again.
+Calls that wait with a timeout (`nanosleep`, `poll`, `futex` and the SlopRing
+wait) always fail with `EINTR` instead of restarting, because restarting would
+begin the full timeout again. `nanosleep` writes how much was left into its
+second argument, so the caller can sleep the rest.
 
 Last, the kernel checks whether the task has been killed. A kill sets a flag
 on the task; a task blocked in a call notices it and returns early, and this
@@ -193,8 +195,8 @@ registers and returns to user mode with the `IRETQ` instruction.
 
 - **Linux numbers mean Linux calls.** A Linux x86-64 call number either
   behaves as on Linux or fails with `ENOSYS`. It never does something
-  different. [What works](/docs/status/current-capabilities) says which calls are
-  implemented.
+  different. [System call ABI](/docs/abi/syscalls#linux-numbered-calls) lists
+  the ones that are implemented.
 - **Errors are Linux error numbers**, returned the Linux way, so `errno`,
   `strerror` and `perror` work unchanged.
 - **Interrupted calls behave as on Linux**, including `SA_RESTART` and
@@ -216,9 +218,11 @@ registers and returns to user mode with the `IRETQ` instruction.
   into a kernel panic instead, so a bug can't hide. See
   [Diagnosing the kernel](/docs/development/diagnostics).
 
-A program that needs to make many requests can avoid one system call per
-request with [SlopRing](/docs/abi/slopring), a queue of requests it shares
-with the kernel, in the style of Linux's `io_uring`.
+A program of the base that needs to make many requests can avoid one system
+call per request with [SlopRing](/docs/abi/slopring), a queue of requests it
+shares with the kernel, in the style of Linux's `io_uring`. Its calls are
+private ones, so a program outside the base doesn't use it
+([Userland](/docs/architecture/userland#asynchronous-io)).
 
 ## How it is tested
 
@@ -252,8 +256,8 @@ at the handler's definition. The `raw` form skips argument decoding for
 handlers that read registers themselves.
 
 **Argument types.** Each parameter type implements `SyscallArg`, which decodes
-one or more of the six argument registers; the macro checks at expansion time
-that a handler's parameters fit in six.
+one or more of the six argument registers; a compile-time assertion the macro
+emits checks that a handler's parameters fit in six.
 
 | Type | Decodes to |
 |---|---|

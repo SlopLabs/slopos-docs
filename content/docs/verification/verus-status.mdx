@@ -3,13 +3,14 @@ title: "Proofs"
 description: "Which rules in the kernel are proven by a machine, what that proof covers, and how to run it."
 ---
 
-For the parts of the SlopOS kernel where a bug would corrupt memory or hand a
-program power it shouldn't have, you can rely on more than tests. Most of
-them are in the trusted core; SlopRing's queues and zero-copy TCP sends are
-the exceptions. A tool has checked, for every possible sequence
-of operations, that rules such as "a page of memory is never freed twice"
-can't be broken, and every change has to keep those checks passing. The proofs cover the logic of each mechanism, written out as a
-small model next to the kernel. They don't cover the kernel's actual code line
+For the parts of the SlopOS kernel where a bug would corrupt memory or let a
+program take more than it is allowed, you can rely on more than tests. Most
+of them are in the trusted core; SlopRing's queues and zero-copy TCP sends
+are the exceptions. A tool has checked, for every possible sequence of
+operations, that rules such as "a page of memory is never freed twice" can't
+be broken, and every change has to keep those checks passing. The proofs
+cover the logic of each mechanism, written out as a small model next to the
+kernel. They don't cover the kernel's actual code line
 by line, and they say nothing about how CPUs see each other's memory writes.
 This page explains what that means, lists what is proven, and shows how to
 run the proofs.
@@ -97,10 +98,10 @@ copying to and from user programs, the boot code and most of the memory code
 outside the parts above are reviewed and tested under Miri, but not proved.
 The capability proof covers the masks alone: the user and group ids a
 process carries, and the rules for changing them, are held by the kernel's
-own tests.
-Proving the whole trusted core isn't a goal. The proofs cover the places where
-a bug would corrupt memory or widen a capability mask rather than return an
-error, which is where they buy the most.
+own tests. Proving the whole trusted core isn't a goal. The proofs cover the
+places where a bug would corrupt memory, widen a capability mask or let an
+account overrun its limit, rather than return an error, which is where they
+buy the most.
 
 ## Running the proofs
 

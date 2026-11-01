@@ -95,11 +95,11 @@ boots from its own boot slots.
 | Wi-Fi (Intel CNVi), Bluetooth, audio | No driver | |
 | Firmware | Works | Reset and power-off through UEFI; `bootctl` tried a kernel in the spare boot slot and made it the default |
 
-A full build of the system on the installed laptop (`scripts/selfhost.sh build
-release`, kernel, programs and base, from an empty build directory, of commit
-`ff6b10ba`) took 356 and 364 seconds with the default settings, and 382 to
-397 seconds with the firmware's own frequency settings. Every run was held
-back by the package's power limit.
+A full build of the system on the installed laptop
+(`scripts/selfhost.sh build release`, kernel, programs and base, from an
+empty build directory, of commit `ff6b10ba`) took 356 and 364 seconds with
+the default settings, and 382 to 397 seconds with the firmware's own
+frequency settings. Every run was held back by the package's power limit.
 
 ## What real hardware still lacks
 

@@ -160,8 +160,10 @@ for giving up, and the compiler makes every caller handle both.
 
 One kind of wait ignores kills: waiting for a disk request the device is
 still working on. Abandoning it could let that old write reach the disk after
-a newer write to the same place. That wait still has a deadline of a few
-seconds, so it can delay a kill but not prevent it.
+a newer write to the same place. The wait still ends within five seconds:
+past that, a kill sets the request aside where the disk can finish it safely
+([Disks](/docs/architecture/storage#when-a-disk-stops-answering) explains
+how), so a disk can delay a kill but not prevent it.
 
 ### Waiting on many things at once
 
@@ -224,7 +226,8 @@ resort at shutdown.
 - **Start background jobs at the Low tier** with spawn; `nice` has no effect
   yet.
 - **Killing always works**, even on a program blocked in the kernel or stuck
-  in a loop: within a tick, or a few seconds for a disk request in flight.
+  in a loop: within a tick, or at most five seconds for a disk request in
+  flight.
 
 ## How it is tested
 
