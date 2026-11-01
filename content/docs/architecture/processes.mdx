@@ -74,8 +74,8 @@ them.
 
 ### Copying a running program: fork
 
-`fork` doesn't copy the parent's memory. Parent and child share every page,
-marked read-only, and a page is copied only when one of them writes to it
+`fork` doesn't copy the parent's memory. Parent and child share every private
+page, marked read-only, and a page is copied only when one of them writes to it
 (*copy-on-write*; [Memory](/docs/architecture/memory) explains how). Because
 nothing is copied yet, `fork` doesn't count the child's memory against the
 machine's memory limit; each page is charged when the child gets its own copy
@@ -154,8 +154,8 @@ of mine to you as your 3, close that one. Every action can only hand over or
 drop something the caller already holds, which is the point: a spawn can
 never give a child a file its parent couldn't open.
 
-Powers work the same way. The child gets the universal capabilities, plus
-whichever of the caller's own gated capabilities the caller names; naming one
+Powers work the same way. The child gets the universal capabilities the caller
+holds, plus whichever of the caller's own gated capabilities it names; naming one
 the caller doesn't hold fails with `EPERM`. The child runs as the caller
 unless the caller asks for user or group ids it doesn't hold itself, a list
 of supplementary groups or a login tag, all of which take `SetId`. A child that
@@ -385,7 +385,7 @@ fix that, and SlopOS has both.
 | Who may signal whom | User ids, or `CAP_KILL`, which root holds | User ids, and the sender must hold every capability the target holds; `ProcSignal`, or `SIGCONT` within the terminal session, waives both; init can't be signalled |
 | First realtime signal (`SIGRTMIN`) | Usually 34 (glibc keeps two) | 32 |
 | `vfork` | Supported | Not provided; use spawn or `posix_spawn` |
-| Spawn file actions | `posix_spawn` may open files for the child | The child only gets descriptors the parent already holds |
+| Spawn file actions | `posix_spawn` opens files in the child | The kernel's spawn call hands the child only descriptors the parent holds; slibc's `posix_spawn` opens a file `addopen` names in the parent and hands it over |
 | `pidfd_open` flags | Accepts `PIDFD_NONBLOCK` and `PIDFD_THREAD` | No flags |
 | `signalfd` on an existing descriptor | Replaces its signal mask | Refused with `EINVAL`; each call makes a new descriptor |
 
