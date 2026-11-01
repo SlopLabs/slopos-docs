@@ -70,7 +70,7 @@ the highest tier that has one ready:
 | Tier | Used by | Who can choose it |
 |------|---------|-------------------|
 | High | The compositor, which every window's frames pass through | A spawner holding the `SchedHigh` capability; init starts the compositor there |
-| Kernel I/O | Kernel threads that devices and the filesystem depend on: the network's receive and timer threads, the USB threads, the filesystem's flusher | Kernel only |
+| Kernel I/O | Kernel threads that devices and the filesystem depend on, such as the network's receive and timer threads, the USB threads and the filesystem's flusher | Kernel only |
 | Normal | Ordinary programs and kernel threads (the default) | Anyone |
 | Low | Background work | Anyone |
 | Idle | The CPU's idle loop, which runs when nothing else can | Kernel only |
@@ -87,9 +87,9 @@ with `EACCES` without it. The scheduler ignores the value either way.
 Strict priority on its own would let a busy Normal task keep a Low task from
 ever running. So the scheduler counts how often each tier has been passed over
 while it had work waiting, and gives it one turn once that count reaches a
-small limit. The rule doesn't apply to High or Kernel I/O, because other work
-depends on them: a background job run ahead of the thread that delivers
-network packets would stall the network.
+small limit. A turn owed this way never goes ahead of a ready High or Kernel
+I/O task, because other work depends on them: a background job run ahead of
+the thread that delivers network packets would stall the network.
 
 ## How a task waits without using a CPU
 
@@ -104,9 +104,9 @@ The kernel keeps a *wait queue* for each thing that can be waited for: data
 arriving in a pipe, a child exiting, a lock coming free. A task that needs to
 wait adds itself to the right queue, marks itself blocked and gives up its
 CPU. Whatever makes the thing happen, such as a writer putting data into the
-pipe, then *wakes* the queue, which makes every task on it ready to run
-again. A woken task checks that what it waited for is there, and waits again
-if not.
+pipe, then *wakes* the queue, which makes one task on it, or all of them,
+ready to run again. A woken task checks that what it waited for is there, and
+waits again if not.
 
 ### Why a wakeup can get lost
 
@@ -151,9 +151,10 @@ chooses which of these reasons apply:
 - **The task was killed.** Almost every wait ends at once on a kill, which is
   what lets `kill -9` stop a program blocked in a system call.
 - **A signal arrived.** Waits inside a slow system call, such as reading from
-  an empty pipe, also end when a signal arrives that the program handles. The
-  call fails with `EINTR`, or is restarted if the handler was installed with
-  `SA_RESTART` (see
+  an empty pipe, also end when a signal arrives that the program has not
+  blocked. If the program handles it, the call fails with `EINTR`, or is
+  restarted if the handler was installed with `SA_RESTART`; a signal whose
+  default action ends or stops the program does that on the way out (see
   [Processes and signals](/docs/architecture/processes#how-a-signal-is-delivered)).
 - **Time ran out.** A wait can have a deadline, as `poll` with a timeout
   does.
