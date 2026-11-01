@@ -69,11 +69,12 @@ one is about CI.
   bits rather than unmapping itself, which is the defence Linux added against
   Meltdown ([User mode and kernel mode](/docs/architecture/privilege-separation)).
   No plan.
-- **Safe kernel code can write the control registers.** The trusted core
-  exports `write_cr0`, `write_cr3` and `write_cr4` as safe functions taking
-  a raw value, so a safe crate can load any page-table root
-  ([The framekernel](/docs/verification/framekernel)). Not yet recorded in
-  `plans/KNOWN_ISSUES.md`.
+- **Safe kernel code can write the processor's control registers.** The
+  trusted core exports `write_cr0`, `write_cr3`, `write_cr4` and `write_msr`
+  as safe functions taking a raw value, and `write_msr` any register number,
+  so a safe crate can load any page-table root or move the system-call entry
+  point ([The framekernel](/docs/verification/framekernel)). Not yet recorded
+  in `plans/KNOWN_ISSUES.md`.
 - **A program's divide error stops the machine.** An integer division by zero
   or a stack fault in user mode is handled as a kernel error and panics the
   whole machine, where it should end only the program

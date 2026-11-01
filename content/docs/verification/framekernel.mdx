@@ -11,9 +11,10 @@ the network stack and every driver are written in safe Rust, and the compiler
 refuses `unsafe` in them. So if you are reading a driver and wondering whether
 a bug in it could corrupt the kernel's memory through the CPU, the answer is
 no, provided the trusted core is correct. (A device the driver programs is
-another matter: it writes memory directly, as [below](#what-it-doesnt-promise)
-explains.) You get a much smaller thing to check: one crate instead of the
-whole kernel.
+another matter, because it writes memory directly, and so is one known gap in
+the trusted core's interface; [below](#what-it-doesnt-promise) explains
+both.) You get a much smaller thing to check: one crate instead of the whole
+kernel.
 
 The design is called a *framekernel*, and it is not ours. It comes from
 [Asterinas](https://asterinas.github.io/book/kernel/the-framekernel-architecture.html),
@@ -36,7 +37,7 @@ program has *undefined behaviour*, which can surface as a crash, as silently
 wrong data, or as a security hole far from the cause.
 
 A kernel can't do its job without such blocks. It writes the CPU's control
-registers to switch to another program's memory or to turn interrupts off,
+registers to switch to another program's memory, turns interrupts off and on,
 edits the page tables that decide which memory each program may see (see
 [Memory](/docs/architecture/memory)), reads and writes device memory, and
 saves and loads registers when it switches tasks. The compiler has no idea
@@ -46,10 +47,10 @@ contains some `unsafe` code, and the design choice is where to put it.
 
 ## What changes when it lives in one crate
 
-In most kernels, Rust or not, the `unsafe` code sits next to the code that
-needs it: a driver contains the few lines that poke its device, the scheduler
-contains its own context switch. That works, but it means a memory-safety bug
-can start in any file. To be confident the kernel is memory-safe you would
+In most Rust kernels the `unsafe` code sits next to the code that needs it:
+a driver contains the few lines that poke its device, the scheduler contains
+its own context switch. (In a kernel written in C, every line has that
+power.) That works, but it means a memory-safety bug can start in any file. To be confident the kernel is memory-safe you would
 have to read all of it.
 
 A framekernel splits the kernel in two.
@@ -117,12 +118,12 @@ slipped in somewhere is caught even if the lint was weakened.
 arrives through a macro. When a macro defined in another crate expands to
 `unsafe` code, rustc doesn't report the lint at the place where the macro was
 used, and the source there contains no `unsafe` keyword for a search to find.
-So a check expands every kernel crate the way the compiler does
+So a check expands each of those crates the way the compiler does
 (`-Zunpretty=expanded`), with and without the features that build its tests,
 and searches the result. The rule is fixed rather than a recorded count: no
 executable `unsafe` at all, and `unsafe impl` and `unsafe` attributes only
-from short named lists, such as the traits OSTD's derives implement and the names of the
-three functions that assembly code calls.
+from short named lists, such as the traits OSTD's derives implement and the
+names of the three functions that assembly code calls.
 
 **The linked kernel is checked last.** A crate pulled in from crates.io
 expands its own macros where no source scan sees them. The final check reads
@@ -150,15 +151,19 @@ OSTD hands an obligation to its caller, and there are three kinds:
 The last kind is the one that matters. A safe function with a `# Safety`
 section admits that safe code can break it, which is exactly what a
 framekernel must not allow. A check counts the `pub` and `pub(crate)`
-functions in OSTD that carry one and holds the count at zero, and every
-contract it once counted has been turned into a type.
+functions in OSTD that carry one and holds the count at zero: each contract
+it once counted has become a type the caller must hold or an `unsafe fn`,
+or its function has left the safe surface.
 [Safety gates](/docs/verification/tcb-discipline) shows how to count the
-other two.
+other two. The check reads only `# Safety` sections, so a safe function that
+is unsound and says nothing about it passes ([below](#what-it-doesnt-promise)).
 
-The gates also print the share of kernel source lines that are `unsafe`
-(`just tcb-ratio`) and fail above 1 percent. Watch it as a trend. It counts
-source lines, while published figures for other kernels measure compiled
-code, so the two can't be compared.
+The gates also print the share of kernel source lines that contain `unsafe`
+(`just tcb-ratio`) and fail above 1 percent. Watch it as a trend, not as the
+size of the trusted core: it counts only the lines that carry the keyword,
+while the figure the Asterinas paper reports counts every line of the
+trusted crates that ends up in the linked kernel, so the two can't be
+compared.
 
 ## What it doesn't promise
 
@@ -171,8 +176,11 @@ than checked.
 
 - **Safe code can still be wrong.** A driver in safe Rust can deadlock, panic,
   leak memory, give a program the wrong answer or send a device the wrong
-  data, and a kernel panic still takes the machine down. What it can't do is
-  corrupt memory through the CPU.
+  data. A panic in a system call or a kernel thread ends only that task (an
+  [oops](/docs/development/diagnostics#a-program-died-with-an-oops)), and
+  anywhere else, such as an interrupt handler, it takes the machine down.
+  What safe code can't do, over a sound trusted core, is corrupt memory
+  through the CPU.
 - **Devices can write memory directly.** Disks and network cards copy data
   straight into RAM, at addresses the driver gives them. SlopOS doesn't yet
   program the hardware unit (an *IOMMU*) that would confine each device to its
@@ -185,10 +193,14 @@ than checked.
 - **The trusted core's interface has a known hole.** OSTD exports the
   functions that write the processor's control registers (`write_cr0`,
   `write_cr3`, `write_cr4`) as safe functions taking any raw value, and the
-  memory manager, which forbids `unsafe`, calls all three. Safe code can
-  therefore load any page-table root or switch off a protection bit. Nothing
-  outside the memory manager calls them today, and no gate catches a safe
-  function like these that carries no written contract.
+  memory manager, which forbids `unsafe`, calls all three; nothing else
+  outside OSTD does. The function that writes a model-specific register
+  (`write_msr`) is safe too and takes any register number, the system-call
+  entry address and the no-execute switch among them, and the boot code,
+  drivers, the scheduler, the system-call layer and the memory manager all
+  call it. So safe code can load any page-table root, switch off a
+  protection bit or redirect system calls. No gate catches a safe function
+  like these, because none of them carries a written contract.
 - **Some code outside OSTD is trusted too.** The kernel links two vendored
   libraries, a stack unwinder and the debugging-information reader it uses,
   and they contain `unsafe`. They are pinned to an exact upstream version and
