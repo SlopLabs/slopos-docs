@@ -9,9 +9,11 @@ SlopOS is written in Rust, and all of the kernel's own `unsafe` code lives in
 one crate, the *trusted core*. The scheduler, the memory manager, the filesystem,
 the network stack and every driver are written in safe Rust, and the compiler
 refuses `unsafe` in them. So if you are reading a driver and wondering whether
-a bug in it could corrupt the kernel's memory, the answer is no, provided the
-trusted core is correct. You get a much smaller thing to check: one crate
-instead of the whole kernel.
+a bug in it could corrupt the kernel's memory through the CPU, the answer is
+no, provided the trusted core is correct. (A device the driver programs is
+another matter: it writes memory directly, as [below](#what-it-doesnt-promise)
+explains.) You get a much smaller thing to check: one crate instead of the
+whole kernel.
 
 The design is called a *framekernel*, and it is not ours. It comes from
 [Asterinas](https://asterinas.github.io/book/kernel/the-framekernel-architecture.html),
@@ -138,7 +140,7 @@ OSTD hands an obligation to its caller, and there are three kinds:
 | What | What it means |
 |---|---|
 | `pub unsafe fn` | Functions a caller can only use inside `unsafe`, which means only from inside OSTD or the few listed exceptions |
-| `pub unsafe trait` | Traits whose implementer promises something the compiler can't check, mostly "this type is valid when every byte is zero" and similar |
+| `pub unsafe trait` | Traits whose implementer promises something the compiler can't check, such as "this type is valid when every byte is zero" or "this type can be linked into an intrusive list" |
 | Safe functions with a written safety contract | Functions that are safe to call but document conditions the caller must meet |
 
 The last kind is the one that matters. A safe function with a `# Safety`
@@ -179,9 +181,11 @@ than checked.
   libraries, a stack unwinder and the debugging-information reader it uses,
   and they contain `unsafe`. They are pinned to an exact upstream version and
   content hash instead of being rewritten. The kernel binary's own crate also
-  contains the global allocator declaration, which Rust requires there, and
-  the note that names the [base interfaces](/docs/architecture/base) the
-  kernel serves.
+  contains the assembly entry point the boot loader jumps to, the global
+  allocator declaration, which Rust requires there, and the note that names
+  the [base interfaces](/docs/architecture/base) the kernel serves. OSTD's
+  derive macros, a crate of their own, write the `unsafe impl` lines of the
+  traits they derive.
 - **Some rules are held by scripts, not by the compiler.** Apart from the
   `forbid` lint, the checks above are scans of source text, of macro
   expansions and of the linked image.

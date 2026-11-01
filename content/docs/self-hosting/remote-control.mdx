@@ -119,10 +119,11 @@ and runs these actions without asking anyone:
 privd refuses the agent every other action of the base's policy, and it never
 puts a question on the computer's screen on the agent's behalf. A program the
 agent runs that isn't one of the base's mechanisms gets no privd connection,
-so it can't pass one on to something from outside the base. That includes an
-[extension](/docs/architecture/extensions)'s programs: an extension may name
-the paired agent among those who may ask for its own actions, but none of its
-programs is handed the agent's connection.
+so it can't pass one on to something from outside the base. So the agent
+reaches no [extension](/docs/architecture/extensions)'s own actions either: an
+extension may name the paired agent among those who may ask for them, but
+the base's mechanisms ask only for the base's actions, and none of the
+extension's programs is handed the agent's connection.
 [Privileged actions](/docs/architecture/privd) explains principals and
 levels, and [privd actions](/docs/abi/privd-actions) lists every action.
 
@@ -201,7 +202,7 @@ With the broker running (`just remote-serve`, in a terminal of its own), the
 | `just remote wait --tag T` | Wait until an agent whose kernel carries build tag `T` connects |
 | `just remote run -- ARGV...` | Run a program; `--cwd`, `--env NAME=VALUE`, `--stdin` and `--timeout S` as described above |
 | `just remote sh 'CMDLINE'` | Run a command line through the SlopOS shell |
-| `just remote push LOCAL REMOTE` | Copy a file to an absolute path on the computer |
+| `just remote push LOCAL REMOTE` | Copy a file to an absolute path on the computer; a path ending in `/` keeps the file's name |
 | `just remote pull REMOTE LOCAL` | Copy a file off the computer |
 | `just remote klog [--follow]` | Print the kernel log (`/dev/kmsg`); `--follow` keeps printing new lines |
 
@@ -264,7 +265,7 @@ before it writes anything.
   agent to your broker and receive what you send it: commands, file contents.
   It gains nothing on the computer by that, but don't push secrets to a
   computer you don't trust.
-- **Installs touch only SlopOS's own boot partition.** Kernels and bases go
+- **Kernel and base installs touch only SlopOS's own boot partition.** Kernels and bases go
   in through `bootctl`, which writes the boot partition and the boot loader's
   variables, never the EFI system partition or another system's partitions.
   Commit a kernel only once it has come back with the expected tag, which
@@ -301,8 +302,8 @@ address.
 
 Frames are a 5-byte header (kind and a big-endian length) and at most 1 MiB
 of payload, with data in chunks of at most 64 KiB; the hello names the
-protocol, the token, the kernel version and tag, the base's tag, the boot id,
-uptime and pid. `remoted` watches for base switches and redials its idle
+protocol, the token, the host name, the kernel version and tag, the base's
+tag, the boot id, uptime and pid. `remoted` watches for base switches and redials its idle
 connection after one, so the broker hears the new base's tag. On `SIGTERM` it
 closes its idle connection, dials no other, and exits once what it is
 serving has finished.

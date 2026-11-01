@@ -44,13 +44,14 @@ that matches nothing gives `1..0`.
 ## Result lines
 
 ```text
-KTAP	ok 17 - slopos_mm::tests::heap::test_heap_kzalloc_zeroed # time_ms=3
-KTAP	ok 18 - slopos_core::tests::sched::test_slow_path # time_ms=812 OVER_TIME
-KTAP	ok 19 - slopos_net::tests::tcp_live::test_loopback_handshake # SKIP test returned Skipped
-KTAP	not ok 42 - slopos_core::tests::sched::test_priority_inversion # time_ms=11
+KTAP	ok 17 - slopos_mm::tests::tests::test_heap_kmalloc_zeroed # time_ms=3
+KTAP	ok 18 - slopos_mm::tests::tests::test_heap_large_alloc # time_ms=812 OVER_TIME
+KTAP	ok 19 - slopos_net::tests::tcp_tests::test_tcp_parse_minimal_header # SKIP test returned Skipped
+KTAP	not ok 42 - slopos_net::tests::tcp_tests::test_tcp_parse_too_short # time_ms=11
 ```
 
-The name is `module::test`. The text after `#` holds:
+The name is the Rust module path of the registration and the test's name.
+The text after `#` holds:
 
 | Token | Meaning |
 |---|---|
@@ -58,7 +59,7 @@ The name is `module::test`. The text after `#` holds:
 | `NO_TIME_BASE` | In place of `time_ms` when no clock was available |
 | `OVER_TIME` | Passed, but slower than `tests.warn_ms` |
 | `EXPECTED_PANIC` | The test was registered as expecting a panic, and panicked |
-| `SKIP <reason>` | Skipped; KTAP writes a skip as `ok` |
+| `SKIP <reason>` | Skipped; KTAP writes a skip as `ok`. A kernel test's reason is always `test returned Skipped` |
 
 With `tests.verbosity=quiet` the harness prints only failing results, and
 of the subtest lines below only the failing ones.
@@ -70,7 +71,7 @@ A failing test is followed by a block in YAML style:
 ```text
 KTAP	  ---
 KTAP	  outcome: Fail
-KTAP	  file: core/src/sched/tests.rs:1832
+KTAP	  file: net/src/tests/tcp_tests.rs:1694
 KTAP	  log: |
 KTAP	   captured klog line
 KTAP	   --- cpu2 ---
@@ -81,7 +82,7 @@ KTAP	  ...
 | Key | Meaning |
 |---|---|
 | `outcome` | `Fail` or `Panic` |
-| `file` | Source location of the failure |
+| `file` | Where the test is registered: the file and line of its `stest!` or `utest!`, not of the failure |
 | `log` | Kernel log captured while the test ran: the harness CPU first, then a `--- cpuN ---` section for each other CPU that logged |
 
 When the capture was cut short, the log contains `[head trimmed: N bytes]`
@@ -90,29 +91,32 @@ When the capture was cut short, the log contains `[head trimmed: N bytes]`
 capture buffer wrapped; the text says `cpu0` whichever CPU that is). With
 `tests.verbosity=verbose` a passing test may print a block with only `log`.
 A test registered with `FLAG_UNCAPTURED` has no captured log, so its block has
-no `log` key.
+no `log` key and no closing `...` line.
 
 ## Subtests
 
 A `utest!` program reports its individual cases with the `test_report` system
-call. The kernel prints each case as an indented line, before the parent's
-result line:
+call. Once the program has exited, the kernel prints each case as an
+indented line, before the test's own result line:
 
 ```text
-KTAP	  ok 1 - alloc_basic
-KTAP	  ok 2 - alloc_large # 4 MiB in 3 ms
-KTAP	  not ok 3 - alloc_zero # zero-size returned null
-KTAP	  ok 4 - alloc_huge # SKIP
+KTAP	  ok 1 - alloc_dealloc_basic
+KTAP	  ok 2 - forward_coalesce # 64 blocks merged
+KTAP	  ok 3 - mmap_fallback # SKIP
 KTAP	ok 5 - slopos_core::utests::utest_heap_allocator # time_ms=234
 ```
 
 - The parser collects indented lines and attaches them to the next
   top-level result.
 - On a passing case, text after `#` is a note; only `SKIP` changes the
-  outcome. On a failing case it is the failure message.
+  outcome. A failing case is `not ok N - name # message`, and any failing
+  case fails the test, so its own result line is `not ok` too.
 - Notes and messages are cut to their first line. The `test_report` call
   already cut a name at 64 bytes and a note or message at 128.
 - A skipped case is `ok N - name # SKIP`, with no reason.
+- The kernel keeps at most 192 cases for one test
+  (`TEST_REPORT_RING_CAPACITY`). Past that it drops the rest and adds a
+  failing case named `report_ring_overflow`.
 - Subtest lines go straight to the console rather than through the per-test
   log capture, so a long test that overflows the capture cannot lose them.
 
@@ -198,7 +202,7 @@ naming the event. Every field is always present; a missing value is `null`.
   and `bail` (the bail-out reason, or `null`).
 
 ```json
-{"expected_panic":false,"fail_file":null,"fail_outcome_kind":null,"idx":17,"log":null,"name":"slopos_mm::tests::heap::test_heap_kzalloc_zeroed","outcome":"pass","over_time":false,"phase":"kernel","phase_idx":1,"pre_fail_klog_tail":null,"skip_reason":null,"subtests":[],"t":"test","time_ms":3}
+{"expected_panic":false,"fail_file":null,"fail_outcome_kind":null,"idx":17,"log":null,"name":"slopos_mm::tests::tests::test_heap_kmalloc_zeroed","outcome":"pass","over_time":false,"phase":"kernel","phase_idx":1,"pre_fail_klog_tail":null,"skip_reason":null,"subtests":[],"t":"test","time_ms":3}
 ```
 
 ## See also

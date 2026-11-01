@@ -87,6 +87,10 @@ Make both executable, or the image will not count them as programs:
 chmod +x hello/bin/hello hello/libexec/hellod
 ```
 
+The base has no `chmod`, so on the machine write each script somewhere else
+first and copy it into place with `install`, which makes the copy
+executable: `install hellod.sh $HOME/hello/libexec/hellod`.
+
 [Extension images](/docs/abi/extension-images) lists everything a
 declaration can say: more users, state and settings directories, sockets,
 privileged actions, apps.
@@ -125,7 +129,7 @@ extension, its version and the image's root.
 Pack it into `/var/tmp`, where the install in step 4 can read it:
 
 ```bash
-extctl build ~/hello /var/tmp
+extctl build $HOME/hello /var/tmp
 ```
 
 ```text
@@ -193,8 +197,9 @@ extctl key add /var/tmp/slopos-extension.pub ceiling - user -
 ```
 
 The terminal prints `extctl: waiting for you to allow this on the screen`
-and the desktop asks you to allow it; *Show details* lists the command line,
-with the key's fingerprint and both ceilings. Choose *Change*.
+and the desktop asks you to allow it. The details under the question show
+the command line, with the key's fingerprint and both ceilings. Choose
+*Change*.
 
 </Tab>
 </Tabs>
@@ -239,8 +244,9 @@ extctl install hello.ext
 
 The terminal prints `extctl: waiting for you to allow this on the screen`.
 The desktop asks whether to install an extension and give it what it asks
-for; *Show details* lists the command line, which names the image's root and
-the grant, `grant - unasked - users hello commands hello`. Choose *Install*:
+for. The details under the question show the command line, which names the
+image's root and the grant, `grant - unasked - users hello commands hello`.
+Choose *Install*:
 
 ```text
 hello 1 installed; it runs as activation 2

@@ -143,28 +143,20 @@ program.
 
 ### What init hands out
 
-Init starts each program it supervises with what its service table names, and
-runs the boot-time jobs the same way:
-
-| Init starts | As | Holding, beside the universal capabilities |
-|---|---|---|
-| `/sbin/privd` | uid 0 | Every capability an action may name, and `SetId` |
-| `/bin/compositor`, for a person's desktop or the login screen | the person, or `greeter` | `DisplaySeat` and `InputSeat`, at the `High` tier |
-| `/bin/terminal` (or, on a live boot, `/bin/installer-ui --welcome`), the shell of a console login, `/bin/remoted` | the person | nothing |
-| `/bin/login`, the console's prompt | `greeter` | nothing |
-| `/bin/roulette` | the first person | `DisplaySeat` |
-| `bootctl collect`, at boot | uid 0 | `RawBlock` and `Power` |
-| `users sync`, at boot | uid 0 | `Seal` |
-| `extctl activate-all`, at boot | uid 0 | `ExtensionUpdate` and `Seal` |
-| an extension's service | the extension's own user | what it declares, within its grant |
+Init starts each program it supervises with what its service table names and
+nothing more. privd gets every capability an action may name, and `SetId`.
+Each compositor, a person's desktop or the login screen, gets `DisplaySeat`
+and `InputSeat`, and the Wheel of Fate gets `DisplaySeat`. A boot-time job
+gets what its one job needs, and an extension's service what it declares
+within its grant. What init starts as a person (their terminal, a console
+login's shell, `remoted`) and the console's login prompt hold nothing gated.
+[Init and services](/docs/architecture/init#what-init-starts-and-in-what-order)
+lists every program init starts, as whom, and holding what.
 
 An action may name any gated capability but the seat capabilities,
 `SeatSwitch`, `SchedHigh`, `SetId` and `TestHarness`, so nothing privd starts
 holds those. privd holds `SetId` only to start a mechanism as someone other
 than uid 0: an extension's own user, or the person who asked.
-[Init and services](/docs/architecture/init) covers what init does with these
-programs, and [Sessions and login](/docs/architecture/sessions) who "the
-person" is when several people are logged in.
 
 ### Example: powering off from a terminal
 
@@ -176,8 +168,8 @@ other mechanisms, it notices that and asks privd instead: it connects to
 `/run/privd` and sends its own arguments, which privd matches to the action
 `org.slopos.power.poweroff`. The policy lets a person run that one
 unasked while nobody else is logged in. privd then starts a second `/bin/halt`
-as its own child, as uid 0 holding `Power` and nothing else, and that one
-powers the machine off. The first `halt` waits for it and exits with its
+as its own child, as uid 0 holding `Power` and no other gated capability, and
+that one powers the machine off. The first `halt` waits for it and exits with its
 status.
 
 Two things keep this safe. privd can only hand over what it holds itself, which
@@ -249,8 +241,8 @@ target, and a signal goes through only if both of these hold:
   more.
 
 Holding `ProcSignal` waives both. `SIGCONT` to a process in the sender's own
-session needs neither, so a shell's `fg` can resume a job that holds more than
-the shell. Nobody may signal init (`EPERM`), and naming a kernel thread gives
+POSIX session (the processes sharing a terminal, which `setsid` starts) needs
+neither, so a shell's `fg` can resume a job that holds more than the shell. Nobody may signal init (`EPERM`), and naming a kernel thread gives
 `ESRCH`, as if it didn't exist. A signal aimed at a whole group skips the
 members the sender may not signal.
 
@@ -271,7 +263,7 @@ a forgotten one is a silent hole that only a reviewer can catch. In SlopOS
 every system call declares, where it is defined, which capability it needs, or
 which of three reasons it needs none: it acts only on the caller, only on a
 descriptor the caller holds, or on a relationship between caller and target
-that it checks itself (parent and child, the same session). A system call
+that it checks itself (parent and child, the same POSIX session). A system call
 without a declaration doesn't compile, and the dispatcher checks the declared
 capability before the handler runs, so the handler can't forget it. SlopRing,
 the asynchronous interface, declares every operation too, and none of them may
@@ -326,8 +318,11 @@ its spawner lacks, that `caps_drop` reaches every thread of a process, and that
 between real processes, including that no base program gains a capability by
 its path and that a person's session holds nothing gated. A machine-checked
 proof covers the arithmetic: no step widens a mask, `exec` leaves only the
-universal capabilities, a spawn is bounded by its spawner, and a drop is total. A build-time check over the linked kernel makes
-sure no system call can reach the power-off code without holding `Power`.
+universal capabilities, a spawn is bounded by its spawner, and a drop is
+total. A build-time check over the linked kernel makes sure that every system
+call that can reach the power-off code either needs `Power` or is on a
+reviewed list that says why (the Wheel of Fate's result, which may restart the
+machine, is one).
 
 ## For contributors
 

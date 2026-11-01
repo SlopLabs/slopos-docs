@@ -34,6 +34,8 @@ up to the memory manager, a safe crate. Roughly:
 | Tasks | The task object, the reference that owns it, putting tasks on and off queues, the context switch, saving floating-point state |
 | Processes | The process object, its user and group ids, its resource accounts, the capability mask described in [Capabilities](/docs/architecture/authority), and the identity a socket records for the process at its other end |
 | Screen and input | Which task holds the screen and the keyboard and pointer input (the *seats*), handed over by the kernel rather than taken |
+| Devices and firmware | I/O ports and device registers, PCI configuration space, the firmware's ACPI tables, and the UEFI runtime calls that reset the machine and read and write boot variables |
+| Panics | Unwinding a task that hit a kernel panic so the kernel can carry on, through the vendored unwinder; the lockup watchdog; the diagnostic console's command table |
 | User memory | Pointers into a user program's memory, and copying to and from it |
 | Linking | The macros that declare entry points called from assembly and tables that the linker assembles (see [Unsafe code and FFI](/docs/development/unsafe-ffi-boundaries)) |
 | Testing | Stand-ins for hardware so OSTD's own tests run on a normal computer and under [Miri](/docs/verification/kernmiri) |
@@ -129,8 +131,11 @@ When you write a safe kernel crate, a few habits follow from the above:
 
 ## Building large values in place
 
-Kernel stacks are small and fixed in size, and the build fails if any function
-needs more than 2 KiB of stack. That rules out the usual Rust way of building
+Kernel stacks are small and fixed in size, and the build fails if a function
+needs more than 2 KiB of stack, apart from a short list of measured
+exceptions, none of them as large as the 4 KiB guard page below each stack
+(see [Safety gates](/docs/verification/tcb-discipline#kernel-image-gates)).
+That rules out the usual Rust way of building
 a large struct, `KBox::new(Big { .. })`, because the `Big` value is assembled
 on the stack before it is moved to the heap.
 

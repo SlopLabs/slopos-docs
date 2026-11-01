@@ -41,7 +41,7 @@ const PHASES: Phase[] = [
   },
   {
     name: 'Services',
-    note: 'started again when they exit, five times a minute at most',
+    note: 'in this order; all but the Wheel start again when they exit, five times a minute at most',
     steps: [
       {
         title: 'privd',

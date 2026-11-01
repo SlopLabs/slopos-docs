@@ -15,7 +15,7 @@ desktop crashes, it comes back within moments; if a program keeps crashing,
 it comes back at most five times a minute instead of spinning; and logging
 out ends every program the session started, however it was started.
 
-What init does not do is read configuration. There are no unit files: the
+What init does not read is a list of services. There are no unit files: the
 system's own services are written into init itself, so changing them means
 installing a new base, and the only other services are those that installed
 extensions declare. This page walks through what init starts and in what
@@ -81,7 +81,9 @@ covers what happens from there.
 Every program init starts is given exactly the capabilities it needs,
 beside the universal ones every program holds. Init itself holds them all,
 so the table below is the whole of what it hands out
-([Capabilities](/docs/architecture/authority) explains the mask):
+([Capabilities](/docs/architecture/authority) explains the mask). The
+compositor also runs at the `High` scheduling tier, which init's
+`SchedHigh` lets it choose:
 
 | Program | Runs as | Capabilities | Started again when it exits |
 |---|---|---|---|
@@ -95,6 +97,8 @@ so the table below is the whole of what it hands out
 | `/bin/compositor` | the session's person, or `greeter` for the login screen (`--greeter`) | `DisplaySeat`, `InputSeat` | Yes, with its session |
 | `/bin/terminal`, `/bin/installer-ui --welcome` | the session's person | none | No: it is the session's first window |
 | `/bin/shell` | the person a console login named | none | No: the session ends with it |
+| an extension's service | the extension's own user, or for a session service the first person | what it declares, within its grant | As its declaration says, within the same budget |
+| `/sbin/init --log <service>`, which keeps a service's log | the extension's first user | none | No: it lasts as long as its service |
 | `/sbin/init --run-tests` | uid 0 | `TestHarness` | No: test boots only |
 
 ## Starting a service again
@@ -140,11 +144,12 @@ not the screen.
 Other programs ask init for things through the socket `/run/init`, one
 request line per connection, answered with `ok` or a line starting
 `refused:`. The socket is open to everyone (mode 0666) because init judges
-each connection by who made it, as the kernel recorded it when the
-connection was made: its uid (`SO_PEERCRED`) and whether it runs a program of
-the base (`SO_PEERPROGRAM`). uid 0 on its own is not enough, since being uid
-0 grants no power in SlopOS: system requests come only from uid 0 running a
-base program, which in practice means a mechanism privd started.
+each connection by who made it: its uid, as the kernel recorded it at
+`connect` (`SO_PEERCRED`), and whether it still runs a program of the base
+when its request arrives (`SO_PEERPROGRAM`). Only uid 0 and people may ask
+anything at all. uid 0 on its own is not enough, since being uid 0 grants no
+power in SlopOS: system requests come only from uid 0 running a base program,
+which in practice means a mechanism privd started.
 [Privileged actions](/docs/architecture/privd) explains how a peer's
 program is attested.
 
@@ -157,14 +162,15 @@ program is attested.
 | `locked`, `unlocked` | a desktop's compositor only | Records whether that desktop is locked; a desktop behind stays locked |
 | `restart-session`, `end-session` from outside every session | uid 0 | Every session at once, remoted's aside; after `end-session` none starts until uid 0 restarts them |
 | `restart-session <tag>`, `end-session <tag>` | uid 0 | The session with that login tag |
-| `switch <tag>` | uid 0 | Brings that desktop in front |
+| `switch <tag>` | uid 0 | Brings that desktop, or the login screen, in front |
 | `login desktop <name>`, `login console <name>` | uid 0 | Logs a person in whose password was already checked; a console login hands init its terminal with the request |
 | `extensions` | uid 0 | Starts, stops and replaces extensions' services as the store now says |
 | `reexec` | uid 0 | Re-executes init |
 
 A person's own requests go through `/bin/session` (`session restart`,
 `session end`, `session lock`, `session greeter`), and the compositor's
-system menu sends the same ones for *Log out…* and *Restart desktop…*.
+system menu sends the same ones for *Log out…* and, once a new base has
+changed the desktop's programs, *Restart desktop…*.
 `session status` lists the sessions init keeps:
 
 ```text
@@ -219,24 +225,26 @@ the kernel's base monitor. When the base changes, init compares the new
 base's manifest, which lists the digest of every file, with the one it read
 before, and restarts only what changed:
 
-- **privd**, when its program, its policy or the pairing changed. Init sends
-  it `SIGTERM`, and privd *drains*: it stops taking requests and exits once
-  every request it took is answered. Its successor starts when it exits, or
-  beside it after five seconds, so a mechanism waiting on a person's answer
-  is never cut off.
-- **remoted**, when its program changed. If the pairing itself changed, init
-  ends everything the old broker's agent was running, as it ends a session,
-  before the new remoted starts.
-- **Extensions' services**, when the base's ceiling for extensions changed.
-- **Init itself**, when `/sbin/init` changed (see below).
+| What the new base changes | What init does |
+|---|---|
+| privd's program, its policy under `/usr/share/slopos/privd/`, or the pairing | Sends privd `SIGTERM`. privd *drains*: it stops listening, withdraws any question still waiting on a person, refuses what it reads from then on, and exits once every request it took is answered. The new privd starts when it exits, or beside it after five seconds, so a mechanism already running (one waiting on its terminal, say) is never cut off |
+| `/bin/remoted` | Sends remoted `SIGTERM`: it closes its idle connection to the broker, finishes what it is serving and exits, and the new one starts from the new base |
+| The pairing under `/usr/share/slopos/remote/` | Ends everything the old broker's agent was running (`SIGTERM` and `SIGCONT`, then `SIGKILL` after five seconds), then starts remoted again if the new base is paired |
+| `/sbin/init` | Re-executes itself once nothing is starting or ending (see below) |
+| The extensions' ceiling, `/usr/share/slopos/privd/extensions` | Reads the extensions' services again, and replaces those whose grant the new ceiling changes ([Extensions](/docs/architecture/extensions)) |
+| `/bin/compositor` or `/bin/terminal` | Nothing. The compositor shows *Restart the desktop to finish updating* in its system menu, with *Restart desktop…* under it, and leaves the choice to its person |
+| Anything else | Nothing. Each program picks up the new version the next time it starts |
+
+A restart for a new base clears that service's start budget, and init says
+what it does:
 
 ```text
 init: the new base changes privd; it drains and starts again
 ```
 
-Sessions keep running. A desktop whose compositor or terminal changed is not
-restarted under its person; the compositor shows *Restart the desktop to
-finish updating* in its system menu and leaves the choice to them.
+Sessions keep running through all of it. A program of your own can follow
+switches too: the `base_monitor` system call returns a descriptor that turns
+readable at each switch, and reading it gives the current generation number.
 
 ## Replacing init itself
 
@@ -248,7 +256,8 @@ on with the same process id, the same children and the same capabilities.
 The state is plain text: the services and their recent starts, each
 session's tag, person, class, leader and lock state, the consent links to
 privd, and the request that asked for the exec, which the new image answers.
-Extensions' services go in further pipes of their own, named after the first.
+Extensions' services go in further pipes of their own, which the command line
+names after the first.
 
 Three things make this safe:
 
@@ -276,8 +285,9 @@ init: re-executed
 ## Extensions' services
 
 Init also runs the services that installed extensions declare, as the
-extension's own users (or, for a session service, as the person whose
-desktop runs), holding what the extension was granted. Each gets
+extension's own users (or, for a session service, as the first person while
+their desktop runs), holding what each service declares within the
+extension's grant. Each gets
 `/dev/null` as input, the readiness notifier on descriptor 3, the sockets init
 listens on for it from descriptor 4 (named in `LISTEN_FDS` and
 `LISTEN_FDNAMES`, as systemd's socket activation does), and a log at
@@ -345,7 +355,7 @@ cover the sessions and the extensions' services.
 - [*systemd.unit(5)*](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html),
   under `StartLimitIntervalSec=` and `StartLimitBurst=`. The start limit init's
   budget counts like, and what systemd does past it.
-- [*NixOS manual: switching configurations*](https://nixos.org/manual/nixos/stable/#sec-switching-systems).
+- [*NixOS manual: What happens during a system switch?*](https://nixos.org/manual/nixos/stable/#sec-switching-systems).
   An ordered account of restarting only the services a new system changed,
   the model for what init does when a base changes.
 - [*systemctl(1)*](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html),

@@ -158,10 +158,10 @@ line decides:
   a port never changes what boots. It falls back to memory otherwise, and
   when a disk is present but refused writes, mounts it read-only at `/mnt`.
 - `root=disk` insists on the disk, and fails the boot without one.
-- `root=initramfs` unpacks the base into memory and uses that as `/`. Nothing
-  written to it survives a reboot. The kernel mounts no disk it wasn't asked
-  to with a `mount=` option, except the install medium's own, so a live
-  system never touches another system installed on the same machine.
+- `root=initramfs` builds `/` in memory from the base, so nothing written to
+  it survives a reboot. The kernel mounts no disk it wasn't asked to with a
+  `mount=` option, except the install medium's own, so a live system mounts
+  nothing of another system installed on the same machine.
 - `root=` followed by a device takes any spelling a mount accepts:
   `nvme0n1p2`, `/dev/vda`, `PARTUUID=…`, `UUID=…` or `LABEL=…`. If the device
   isn't there yet, the kernel waits for USB to finish finding its devices,
@@ -170,11 +170,10 @@ line decides:
   line in the log saying so.
 
 Either way, the system's own programs come from the base that Limine loaded,
-not from the disk. The kernel mounts the base read-only over `/bin`, `/sbin`,
-`/lib`, `/usr/bin`, `/usr/share` and `/etc/ssl`, and no program can unmount
-it, so the system's programs always come from a base and never from the disk,
-whatever the disk holds at those paths. The disk
-holds everything else: settings, home directories, software installed under
+not from the disk: the kernel mounts the base read-only over `/bin`, `/sbin`,
+`/lib`, `/usr/bin`, `/usr/share` and `/etc/ssl`, where no program can unmount
+or cover it, whatever the disk holds at those paths. The disk holds
+everything else: settings, home directories, software installed under
 `/usr/local` and on the development machine a checkout of the source.
 [Filesystem](/docs/architecture/filesystem) explains the mounts, and
 [Crash recovery](/docs/architecture/crash-recovery) explains what happens when
@@ -317,7 +316,9 @@ A few command-line options change the boot path:
 - `usb.settle_ms=` sets how long the boot waits for a USB disk that `root=`
   or a `mount=` names.
 
-When you build an ISO, `BOOT_CMDLINE` sets the whole line, for example:
+When you build an ISO, `BOOT_CMDLINE` sets the line (`tests=off
+root=initramfs` unless you give one), and `DEBUG=1` and `ROULETTE=0` add
+their options to it, for example:
 
 ```bash
 BOOT_CMDLINE='root=initramfs boot.debug=on' just boot-log

@@ -23,10 +23,11 @@ paragraph names).
 QEMU is the main platform: every test runs there, on an emulated PC with
 UEFI firmware, NVMe, virtio and USB disks, a virtio network card, a virtio
 display and two kinds of USB controller. One real machine, a Lenovo laptop,
-runs the system installed on its own NVMe disk, with our Intel Xe display
+ran the system installed on its own NVMe disk, with our Intel Xe display
 driver drawing the desktop, its Realtek wired network card online, and USB
-keyboards and mice. [Hardware](/docs/status/hardware-requirements) says
-exactly what was tried on it and when.
+keyboards and mice; the last results recorded from it are of 2026-10-11.
+[Hardware](/docs/status/hardware-requirements) says exactly what was tried on
+it and when.
 
 ## The kernel
 
@@ -39,9 +40,11 @@ waking task on the best idle core ([CPU frequency](/docs/architecture/cpu-freque
 Programs run in the processor's restricted mode and reach the kernel only
 through system calls ([User mode and kernel mode](/docs/architecture/privilege-separation)).
 The kernel answers 146 system calls by Linux's numbers and calling convention,
-so ported C and Rust code finds the calls it expects, and a call it lacks
-fails with `ENOSYS`; 53 more are SlopOS's own, numbered as the *base
-interface* the kernel serves, interfaces 10 to 12 at this commit
+so ported C and Rust code finds the common calls where it expects them, and a
+call it lacks fails with `ENOSYS`. 53 more are SlopOS's own: the private
+range has 54 numbers, one of them retired and answering `ENOSYS`. Those calls
+make up the *base interface*, numbered so that a kernel can say which bases it
+serves, interfaces 10 to 12 at this commit
 ([System calls](/docs/architecture/syscalls)). The counts are the handlers in
 the kernel's two dispatch tables (`core/src/syscall/handlers.rs`), and the
 interfaces are `BASE_INTERFACE_MIN` and `BASE_INTERFACE` in
@@ -54,8 +57,9 @@ lazily and shared copy-on-write after `fork`, files can be mapped into memory,
 and a private mapping that could never be backed is refused when it is made
 rather than killed later ([Memory](/docs/architecture/memory)). Each person's
 processes, and each process, have limits on what they can hold, and when
-memory runs out the kernel kills the process holding the most of what was
-missing ([Resource limits](/docs/architecture/resource-accounting)).
+memory runs out the kernel ends the process holding the most of what was
+missing, never one holding a capability the process that ran out lacks
+([Resource limits](/docs/architecture/resource-accounting)).
 
 When the kernel hits a bug, it can often recover from the panic instead of
 freezing; a key combination prints what every CPU and task is doing even when
@@ -77,15 +81,15 @@ desktop, which locks behind them. A text console has a login prompt too
 What a program may do is a set of named capabilities it was handed when it
 started, never something its path or its user id earns
 ([Capabilities](/docs/architecture/authority)); there are 22 of them, the bits
-`abi/src/caps.rs` defines. A person's programs hold none that change the
-system: the most any of them holds is their compositor's hold on the screen
-and the input. When one needs more (to install a kernel, add a person or
-power the machine off), it asks a broker, privd, which carries out one of 34
-named actions (the `action` lines of the base's policy,
-`assets/privd/actions`) after asking the person in a dialog when the action
-says so;
-`priv` runs a command with more power the same way, as `sudo` would
-([Privileged actions](/docs/architecture/privd)).
+`abi/src/caps.rs` defines. The programs init starts for a person's session
+hold none that change the system: the most any of them holds is their
+compositor's hold on the screen and the input. When one needs more (to
+install a kernel, add a person or power the machine off), it asks a broker,
+privd, which carries out one of 34 named actions (the `action` lines of the
+base's policy, `assets/privd/actions`, to which an installed extension may add
+its own), after asking the person in a dialog, or at a text console's prompt,
+when the action says so. `priv` runs a command with more power the same way,
+as `sudo` would ([Privileged actions](/docs/architecture/privd)).
 
 ## Disks and files
 
@@ -115,9 +119,10 @@ audio device, serial adapter or printer does nothing.
 
 The network stack speaks IPv4, TCP, UDP, DHCP and DNS over QEMU's virtio card,
 Realtek's RTL8168h and RTL8168M wired cards and USB Ethernet adapters, each
-configured by DHCP when it appears, and Unix sockets connect local programs. An in-tree TLS
-1.3 client lets `curl` fetch pages over HTTPS, and on the development machine
-`git` clones over HTTPS and ssh ([Networking](/docs/architecture/networking)).
+configured by DHCP when it appears, and Unix sockets connect local programs.
+An in-tree TLS 1.3 client lets `curl` fetch pages over HTTPS, and on the
+development machine `git` clones over HTTPS (through the toolchain's own
+libcurl) and over ssh ([Networking](/docs/architecture/networking)).
 Works with limits: IPv4 only.
 
 ## Programs and the desktop
@@ -145,8 +150,8 @@ The live ISO is an install medium: written to a USB stick, it boots the
 system from memory, and its installer (a window, or a command with every
 answer as a flag) installs SlopOS onto a whole disk, into free space beside
 another system, or over an existing partition, sharing the disk's EFI system
-partition. The same medium opens a rescue shell on an installed system
-([Installing SlopOS](/docs/self-hosting/installing)). Works with limits: an
+partition when it has one. Booted from the same medium, a rescue shell can
+repair an installed system ([Installing SlopOS](/docs/self-hosting/installing)). Works with limits: an
 install from a live system with 512 MiB of memory, the size `just boot-live`
 gives it, dies writing the boot slots ([Known
 limitations](/docs/status/known-limitations#installing-and-updating)).
@@ -185,9 +190,10 @@ userland phases. Host-side unit tests run beside it, and longer checks boot
 their own machines to cover USB hotplug, installs, updates, remote control and
 self-hosting ([Write tests](/docs/development/adding-tests)).
 
-All of the kernel's own `unsafe` Rust sits in one crate, `slopos-ostd`, which
-build gates enforce; the two pinned third-party libraries it links, the
-unwinder and the DWARF reader, carry the rest
+All of the kernel's own `unsafe` Rust sits in one crate, `slopos-ostd` (bar a
+few declarations the kernel binary's own crate has to make), which build gates
+enforce; the two pinned third-party libraries it links, the unwinder and the
+DWARF reader, carry the rest
 ([The framekernel](/docs/verification/framekernel)). Machine-checked proofs
 cover selected parts of its logic and of SlopRing's and TCP's
 ([Proofs](/docs/verification/verus-status)). At this commit:
@@ -229,7 +235,7 @@ cover selected parts of its logic and of SlopRing's and TCP's
 
 Every base carries these programs, listed in `scripts/lib/base.sh`; `init`,
 `privd`, `authcheck` and the e2fsprogs tools are in `/sbin`, the rest in
-`/bin`:
+`/bin`, where `sh` is a link to `shell`:
 
 ```text
 init privd shell coreutils terminal compositor roulette halt bootctl installer

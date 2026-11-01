@@ -23,7 +23,8 @@ What belongs to a session:
   pointer events. A desktop behind draws nothing and receives nothing.
 - **The clipboard.** What you copy in your session can be pasted only there.
 - **Permission questions.** privd asks only the session the request came
-  from, and only while it is in front and unlocked (see
+  from: on a desktop only while it is in front and unlocked, and in a
+  console login at its terminal (see
   [Privileged actions](/docs/architecture/privd)).
 - **Its processes.** Everything a session starts carries its *login tag*, so
   logging out ends all of it and nothing else.
@@ -49,9 +50,10 @@ and one of them is active; [pam_systemd(8)](https://www.freedesktop.org/software
 gives sessions classes such as `user`, `greeter` and `background`, and creates
 each user's runtime directory, `/run/user/$UID`, at their first login and
 removes it at their last logout. SlopOS has these parts and uses those class
-names, with a `console` class of its own for text logins. Its differences: init keeps the table rather than a separate daemon,
-a session's processes are found by a login tag the kernel keeps, and the seat
-moves to the session in front through one system call that only init makes.
+names, with a `console` class of its own for text logins. Its differences:
+init keeps the table rather than a separate daemon, a session's processes are
+found by a login tag the kernel keeps, and the seat moves to the session in
+front through one system call that only init makes.
 
 Ctrl+Alt+Delete as the key that always reaches the system is the idea of a
 [trusted path](https://en.wikipedia.org/wiki/Trusted_path). Linux has a
@@ -108,8 +110,8 @@ LEADER=42
 `ACTIVE` means in front, and `LEADER` is the leader's pid while it runs. A
 console session's file also names its terminal, as `TTY=/dev/pts/2`. Anyone
 may read these files, and `session status` lists them. They are for
-information only: nothing decides anything from them. privd learns the table from init itself, over a socket pair init made
-for it, whenever it changes.
+information only: nothing decides anything from them. privd learns the table
+from init itself, over a socket pair init made for it, whenever it changes.
 
 ## Login tags
 
@@ -213,8 +215,8 @@ wrong ones as a login does. A person without a password unlocks by pressing
 that it locked or unlocked, and init refuses *unlocked* from a desktop that is
 behind. A desktop that went behind is locked from that moment, as far as init
 is concerned, and a compositor that tells init it locked keeps telling it
-every second, for up to a minute, until init has heard. Init remembers the lock across a restart:
-a compositor that crashes comes back locked if init last heard it was locked,
+every second, for up to a minute, until init has heard. Init remembers the
+lock across a restart: a compositor that crashes comes back locked if init last heard it was locked,
 and unlocked if it was not. If any process other than the compositor asks init
 to restart the desktop, it comes back locked.
 
@@ -239,23 +241,20 @@ can pose as the next `slopos login:` prompt.
 
 A console session has no dialog, so privd asks its person at the terminal:
 if carol administers the computer, `priv /bin/true` prints what it wants to
-do and `Password for carol:`, and runs once her password is typed. A person without a password can allow
-nothing there; see [Where the person is asked](/docs/architecture/privd#where-the-person-is-asked).
+do and `Password for carol:`, and runs once her password is typed. A person
+without a password can allow nothing there; see [Where the person is asked](/docs/architecture/privd#where-the-person-is-asked).
 
 ## Logging out and ending a session
 
 *Log out…* in the system menu, or `session end`, asks init to end your
-session. Init ends a session as systemd ends a service (see
-[systemd.kill(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)):
-it sends `SIGTERM` to
-every process carrying the session's login tag, again to each one forked since,
-and `SIGCONT` to each one stopped so that it acts on the signal; after five
-seconds it sends `SIGKILL` to whatever is left, and after ten it gives up and
-answers the request with how many processes would not end. A process forking
-faster than init can signal could outlast it. Processes of the same person
-that carry other tags are not touched: what `remoted` runs for them and what
-privd runs as uid 0 survive. Ending the first person's desktop also ends the
-session services extensions run beside it.
+session. Init ends every process carrying the session's login tag, first with
+`SIGTERM` and after five seconds with `SIGKILL`, and answers once they are
+gone or after ten seconds with how many would not end
+([Init and services](/docs/architecture/init#ending-a-session) gives the
+sequence). Processes of the same person that carry other tags are not
+touched: what `remoted` runs for them and what privd runs as uid 0 survive.
+Ending the first person's desktop also ends the session services extensions
+run beside it.
 
 With nothing left in front, init shows the login screen. `session restart`
 ends the session and starts it again; the system menu offers it as

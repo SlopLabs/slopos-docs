@@ -74,7 +74,8 @@ holds a Rust reference into memory the program can change.
 | Field | Type | Meaning |
 |---|---|---|
 | `opcode` | `u8` | Operation |
-| `flags` | `u8` | `SLOPRING_SQE_BUFFER_SELECT` (bit 0) or `SLOPRING_SQE_FIXED_BUFFER` (bit 1); not both |
+| `flags` | `u8` | `SLOPRING_SQE_BUFFER_SELECT` (bit 0) or `SLOPRING_SQE_FIXED_BUFFER` (bit 1); with both set, the fixed buffer is used. Only `OP_SEND` (fixed), `OP_SEND_ZC` (fixed) and `OP_RECVMSG` (either) take one; any other opcode but `OP_NOP`, `OP_TIMEOUT` and `OP_CANCEL` completes with `-EINVAL` when one is set |
+| `_pad0` | `u16` | Padding |
 | `fd` | `i32` | Target descriptor; `-1` for `OP_NOP` and `OP_TIMEOUT` |
 | `off` | `u64` | File offset for `OP_READ`/`OP_WRITE`; nanoseconds for `OP_TIMEOUT` |
 | `addr` | `u64` | Buffer, `msghdr` or socket address; for `OP_CANCEL`, the `user_data` to cancel |
@@ -114,7 +115,7 @@ Bit 2 is unused.
 | 4 | `OP_SEND` | Send a buffer | |
 | 5 | `OP_ACCEPT` | Accept a connection and install its descriptor | Multishot |
 | 6 | `OP_POLL_ADD` | Wait until a descriptor is ready | `op_flags` is the poll mask; multishot |
-| 7 | `OP_TIMEOUT` | Deadline for the current wait | `off` is nanoseconds; completes with `-ETIME` when it passes |
+| 7 | `OP_TIMEOUT` | Deadline for the current wait | `off` is nanoseconds, kept to whole milliseconds; completes with `-ETIME` when it passes |
 | 8 | `OP_CANCEL` | Cancel in-flight operations | See below |
 | 9 | `OP_RECVFROM` | Receive a datagram and its source address | Source address written to `addr2` |
 | 10 | `OP_OPENAT` | Open a path and install a descriptor | `addr` is the path, `len` its length, `op_flags` the open flags. Checked as `open` is, against the permissions of the task calling `ring_enter`; a file it creates takes mode `0666` less that task's umask. A relative path is resolved against `/`, since a ring has no working directory |
@@ -188,7 +189,8 @@ Any other `op` returns `-ENOSYS`.
 (`SLOPRING_MAX_REG_BUF_BYTES`); a ring holds one set, and registering a
 second is `-EEXIST`. A submission uses one by setting
 `SLOPRING_SQE_FIXED_BUFFER` and `buf_index`. The buffer is reserved from
-submission until the operation's final completion or cancellation, and
+submission until the operation's final completion or cancellation: another
+submission naming it meanwhile completes with `-EBUSY`, and
 `RING_UNREGISTER_BUFFERS` returns `-EBUSY` while any reservation is held.
 
 **Provided buffers.** `RING_REGISTER_PBUF_RING` pins a ring of buffers in
@@ -203,12 +205,13 @@ anonymous memory that the program refills, for one buffer group:
 
 Each ring entry is an `IouringBuf` `{addr: u64, len: u32, bid: u16, resv: u16}`.
 The program publishes buffers by advancing a `u16` tail at byte offset 14 of
-the ring, which overlaps `bufs[0].resv` as in Linux's `io_uring_buf_ring`. A
-receive submission sets `SLOPRING_SQE_BUFFER_SELECT` and `buf_group`; the
-kernel takes the next published buffer, fills it, advances the ring head and
-reports the buffer id in the completion, or completes with `-ENOBUFS` when
-no buffer is published. `RING_UNREGISTER_PBUF_RING` returns `-EBUSY` while
-any in-flight operation selects that group.
+the ring, which overlaps `bufs[0].resv` as in Linux's `io_uring_buf_ring`. An
+`OP_RECVMSG` submission, the only kind that selects one, sets
+`SLOPRING_SQE_BUFFER_SELECT` and `buf_group`; the kernel takes the next
+published buffer, fills it, advances the ring head and reports the buffer id
+in the completion, or completes with `-ENOBUFS` when no buffer is published.
+`RING_UNREGISTER_PBUF_RING` returns `-EBUSY` while any in-flight operation
+selects that group.
 
 ## Zero-copy send
 

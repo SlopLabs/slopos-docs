@@ -6,7 +6,7 @@ description: "How a program that holds no special power gets a privileged job do
 import { PrivdRequest } from '@/components/diagrams/privd-request';
 
 Nothing a person starts on SlopOS can, by itself, restart the computer, write a boot
-slot, install software for everyone or change another account. When a program
+slot, install an extension or change another account. When a program
 needs one of those jobs done, it asks `privd`, the privilege broker. privd
 runs the job, which it calls an *action*, as a fresh program of its own, after
 checking who asked and, where the policy says so, asking the person at the
@@ -16,9 +16,10 @@ request itself.
 
 You can rely on four things:
 
-- **The list of actions is fixed.** It is a file in the base, which no running
-  program can change, and privd runs only the programs it names, with only the
-  arguments it allows.
+- **The list of actions is fixed.** The base's is a file in the base, which no
+  running program can change, and an extension adds actions of its own only
+  once the computer's owner has installed it. privd runs only the programs
+  they name, with only the arguments they allow.
 - **privd decides from what the kernel says about the requester**, never from
   anything the requester claims about itself.
 - **The job runs fresh.** The program privd starts (the action's *mechanism*)
@@ -106,12 +107,13 @@ follow. `cwd` means the mechanism runs in the requester's directory, so a
 relative path such as `kernel.elf` names the file the person meant.
 `exclusive boot-slots` lets one mechanism of that group run at a time, so two
 writers never touch the boot partition at once. The `allow` lines say who may
-ask: uid 0 running a base program, an administrator who confirms with a click,
-and the paired agent of [Remote control](/docs/self-hosting/remote-control).
+ask: uid 0 running a base program, an administrator who confirms, and the
+paired agent of [Remote control](/docs/self-hosting/remote-control).
 
 The policy lives at `/usr/share/slopos/privd/actions`, inside the sealed base,
-so no process can edit it. A request reads it as it stands when the request
-arrives. An enabled extension may add actions of its own, named
+so no process can edit it. privd reads it when it starts, and a new base that
+changes it starts a new privd
+([below](#when-a-new-base-replaces-privd)). An enabled extension may add actions of its own, named
 `ext.<extension>.<action>`. Their mechanisms are programs of the extension's
 image and run as the extension's first user, never as uid 0, holding no more
 than the extension was granted; they never allow `root`, and the dialog says
@@ -187,9 +189,11 @@ bootctl: Nothing ran, because the app that asked changed after it asked.
 
 Because a program from the base can be trusted to be what it says, a policy
 may name one: `allow program /bin/compositor` means "any process running the
-base's compositor". privd refuses its whole policy if such a line names a
-program that is not statically linked, since the dynamic loader could map a
-library from outside the base into it. An extension's action may name one of
+base's compositor". The program must be statically linked, since the dynamic
+loader could map a library from outside the base into it: privd refuses the
+base's whole policy if one of its lines names a program that is not, and
+leaves out an extension's action whose line names one. An extension's action
+may name one of
 the extension's own programs the same way; that line matches only a process
 running that file of the extension's activation, whose label names the
 extension and the image its record installed.
@@ -204,15 +208,15 @@ Each `allow` line names a *principal* and, for a person, a *level*:
 | `user` | Any person the accounts record names, running any program. |
 | `admin` | A person the record names an administrator. |
 | `greeter` | The login screen's own user, running a base program. |
-| `paired` | `remoted`, the paired agent, on a base that carries a pairing. |
+| `paired` | `remoted`, the paired agent, on a base that carries a pairing. Although `remoted` runs as a person, it matches no other principal. |
 | `program <path>` | Whoever runs that base program. |
 
 | Level | What it takes |
 |---|---|
 | none | Nothing: the request runs unasked. |
 | `confirm` | The person who asked agrees: a click at their own desktop, their password anywhere else. |
-| `password` | The person who asked types their own password. |
-| `alone` | Nothing while nobody else is logged in, or for an administrator; otherwise an administrator's password. |
+| `password` | The person who asked types their own password (at their own desktop, a person without one clicks). |
+| `alone` | For `user`: nothing while nobody else is logged in, or for an administrator; otherwise an administrator's password. For the login screen's `greeter alone`: nothing while nobody is logged in; otherwise refused. |
 
 privd tries the lines in order and the first that matches decides. When a
 standard user asks for an action that allows `admin` but not `user`, no line
@@ -322,7 +326,8 @@ privd never reads a password hash itself. It hands the person's name and what
 was typed to `/sbin/authcheck` on a pipe, never on a command line, and reads
 the verdict from its exit status; checks run one at a time. Each wrong
 password makes that person's next check wait, two seconds after the first and
-doubling with each one after, up to a minute, for as long as privd runs.
+doubling with each one after, up to a minute, until they type the right one
+or privd starts again.
 [Users and file permissions](/docs/architecture/users) covers the accounts
 record and the hashes.
 
@@ -344,10 +349,12 @@ and polkit per action and requester whatever the other details.
 privd starts the mechanism as a new process of its own, not as a child of the
 requester:
 
-- It holds the action's capabilities and runs as uid 0, or as the requester
-  for an action that says `uid requester`.
-- Its environment is `PATH=/bin:/sbin`, `LANG=C.UTF-8`, `PRIV_ACTION` (the
-  action's name) and `PRIV_UID` (the requester's uid), and nothing else.
+- It holds the action's capabilities and runs as uid 0, as the requester for
+  an action that says `uid requester`, or as the extension's first user for
+  an extension's action.
+- Its environment is `PATH=/bin:/sbin` (with `/opt/<name>/bin` after them for
+  an extension's action), `LANG=C.UTF-8`, `PRIV_ACTION` (the action's name)
+  and `PRIV_UID` (the requester's uid), and nothing else.
 - It runs in `/`, or for a `cwd` action in the requester's directory, which
   privd checks still has the path it had when the question was asked.
 - Its standard input, output and error are the descriptors the requester
@@ -365,7 +372,8 @@ requester stop waiting. A mechanism whose requester goes away is not stopped
 for that: it runs to its end.
 
 The requester exits with the mechanism's status, with 126 when the person
-refused or did not answer, as `pkexec` does, and with 127 when privd refused
+refused, did not answer or typed a wrong password, as `pkexec` does, and with
+127 when privd refused
 for any other reason. It prints privd's reason, a sentence meant for the
 person, after its own name; privd writes the detail a developer needs to its
 own log.
@@ -465,11 +473,14 @@ program it ran then. So a process can make a connection and hand it to a
 program it starts, which then asks as the maker: the program finds it through
 the `PRIVD_FD` variable, and uses it only if the other end is uid 0 running
 the base's `/sbin/privd`. The paired agent works this way: `remoted` hands
-each mechanism it runs, and the shell, a connection it made, so their requests
-are judged as `paired`. The shell passes such a connection only to a
-mechanism its own process starts, never from a subshell or a pipeline, and to
-one at a time, and a mechanism keeps it from everything it starts, so no code
-from outside the base asks as the paired agent.
+each program it runs that the base's policy names as a mechanism, and the
+shell, a connection it made, so their requests are judged as `paired`. The
+shell passes such a connection only to a mechanism its own process starts,
+never from a subshell or a pipeline, and to one at a time, and a mechanism
+keeps it from everything it starts, so no code from outside the base asks as
+the paired agent. That is also why an extension's action that allows `paired`
+is never reached in practice: the base's mechanisms ask only for the base's
+actions, and no program of an extension is handed the connection.
 
 ## What it means in practice
 
@@ -479,7 +490,7 @@ from outside the base asks as the paired agent.
 - **For anything else that needs power, use `priv`.** It runs a command from
   `/bin`, `/sbin` or another directory only uid 0 can change.
 - **Read the reason.** A refusal is a sentence on standard error; the status
-  is 126 if a person said no and 127 otherwise. privd's own log says what it
+  is 126 if the person did not allow it and 127 otherwise. privd's own log says what it
   saw.
 - **A new privileged job is a new action.** Add it to `assets/privd/actions`
   with the narrowest argument shapes and capabilities that work, and have the

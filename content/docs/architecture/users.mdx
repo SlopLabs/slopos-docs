@@ -196,7 +196,8 @@ so, one line per tree:
 ```
 
 The image builders and the installer write this record when they make a root,
-and a root without one, or with one that can't be read, gives the first person
+and every base carries the one-person record for a root that boots in memory.
+A root without one, or with one that can't be read, gives the first person
 nothing. While the first person is alone, their home is `0755` and they install
 software into `/usr/local` themselves. Adding a second person changes both:
 the first person's home becomes `0700`, and `/usr/local` and everything in it
@@ -304,9 +305,9 @@ screen and privd slow down repeated wrong passwords is on
 | `users remote <name>`, `users remote --default` | Sets whom `remoted` runs as |
 
 Changing your own password is privd's `org.slopos.accounts.password` action,
-which any person may ask for, with a click at their own desktop. Everything
-else is
-`org.slopos.accounts.manage`: an administrator confirms with a click, and a
+which any person may ask for and confirms with a click at their own desktop
+(at a console login, privd asks for their password instead). Everything else
+is `org.slopos.accounts.manage`: an administrator confirms with a click, and a
 person who isn't one needs an administrator to type their password
 ([privd actions](/docs/abi/privd-actions)). A few rules hold whoever asks:
 
@@ -317,8 +318,8 @@ person who isn't one needs an administrator to type their password
   because they hold the workspace at `/src`.
 - An administrator without a password is asked to set one when they add
   someone, and adding someone turns automatic login off unless
-  `--keep-autologin` says otherwise. A shared machine shouldn't open anyone's desktop to whoever sits
-  down.
+  `--keep-autologin` says otherwise. A shared machine shouldn't open anyone's
+  desktop to whoever sits down.
 - Adding the second person hands `/usr/local` to uid 0, and adds nobody if
   that fails.
 
@@ -352,8 +353,8 @@ mode bits, and the hand-over of `/usr/local`. Run as the person instead, it
 holds the root to the ownership map. Kernel tests check the permission checks,
 `chmod` and `chown`, the signal rule's uid half and the id calls, and host
 tests check the credential arithmetic. Another userland test adds, renames,
-promotes and removes people, sets and checks passwords (including one typed at a terminal,
-which must never be echoed), and checks that `DacOverride` alone can't touch
+promotes and removes people, sets and checks passwords (including one typed
+at a terminal, which must never be echoed), and checks that `DacOverride` alone can't touch
 the record or the database. After the suite, the host checks the disk image it
 wrote against the ownership map (`check_fs_image.sh --map`), and the Argon2id
 code is held to RFC 9106's test vectors.

@@ -203,10 +203,12 @@ privd, slot, base, sealed, uid). The
 principals and levels are privd's ([privd actions](/docs/abi/privd-actions)
 has the exact rules), with these differences for an extension:
 
-- `root` is refused.
+- `root` and `greeter` are refused.
 - `program <path>` names one of the extension's own programs outside its
   `lib/`, which matches only a requester running that file of the image the
   record installed, or a base program under `/bin`, `/sbin` or `/usr/bin`.
+- `paired` is accepted, but no request of the paired agent reaches an
+  extension's action: its connection goes only to the base's mechanisms.
 - An action is *unasked* when it allows `user` with no level or `alone`,
   `admin` with no level, `paired`, or any `program`. Unasked actions are
   listed in the grant line, and their capabilities together are held to a
@@ -314,11 +316,12 @@ which refuses one containing a `syscall` instruction.
 | | Value |
 |---|---|
 | uid and gid | The extension's first user's, with no supplementary groups |
+| Login tag | The extension's own, shared by all its mechanisms, not privd's |
 | Capabilities | The action's `caps`, cut to the grant, the base's ceiling and what privd can hand out |
 | Working directory | `/`, or the requester's directory with `cwd` |
 | `argv` | The program's file name, then the requester's arguments |
 | Environment | `PATH=/bin:/sbin:/opt/<name>/bin`, `LANG=C.UTF-8`, `PRIV_ACTION` (the action's name) and `PRIV_UID` (the requester's uid) |
-| fd 0, 1 and 2 | What the requester passed, or the pipes and terminal privd relays them through |
+| fd 0, 1 and 2 | The three descriptors the requester sent: its own, or the pipes or terminal it relays its terminal through |
 
 ## Grant line
 

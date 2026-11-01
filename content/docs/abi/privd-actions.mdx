@@ -171,18 +171,23 @@ The detail is a sentence under it, and the allowing button says the verb, or
 
 An enabled extension's actions are read from its activation's
 `/.extension/declare` and added beside the base's as
-`ext.<extension>.<action>`; one whose name the base already uses is left out.
-They take the same settings as the base's, less `uid` and `medium`, with
-these differences:
+`ext.<extension>.<action>`. One whose name the base already uses is left out,
+and so is one whose `program` principal names a base program that is not
+statically linked; the rest of the policy stands. They take the same settings
+as the base's, less `uid` and `medium`, with these differences:
 
 - The program is a file of the extension's own image, under `/opt/<name>`.
-- The mechanism runs as the extension's first user, never as uid 0, and with
+- The mechanism runs as the extension's first user, never as uid 0, with no
+  supplementary groups, under a login tag of the extension's own, and with
   `/opt/<name>/bin` after `/bin:/sbin` on its `PATH`.
 - `allow` takes `admin`, `user`, `paired` and `program <path>`, where the path
-  may be the extension's own program; never `root` or `greeter`.
+  may be the extension's own program; never `root` or `greeter`. No request
+  from the paired agent reaches an extension's action: the agent's connection
+  goes only to the base's mechanisms, which ask only for the base's actions.
 - An `exclusive` group is `ext.<extension>.<group>`, so it never shares a
   group with the base or another extension.
-- Capabilities are held to the extension's grant and the base's ceiling.
+- Capabilities are held to the extension's grant, the base's ceiling and
+  those an action may name.
 
 [Extension images](/docs/abi/extension-images) gives the declaration's
 grammar, and [Extensions](/docs/architecture/extensions) what an extension
@@ -226,10 +231,11 @@ bytes, and each name occurs once.
 A quoted value is one line of printable ASCII between `"` and `"`, with no
 `"` inside, at most 160 bytes.
 
-privd refuses the whole policy, and with it every request, when a `program`
-principal or `paired` names a program that is not statically linked: the
-dynamic loader could map a library from outside the base into it while the
-kernel still attested the program as the base's.
+privd refuses the base's whole policy, and with it every request, when a
+`program` principal names a program that is not statically linked, or an
+`allow paired` line stands while `/bin/remoted` is not: the dynamic loader
+could map a library from outside the base into it while the kernel still
+attested the program as the base's.
 
 ### Principals
 
@@ -414,7 +420,7 @@ screen.
 | Requests from a uid just refused | refused for 5 seconds |
 | Command line and directory shown | 320 bytes each, escaped |
 | Dialog input ignored after it appears, moves focus or changes shape | 750 ms |
-| Wait before privd checks a person's password again after a wrong one | 2 seconds, doubling with each, at most 60 seconds, for as long as privd runs |
+| Wait before privd checks a person's password again after a wrong one | 2 seconds, doubling with each, at most 60 seconds, until a right one or privd starts again |
 | `keep` | at most 900 seconds; 64 answers |
 | Request frame | 64 KiB, at most 256 arguments |
 

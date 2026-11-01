@@ -127,12 +127,12 @@ manifest names it.
 
 Every entry is installed writable by its owner alone, whatever the source's
 modes said, so a tree built under a lax umask never leaves a directory that
-others may write. A manifest is only believed if uid 0 or the person
+others may write. A manifest is only believed if uid 0 or the user
 installing wrote it; one that anyone else wrote, or that does not parse, is
 treated as an unfinished install of the new tree, so a forged manifest cannot
 steer an install into removing files it never put there. A person's install
-goes further and refuses outright to replace a tree whose manifest someone
-else owns. And because the manifest records where the tree went, installing
+goes further and refuses outright to replace a tree whose manifest is anyone
+else's, uid 0's included. And because the manifest records where the tree went, installing
 a tree of the same name somewhere else is refused too.
 
 ## Who may write `/usr/local`
@@ -284,10 +284,9 @@ a library by name in this order:
 5. `$HOME/.local/lib`, then `/usr/local/lib`, only for a process that is
    neither `AT_SECURE` nor running as uid 0.
 
-`AT_SECURE` is a flag the kernel sets for a program that starts with more
-power than the program that started it: one holding a gated
-[capability](/docs/architecture/authority), or running as other ids than its
-starter's. Skipping the last two directories for such a program, and for uid
+`AT_SECURE` is a flag the kernel sets for a program that starts holding any
+gated [capability](/docs/architecture/authority), or running as other ids
+than its starter's real ones, whatever its starter held. Skipping the last two directories for such a program, and for uid
 0, means a library a person can write never ends up inside a program that
 holds more than that person does. The loader reads `HOME` from the
 environment the process started with and uses it only if it is an absolute

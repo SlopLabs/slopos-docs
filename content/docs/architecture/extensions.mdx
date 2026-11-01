@@ -266,8 +266,8 @@ Init runs each service an enabled extension declares
 - **Restarted as it asks.** `restart on-failure`, the default, starts it
   again unless it exited with status 0; `always` and `never` do what they
   say. Restarts count against init's budget of five a minute. A service
-  declared `after` another starts once that one has said it is ready, or has
-  run for thirty seconds.
+  declared `after` another starts once that one has said it is ready, has run
+  for thirty seconds, or will not start at all.
 
 A *session service* runs as the first person instead, while their desktop
 session runs, and ends with it.
@@ -286,16 +286,20 @@ capabilities the action declares, cut to the grant, the base's ceiling and
 what privd can hand out. Its
 `allow` lines are privd's own (`admin` and `user` at a level, `paired`, or
 `program <path>`), with two differences: an extension's action never allows
-`root`, and its `program` principal may name one of the extension's own
-programs, which matches only while that exact image's program is running.
-The question privd shows names the extension.
+`root` or `greeter`, and its `program` principal may name one of the
+extension's own programs, which matches only while that exact image's
+program is running. The question privd shows names the extension. An action
+may allow `paired`, but the paired agent never reaches it: its connection
+goes only to the base's mechanisms, which ask only for the base's actions.
 
 An action that runs without asking anyone (it allows `user` with no level or
-`alone`, `admin` with no level, a `program`, or `paired`) hands its
-capabilities to every person's processes. So a first install's grant line
-lists such actions after `unasked`, and a key's `user` ceiling limits what
-they may hold together. privd reads the running extensions' actions when it
-starts, and again whenever init tells it the set has changed.
+`alone`, `admin` with no level, a `program`, or `paired`) lends its
+capabilities to whoever those lines let in, with nobody asked each time, and
+for `user` or a `program` that is every person's processes. So a first
+install's grant line lists such actions after `unasked`, and a key's `user`
+ceiling limits what they may hold together. privd reads the running
+extensions' actions when it starts, and again whenever init tells it the set
+has changed.
 
 ### Commands, apps and settings
 
@@ -366,8 +370,8 @@ something are privd [actions](/docs/abi/privd-actions):
 
 A person who is not an administrator needs an administrator's password for
 any command that changes something. A machine
-[paired](/docs/self-hosting/remote-control) with a host lets that host do
-all of it unasked.
+[paired](/docs/self-hosting/remote-control) with a host lets that host run
+these commands unasked.
 
 When an extension stops the system working properly, there are two ways
 back. Booting once with `extensions=off` on the kernel command line shows no
