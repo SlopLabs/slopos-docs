@@ -106,9 +106,9 @@ the `slopos` toolchain.
 just boot-live
 ```
 
-The first run downloads the LLVM sources, builds the C++ runtime and
-e2fsprogs for SlopOS, then compiles the kernel and every program and packs
-them into `builddir/slop.iso`. That takes a while once; later runs rebuild
+The first run compiles every program, downloads the LLVM sources and builds
+the C++ runtime and e2fsprogs for SlopOS, compiles the kernel, and packs it
+all into `builddir/slop.iso`. That takes a while once; later runs rebuild
 only what changed. Then a QEMU window opens.
 
 The screen stays black but for the SlopOS logo near the bottom and a ring of

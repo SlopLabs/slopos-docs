@@ -95,16 +95,19 @@ shapes OSTD uses for the same trick.
 
 ## How the build keeps `unsafe` in one place
 
-People forget rules, and a kernel gains new crates over time, so the build
-checks this one.
+People forget rules, and a kernel gains new crates over time, so the
+compiler and four checks enforce this one. The compiler's lint and the check
+on the linked kernel run on every kernel build; the other checks run in
+`just check-framekernel-gates`, which CI runs on every change.
 
-**Every other kernel crate forbids `unsafe`.** Each crate the kernel links,
-apart from OSTD, the kernel binary's own crate and the two vendored libraries
-described [below](#what-it-doesnt-promise), starts with
-`#![forbid(unsafe_code)]`, which makes any `unsafe` in it a
-compile error that can't be switched off further down. A check script also
-reads the kernel's list of dependencies and fails if any crate on it lacks the
-attribute, so a newly added crate is covered from its first build.
+**Every other kernel crate forbids `unsafe`.** Each SlopOS crate the kernel
+links, apart from OSTD, OSTD's derive macros and the kernel binary's own
+crate, starts with `#![forbid(unsafe_code)]`, which makes any `unsafe` in it
+a compile error that can't be switched off further down. A check script also
+reads the kernel's list of dependencies and fails if any SlopOS crate on it
+lacks the attribute, so a new crate is covered as soon as the kernel links
+it. Crates from outside the tree are not held to this
+([below](#what-it-doesnt-promise)).
 
 **A source scan backs that up.** A second check searches every kernel crate
 outside OSTD for the `unsafe` keyword, so an `#[allow(unsafe_code)]` that
@@ -114,11 +117,11 @@ slipped in somewhere is caught even if the lint was weakened.
 arrives through a macro. When a macro defined in another crate expands to
 `unsafe` code, rustc doesn't report the lint at the place where the macro was
 used, and the source there contains no `unsafe` keyword for a search to find.
-So the build expands every kernel crate the way the compiler does
-(`-Zunpretty=expanded`), with each crate's feature combinations, and searches
-the result. The rule is fixed rather than a recorded count: no executable
-`unsafe` at all, and `unsafe impl` and `unsafe` attributes only from short
-named lists, such as the traits OSTD's derives implement and the names of the
+So a check expands every kernel crate the way the compiler does
+(`-Zunpretty=expanded`), with and without the features that build its tests,
+and searches the result. The rule is fixed rather than a recorded count: no
+executable `unsafe` at all, and `unsafe impl` and `unsafe` attributes only
+from short named lists, such as the traits OSTD's derives implement and the names of the
 three functions that assembly code calls.
 
 **The linked kernel is checked last.** A crate pulled in from crates.io
@@ -128,7 +131,7 @@ linker script doesn't declare.
 
 Nearly every check also tests itself first: it is run against planted
 violations and must reject them, so a check that has quietly stopped matching
-fails the build instead of passing it. [Safety gates](/docs/verification/tcb-discipline) lists
+fails instead of passing. [Safety gates](/docs/verification/tcb-discipline) lists
 all of them.
 
 ## What you have to trust in the trusted core
@@ -140,14 +143,15 @@ OSTD hands an obligation to its caller, and there are three kinds:
 
 | What | What it means |
 |---|---|
-| `pub unsafe fn` | Functions a caller can only use inside `unsafe`, which means only from inside OSTD or the few listed exceptions |
+| `pub unsafe fn` | Functions a caller can only use inside `unsafe`, which means only from inside OSTD, since no other kernel crate may contain `unsafe` |
 | `pub unsafe trait` | Traits whose implementer promises something the compiler can't check, such as "this type is valid when every byte is zero" or "this type can be linked into an intrusive list" |
 | Safe functions with a written safety contract | Functions that are safe to call but document conditions the caller must meet |
 
 The last kind is the one that matters. A safe function with a `# Safety`
 section admits that safe code can break it, which is exactly what a
-framekernel must not allow. A check holds the number of such functions at
-zero, and every contract it once counted has been turned into a type.
+framekernel must not allow. A check counts the `pub` and `pub(crate)`
+functions in OSTD that carry one and holds the count at zero, and every
+contract it once counted has been turned into a type.
 [Safety gates](/docs/verification/tcb-discipline) shows how to count the
 other two.
 
@@ -181,8 +185,13 @@ than checked.
 - **Some code outside OSTD is trusted too.** The kernel links two vendored
   libraries, a stack unwinder and the debugging-information reader it uses,
   and they contain `unsafe`. They are pinned to an exact upstream version and
-  content hash instead of being rewritten. The kernel binary's own crate also
-  contains the assembly entry point the boot loader jumps to, the global
+  content hash instead of being rewritten. A few crates from crates.io keep
+  `unsafe` inside themselves too, among them `limine`, which reads what the
+  boot loader hands the kernel, and `libm`, the maths library. `Cargo.lock`
+  pins each one by checksum, and the checks above see only what their macros
+  expand to inside SlopOS crates and the linker sections they add. The
+  kernel binary's own crate also contains the assembly entry point the boot
+  loader jumps to, the global
   allocator declaration, which Rust requires there, and the note that names
   the [base interfaces](/docs/architecture/base) the kernel serves. OSTD's
   derive macros, a crate of their own, write the `unsafe impl` lines of the
@@ -193,8 +202,8 @@ than checked.
   They are tested against planted violations, but a scan only finds the
   shapes it looks for.
 - **It covers the kernel only.** The C library, the userland runtime and the
-  apps use `unsafe` where they need it, like any Rust program. The kernel
-  keeps them in user mode, so a bug there can corrupt that program and not
+  base's own programs use `unsafe` where they need it, like any Rust program.
+  The kernel keeps them in user mode, so a bug there can corrupt that program and not
   the kernel ([User mode and kernel mode](/docs/architecture/privilege-separation)).
 - **The compiler, the firmware, the bootloader and the hardware are
   trusted,** as they are for every kernel.
@@ -250,7 +259,7 @@ just check-framekernel-gates
 |---|---|
 | `slopos-ostd/` | The trusted core |
 | `slopos-ostd/src/io/cmos.rs`, `drivers/src/rtc.rs` | The clock example above, both halves |
-| `scripts/check_unsafe_outside_ostd.sh` | The source scan and the `forbid` check over the kernel's dependencies |
+| `scripts/check_unsafe_outside_ostd.sh` | The source scan and the `forbid` check over the SlopOS crates the kernel links |
 | `scripts/check_unsafe_expansion.sh` | The macro-expansion check and its short allowlists |
 | `scripts/check_registry_sections.sh` | The check on the linked kernel image |
 | `scripts/check_safe_contract_surface.sh`, `scripts/tcb_ratio.sh` | The two numbers above |

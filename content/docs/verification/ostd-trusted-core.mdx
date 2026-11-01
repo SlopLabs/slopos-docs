@@ -52,10 +52,10 @@ the caller doesn't need `unsafe`, and the rule is written down.
 But if a caller breaks the rule, memory gets corrupted inside OSTD while the
 mistake sits in a safe crate that nobody thought to audit, which defeats the
 point of keeping `unsafe` in one place ([The framekernel](/docs/verification/framekernel)
-calls the property OSTD needs *soundness*). So no safe function in OSTD may
-carry a `# Safety` section in its documentation, and a check fails the build
-if one appears. Every condition a caller has to meet must be something the
-compiler checks.
+calls the property OSTD needs *soundness*). So no safe `pub` or `pub(crate)`
+function in OSTD may carry a `# Safety` section in its documentation, and a
+gate fails if one appears. Every condition a caller has to meet must be
+something the compiler checks.
 
 ## How safety rules become types
 
@@ -70,7 +70,7 @@ holds, and the operation takes the token as an argument. The interrupt token
 can only be obtained inside a helper that turns interrupts off for the
 duration of a closure, and it can't be sent to another CPU, because interrupt
 state is per CPU. A similar token proves that code is running on the first
-CPU during boot, before the others start.
+CPU, inside boot initialisation.
 
 ```rust
 // Safe code, in the real-time clock driver:

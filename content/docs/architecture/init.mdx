@@ -111,9 +111,14 @@ blocks on a single child again, so a service that hangs holds up nothing but
 itself.
 
 When privd, remoted, the login prompt or a session's compositor exits, init
-starts it again. It counts each service's starts over the last minute, and
-the sixth start within any minute waits until the oldest of the five is a
-minute old. Init says so when it happens:
+starts it again. A compositor is its session's leader, so when one exits init
+first ends the rest of that session (see
+[Ending a session](#ending-a-session)) and then starts the whole session
+again (`init: the compositor of session <tag> exited`); a console login's
+shell is not started again. Init counts each service's and each
+session's starts over the last minute, and the sixth start within any minute
+waits until the oldest of the five is a minute old. Init says so when it
+happens:
 
 ```text
 init: /sbin/privd exited (Signalled(9)), its 5th in a minute; it starts again in 56 s
@@ -162,7 +167,7 @@ program is attested.
 | `lock` | a person, for their desktop | The compositor shows its lock screen |
 | `greeter` | a person at the desktop in front, or uid 0 | Brings the login screen in front, so someone else can log in |
 | `locked`, `unlocked` | a desktop's compositor only | Records whether that desktop is locked; a desktop behind stays locked |
-| `restart-session`, `end-session` from outside every session | uid 0 | Every session at once, remoted's aside; after `end-session` none starts until uid 0 restarts them |
+| `restart-session`, `end-session` from outside every session | uid 0 | Ends every session but remoted's. `restart-session` then starts the boot's own session again (the automatic login's desktop, or the login screen); after `end-session` none starts until uid 0 restarts them |
 | `restart-session <tag>`, `end-session <tag>` | uid 0 | The session with that login tag |
 | `switch <tag>` | uid 0 | Brings that desktop, or the login screen, in front |
 | `login desktop <name>`, `login console <name>` | uid 0 | Logs a person in whose password was already checked; a console login hands init its terminal with the request |
@@ -309,7 +314,8 @@ a shell to look around with.
 ## What it means in practice
 
 - **A crash costs moments, not a reboot.** If the desktop vanishes, it comes
-  back within a few seconds. If privd crashes, requests made while it is
+  back within a few seconds, as a fresh session: init has ended whatever was
+  still running in the old one. If privd crashes, requests made while it is
   down wait up to two seconds for the new one to listen.
 - **Logging out is complete.** A daemon you started from a terminal does not
   survive `session end`. Something meant to outlive your session has to be a

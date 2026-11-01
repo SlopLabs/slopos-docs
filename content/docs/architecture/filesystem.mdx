@@ -146,8 +146,12 @@ which is what Linux calls an *initramfs*, and puts the read-only disk, if
 there is one, at `/mnt`. The live ISO always boots from memory.
 
 Either way, the base directories are then mounted from the base over whatever
-`/` turned out to be. A root that has a symbolic link where a base directory
-should be fails to boot rather than getting a base in the wrong place.
+`/` turned out to be. The one exception is a disk that refuses writes but was
+made the root anyway with `root=disk`: the kernel lays the base only over a
+root it can write, so such a root runs the programs it holds itself. A root
+that has a symbolic link at `/usr` or `/etc`, on the way to a base directory,
+fails to boot rather than getting a base in the wrong place; a link at a base
+directory itself is simply covered by the base's mount.
 
 The `root=` and `mount=` options in [Boot options](/docs/abi/boot-options)
 change that choice: insist on the disk, name a partition, or mount more

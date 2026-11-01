@@ -12,7 +12,8 @@ identity or take over the screen, and running as uid 0 changes none of that.
 Each of those powers is a *capability*: a named bit in a mask the kernel keeps
 for every process and checks before the system call runs. A process gets
 capabilities only from the process that started it, which must hold them
-itself, and it loses every one of them when it `exec`s another program.
+itself, and it loses all but the few every program holds when it `exec`s
+another program.
 
 So when a person powers the machine off, the program they ran asks privd, the
 privilege broker init starts at boot. privd checks its policy and starts a
@@ -127,8 +128,9 @@ spawn fails with `EPERM`, and a bit that names no capability at all is
 capabilities the spawner still holds, and nothing else. Nothing about the
 program it runs adds to that.
 
-The same call can ask for the child to run with other user and group ids or to
-carry a session's login tag, and either takes `SetId`. A child that holds any
+The same call can ask for the child to run with user or group ids the spawner
+doesn't hold, with other supplementary groups, or carrying a session's login
+tag, and each of those takes `SetId`. A child that holds any
 gated capability, or runs with ids other than its spawner's real ones, starts in
 *secure mode* (`AT_SECURE`, the flag Linux sets for setuid programs). In secure
 mode the dynamic loader ignores `LD_LIBRARY_PATH`, `$ORIGIN` and relative
@@ -165,9 +167,10 @@ than uid 0: an extension's own user, or the person who asked.
 When you type `halt` in a terminal, your shell starts `/bin/halt` as you,
 holding nothing gated, so `halt` can't call `reboot` itself. Like the base's
 other mechanisms, it notices that and asks privd instead: it connects to
-`/run/privd` and sends its own arguments, which privd matches to the action
-`org.slopos.power.poweroff`. The policy lets a person run that one
-unasked while nobody else is logged in. privd then starts a second `/bin/halt`
+`/run/privd` and sends the action `org.slopos.power.poweroff` with the word it
+was called by, `halt`, which privd matches against the action's argument
+shapes. The policy lets an administrator run that one unasked, and anyone else
+while nobody else is logged in. privd then starts a second `/bin/halt`
 as its own child, as uid 0 holding `Power` and no other gated capability, and
 that one powers the machine off. The first `halt` waits for it and exits with its
 status.
@@ -204,29 +207,32 @@ that gave up a capability while its sibling kept it would protect nothing.
 Only one program at a time may draw to the screen, and only one may receive the
 raw stream of keyboard and pointer events. SlopOS calls these two resources
 *seats*. A program holding `DisplaySeat` or `InputSeat` may ask for the
-matching seat, and if it gets it, it receives a descriptor it needs for drawing
-or reading input. A request succeeds if the seat is free, if the caller already
-holds it (asking twice is harmless), or if the caller outranks the holder.
-There are two ranks: a compositor's, and the console's, which only
-`/bin/roulette` takes, to draw the Wheel of Fate. The console outranks every
-compositor. An equal rank is refused, so two compositors can't trade the
-screen back and forth. The kernel log needs no seat: while it is on screen
+matching seat. If it gets it, the kernel records the asking thread as the
+seat's holder, and the calls that present a frame, move the cursor or read
+input work only for that holder; the descriptor the program also receives
+stands for the grant and stops working once the seat moves on. A request
+succeeds if the seat is free, if the caller already holds it (asking twice is
+harmless), or if the caller outranks the holder. The caller names the rank it
+asks at, and there are two: a compositor's, and the console's, which in the
+base only `/bin/roulette` asks for, to draw the Wheel of Fate. The console
+outranks every compositor. An equal rank is refused, so two compositors can't
+trade the screen back and forth. The kernel log needs no seat: while it is on screen
 the kernel holds back every compositor's frames, so it shows even over a
 compositor that has hung.
 
 When several people are logged in, each person's desktop has its own
 compositor, and they all have the same rank. Init decides which one the person
 at the machine sees: it moves both seats from the compositor in front to
-another with `seat_switch`, which needs `SeatSwitch` (init's alone) and works
-only on a target holding both seat capabilities. A compositor that init starts
+another with `seat_switch`, which needs `SeatSwitch` (init's alone), works
+only on a target holding both seat capabilities, and refuses (`EBUSY`) while
+the console's rank holds either seat. A compositor that init starts
 never asks for a seat itself; it waits for init to hand them over.
 [Sessions and login](/docs/architecture/sessions) describes switching between
 people.
 
-A seat descriptor can't be duplicated or passed to another process, so the
-kernel always knows who holds a seat. When the holder exits or `exec`s, the
-kernel takes the seat back, and a descriptor left over from an earlier holder
-stops working.
+A seat descriptor can't be duplicated or passed to another process, so it
+never leaves its holder. When the holder exits or `exec`s, the kernel takes
+the seat back.
 
 ## Who may signal whom
 

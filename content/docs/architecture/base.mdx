@@ -10,14 +10,15 @@ SlopOS's own programs come as one read-only bundle called the *base*: init,
 privd, the shell, the desktop, the system tools, the C library and its
 loader, and the data they read, such as the privilege policy, the fonts and
 the certificates SlopOS trusts. You can rely on a few things about it. No
-program can change a file of the base, whatever capabilities it holds. Every kernel you
-have installed boots the same base, so trying another kernel never changes
-your programs. The base that ran before the current one is always kept, so
-you can go back to it. And a new base usually takes over while the machine
-runs, without a reboot: programs started after the switch get the new version,
-while programs already running keep the bytes they started with. Your own
-files on the root disk are never part of a base, so installing one never
-touches them.
+program can change a file of the base, whatever capabilities it holds. Every
+kernel you have installed boots the same current base whenever it can run it,
+so trying another kernel changes your programs only when that kernel can't,
+and then it boots the previous base instead. The base that ran before the
+current one is always kept, so you can go back to it. And a new base usually
+takes over while the machine runs, without a reboot: programs started after
+the switch get the new version, while programs already running keep the
+bytes they started with. Your own files on the root disk are never part of a
+base, so installing one never touches them.
 
 What isn't promised: a new base is not tried once and committed the way a
 new kernel is. If it installs and then misbehaves, it stays until you roll
@@ -39,8 +40,8 @@ distributions that keeps the operating system's read-only content in `/usr`.
 
 Most such systems apply an update at the next boot, as Android's A/B updates
 and most of its APEX module updates do. SlopOS switches a base while the
-machine runs, and then restarts only the services whose program changed,
-which is how NixOS
+machine runs, and then restarts only the services whose program, or what
+they read of the base, changed, which is how NixOS
 applies a new configuration. The rule for which old base to keep comes from
 FreeBSD's kernel install. Its handbook warns that every kernel install
 overwrites `kernel.old` with the last installed kernel, which may not be
@@ -213,9 +214,9 @@ to boot next serving neither.
 The kernel serves the base without copying it: it builds an index of the
 archive's paths at boot and serves each file straight from the module in
 memory. Then it mounts the six base directories over whatever the root turned
-out to be, a disk or a filesystem in memory
+out to be, a writable disk or a filesystem in memory
 ([Filesystem](/docs/architecture/filesystem#how-the-root-is-chosen) explains
-how it chooses):
+how it chooses, and why a disk that refuses writes gets no base):
 
 - Each mount is read-only, and every file in it is *sealed* for good: it
   reports the immutable flag, and nothing can clear it.
@@ -229,8 +230,8 @@ how it chooses):
 
 Everything else under `/` is the root disk's: `/etc` (apart from
 `/etc/ssl`), `/var`, `/home`, `/src` and `/usr/local` hold what the machine
-wrote and survive base updates untouched. When there is no disk and the root
-lives in memory, the kernel first copies into it what the archive holds
+wrote and survive base updates untouched. When the root lives in memory
+instead, the kernel first copies into it what the archive holds
 outside the six base directories (the skeleton of directories such as `/etc`,
 `/var` and `/home`, and the few files there), and then mounts the base
 directories from the module as it would over a disk.
@@ -325,7 +326,9 @@ programs. Every other generation that is no longer current is freed once
 nothing holds it: no open file, no memory mapping, no running program. A
 kernel thread, `basefs-reap`, checks for that and frees a generation once two
 checks a second apart both find it unheld, which gives a lookup that was just
-starting time to open the file it found. The log says so:
+starting time to open the file it found. While a generation stays held, the
+checks come further apart, up to a minute, so it can outlast its last holder
+by about that long. The log says so:
 
 ```text
 BASE: generation <n> freed
@@ -337,7 +340,8 @@ together may take at most a quarter of memory. An activation that would go
 past either is refused with `EBUSY`, an archive bigger than a quarter of
 memory on its own with `EFBIG`, and one naming an interface the kernel doesn't
 serve with `ENOEXEC`. A refused activation changes nothing: the new base is
-still installed on disk, and the next boot takes it.
+still installed on disk, and the next boot of a kernel that serves it takes
+it.
 
 ### What restarts after a switch
 

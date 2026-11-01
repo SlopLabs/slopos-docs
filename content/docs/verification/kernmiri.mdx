@@ -88,8 +88,9 @@ a real allocation, Miri can check every access against it exactly.
 A handful of tests can't run under Miri and are skipped there: tests that
 depend on where a block of assembly lands in the compiled program (the code
 that recovers from a fault while copying user memory, and the code that
-restores floating-point state), tests that read the addresses of symbols the
-linker provides, and the `RefCell` test above, whose kernel counterpart
+restores floating-point state), tests that reach a static by its symbol name
+through an `extern` block, which Miri doesn't resolve, and the `RefCell` test
+above, whose kernel counterpart
 relies on interrupts being off, which a test on a normal computer can't
 arrange.
 
@@ -119,7 +120,8 @@ The recipe installs Miri for the pinned nightly toolchain if needed, then runs
 four processes in parallel: the trusted core's unit tests and its integration
 tests, each under Stacked Borrows and under Tree Borrows. Miri runs all of a
 process's threads on one CPU core, so running four processes is what uses the
-machine. Each prints a line when it finishes:
+machine. The recipe waits for the four in a fixed order and prints a line for
+each:
 
 ```text
 ── KernMiri tree-tests: ok ──
@@ -136,8 +138,9 @@ together with the other safety checks.
 ## For contributors
 
 - **Isolation stays on.** The tests see a virtual clock and none of your
-  environment, so every run is reproducible. The only extra flag is
-  `-Zmiri-ignore-leaks`, because the simulated memory the tests set up is
+  environment, so every run is reproducible. Apart from
+  `-Zmiri-tree-borrows`, which selects the second model, the only extra flag
+  is `-Zmiri-ignore-leaks`, because the simulated memory the tests set up is
   deliberately never freed.
 - **Default provenance mode, not strict.** The trusted core treats some
   hardware addresses (where all of physical memory appears in the kernel's
@@ -149,7 +152,8 @@ together with the other safety checks.
   marked `ignore` or `compile_fail` checks; `just test-host` runs them
   natively.
 - **Skipping a test.** Use `#[cfg_attr(miri, ignore)]` only for code Miri
-  can't model (real assembly, linker symbols), with a comment saying why.
+  can't model (the layout of real assembly, statics reached through an
+  `extern` block), with a comment saying why.
 - **Adding a hardware primitive.** Give it a body for
   `cfg(not(target_os = "none"))` so its callers stay testable under Miri.
 

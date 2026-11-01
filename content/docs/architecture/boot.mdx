@@ -90,10 +90,11 @@ one (`BOOT: phase early_hw`, and so on).
    its own address space. The pages of the base it chose not to boot are
    handed to the allocator here, before anything could read them. After this
    phase the kernel can allocate memory.
-3. **Devices** (`drivers`). The kernel finds and programs the interrupt
-   controllers, sets this core's clock speed policy
+3. **Devices** (`drivers`). The kernel programs this core's interrupt
+   controller, sets its clock speed policy
    ([CPU frequency](/docs/architecture/cpu-frequency)), starts the other CPU
-   cores (each sets its own speed as it comes up), and starts the clocks: it
+   cores (each sets its own speed as it comes up and starts scheduling work at
+   once), finds the shared interrupt controller, and starts the clocks: it
    uses the HPET, a high-precision timer, to measure how fast the CPU's local
    timer runs, and then sets every core's local timer to interrupt 100 times a
    second, which drives the scheduler. The framebuffer comes up here, and
@@ -113,8 +114,9 @@ one (`BOOT: phase early_hw`, and so on).
    means the kernel has reached this point.
 
 When the last phase is done the log prints `=== KERNEL BOOT SUCCESSFUL ===`,
-and every core enters the scheduler. From then on, the scheduler decides what
-runs on each core: programs, and the kernel's own background threads.
+and the bootstrap processor enters the scheduler too; the other cores have
+been in it since they started. From then on, the scheduler decides what runs
+on each core: programs, and the kernel's own background threads.
 
 If a required step fails, the kernel stops with a panic rather than
 continuing on a half-built machine. A few requirements are absolute: SlopOS
@@ -208,8 +210,9 @@ paired for [remote control](/docs/self-hosting/remote-control)), runs the
 Wheel of Fate (next section), and only then starts the extensions' services
 and puts a session on the screen: the desktop of the person the accounts
 record logs in automatically, or the login screen. On a live boot from the install medium, that desktop opens the
-installer's welcome in place of a terminal. A test boot (`tests=on`) runs no
-wheel and starts no session. [Init and services](/docs/architecture/init)
+installer's welcome in place of a terminal. A test boot (`tests=on`) runs the
+userland tests in place of the wheel and starts a session only if they fail
+or something asks init for one. [Init and services](/docs/architecture/init)
 describes what init starts, in what order and how it keeps it running, and
 [Sessions and login](/docs/architecture/sessions) describes the login screen
 and switching between people.
@@ -240,7 +243,8 @@ The ring's segments light clockwise from the top, each one as its share of
 the setup steps completes, so a ring that stops partway tells you roughly how
 far the boot got. Pressing Esc shows the kernel log instead, drawn on screen,
 and pressing it again hides it; the log is the first place to look when a
-boot stops. Esc works this way until the desktop draws its first frame.
+boot stops. Esc works this way until the first desktop or login screen
+draws a frame.
 
 The Wheel of Fate starts on the boot screen's last frame. The lit ring dims
 except for the top segment, a light runs round it five turns and more and

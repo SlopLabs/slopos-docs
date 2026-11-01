@@ -300,7 +300,7 @@ realtime signals for itself; SlopOS's C library keeps none, so `SIGRTMIN` is
 32.
 
 The queue is limited per process and per thread. Once it is full, `sigqueue`
-fails with `EAGAIN`. A `kill` or a signal from the kernel is never refused
+and `pthread_kill` fail with `EAGAIN`. A `kill` or a signal from the kernel is never refused
 for that reason: it is still delivered, only without its own record of who
 sent it. That record (`siginfo`) is always accurate when it exists, because
 the kernel fills in the sender's pid and real user id itself and refuses a
@@ -361,7 +361,10 @@ fix that, and SlopOS has both.
 - **pidfd.** `pidfd_open(pid)` returns a descriptor for any process that
   hasn't been reaped yet, named by its pid (a thread that isn't its
   process's first fails with `EINVAL`, a process already reaped with
-  `ESRCH`). `poll` reports it readable once the process exits, so you can
+  `ESRCH`). `poll` reports it readable once the process's first thread (the
+  one whose id `getpid` returns) has exited, which is normally when the whole
+  process exits; a first thread that calls `pthread_exit` while others run
+  makes it readable early. You can
   wait for it with `poll` or [SlopRing](/docs/abi/slopring) alongside
   everything else; there is nothing to `read` from it. For your own child
   you still reap it with `waitpid`. Every pidfd is close-on-exec. Because

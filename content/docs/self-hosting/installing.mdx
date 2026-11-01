@@ -77,8 +77,8 @@ installs without the developer tools and says so.
    sudo dd if=builddir/slop.iso of=/dev/sdX bs=4M conv=fsync
    ```
 
-   The stick then has the ISO's partition table, with the payload as its
-   second partition.
+   The stick then carries the ISO's partition table, and the payload, when
+   the ISO has one, in a partition of its own.
 
 `REMOTE=1 just iso` builds a medium whose base is paired with your host for
 [remote control](/docs/self-hosting/remote-control); it carries the pairing's
@@ -215,15 +215,19 @@ tools first.
 **Install on a partition** makes a partition you name SlopOS's root and
 erases it, and puts the boot and crash partitions into free space unless the
 disk has SlopOS's already. On a disk that already holds SlopOS, the window
-offers *Reinstall SlopOS*, which reuses its root and keeps its accounts and
+offers *Reinstall SlopOS*, which reuses SlopOS's root partition. When that
+partition still holds an ext4 volume, the reinstall keeps its accounts and
 their files: both kernel slots and both bases are written afresh from the
 stick, `/usr/local` is updated, and `/src` and the old system's people stay
-as they were.
+as they were. A root partition that holds no volume any more is erased
+first, and the window says so; one that mounts but carries no record of who
+owns its trees is refused before anything is written.
 
-A new root takes all the free space it is given unless you ask for less, and
-never less than the system needs: 1 GiB without the developer tools, or the
-payload plus room to build SlopOS beside it. The 4 MiB crash partition comes
-after it, and whatever is left stays free.
+A new root takes all the free space it is given unless you ask for less. A
+root, new or reused, is never smaller than the system needs (1 GiB without
+the developer tools, or the payload plus room to build SlopOS beside it) and
+never larger than 16 TiB, the largest the kernel mounts. The 4 MiB crash
+partition comes after a new root, and whatever is left stays free.
 
 ## What the installer writes, and what it never writes
 
@@ -361,8 +365,10 @@ new step after that check.
 the terminal prints, is held to the screen glossary (`theme-core::words`)
 and to decimal units. A new message goes through those tests.
 
-**Layout and capabilities.** Where partitions go is `boot-core::install`,
-shared with the host's disk builder. `org.slopos.install` runs the engine as
+**Layout and capabilities.** Where partitions go is `boot-core::install`.
+The partition types, sizes and paths it places are `boot-core::layout`, which
+the host's disk builder reads too (`tools/bootdisk`), so the QEMU boot disk
+and an installed disk share one layout. `org.slopos.install` runs the engine as
 uid 0 with `RawBlock`, `Mount`, `Power`, `BootEntry`, `Seal` and
 `DacOverride`; e2fsprogs, an unpatched recipe, gets only the `RawBlock` it
 needs for the device it formats or checks.

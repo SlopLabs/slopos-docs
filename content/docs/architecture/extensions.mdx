@@ -175,9 +175,10 @@ person approves it, and from then on the record names no key. A signed
 update does not turn back on an extension the person turned off, and does
 not bring back one the person removed.
 
-**Versions only go up.** The record keeps a *version floor*, the highest
-version ever installed. An older version is refused, and so is the same
-version with other bytes. `extctl rollback hello` makes the previous image
+**Versions only go up.** The record keeps a *version floor*: each install
+raises it to the version installed, and only a rollback lowers it. A version
+below the floor is refused, and so is the floor's own version with other
+bytes. `extctl rollback hello` makes the previous image
 current again and lowers the floor to it, but the version it left is refused
 to signed installs until a newer one goes in, so an update withdrawn for a
 fault cannot come back unasked. Removing an extension keeps its record,

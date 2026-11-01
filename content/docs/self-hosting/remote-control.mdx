@@ -239,6 +239,8 @@ builds and installs your current tree on the paired computer:
    running kernel serves the new base, the computer switches to it at once,
    and the recipe waits for `remoted` to report the new base's tag:
    `remote: the base runs now, without a reboot: boot <boot id>, base tag <tag>`.
+   Otherwise (the base needs the new kernel) the recipe says the base does
+   not run yet, and it runs from the boot into that kernel in step 4.
 4. A changed kernel is pushed into the slot that isn't the default, armed for
    one boot, and booted. The recipe waits for the computer to come back with
    the new tag. If it comes back with another, the new kernel didn't boot
@@ -265,9 +267,10 @@ before it writes anything.
   agent to your broker and receive what you send it: commands, file contents.
   It gains nothing on the computer by that, but don't push secrets to a
   computer you don't trust.
-- **Kernel and base installs touch only SlopOS's own boot partition.** Kernels and bases go
-  in through `bootctl`, which writes the boot partition and the boot loader's
-  variables, never the EFI system partition or another system's partitions.
+- **Kernel and base installs leave the rest of the disk alone.** Kernels and
+  bases go in through `bootctl`, which writes SlopOS's boot partition and the
+  boot loader's variables, never the EFI system partition or another system's
+  partitions.
   Commit a kernel only once it has come back with the expected tag, which
   `remote-install` does for you.
 - **A new pairing ends the old agent's work.** When a base switch changes the

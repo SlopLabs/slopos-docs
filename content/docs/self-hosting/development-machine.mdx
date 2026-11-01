@@ -18,7 +18,7 @@ linker, git and a build system together touch almost every part of an OS,
 from threads and memory maps to files, pipes and the network. When something
 in SlopOS is missing or wrong, a build in the guest tends to find it.
 
-The machine on this page is a virtual one. A computer you installed SlopOS on
+The development machine is a virtual one. A computer you installed SlopOS on
 from a medium carrying the toolchain runs the same loop, with the same
 commands ([Installing SlopOS](/docs/self-hosting/installing)), and
 [Remote control](/docs/self-hosting/remote-control) drives one from your
@@ -325,14 +325,17 @@ belongs to someone else.
   slot, and roll back from slots that crash.
 
 The last two need a built toolchain and a clean working tree (the guest builds
-`HEAD`). The SSH rung needs `sshd` on the host, and the crates.io and GitHub
-rungs need the host to be online. `just bench-selfhost` runs the guest's build
+`HEAD`). `just test-toolchain` runs without one too, but then boots once and
+checks only the seeded clone, its vendored crates and the root's free space.
+The SSH rung needs `sshd` on the host, and the crates.io and GitHub rungs need
+the host to be online. `just bench-selfhost` runs the guest's build
 under the kernel's profiler and prints where the time went.
 
 ## For contributors
 
-The host writes into the root image with `debugfs` on every `just boot`, and it
-treats two kinds of directory differently:
+The host writes into the root image with `debugfs` on every `just boot` but
+one that finds the image closed mid-write, and it treats two kinds of
+directory differently:
 
 - A **host tree** stays the host's. The toolchain and the apps in `/usr/local`
   are two. The host records the files it installed in a manifest beside the
@@ -345,9 +348,10 @@ treats two kinds of directory differently:
 - A **seed tree** becomes the guest's once copied. `/src/slopos` is one: the
   host copies it only onto a root that has no `/src`.
 
-The host also grows the root image with `resize2fs` on every boot to keep a
-minimum of free space (`ROOT_FREE_FLOOR`, 6G by default), enough for a clean
-build of the dev and tests systems.
+On every boot the host also measures the root image's free space and grows
+the image with `resize2fs` whenever less than `ROOT_FREE_FLOOR` (6G by
+default) is free, which is enough for a clean build of the dev and tests
+systems.
 
 The whole build runs in the guest with the same scripts the host uses.
 `scripts/build_kernel.sh` is POSIX `sh`; the userland and C++ runtime builds

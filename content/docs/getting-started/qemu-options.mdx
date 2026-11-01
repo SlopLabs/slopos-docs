@@ -20,9 +20,9 @@ The wrapper runs in one of three modes, chosen by the recipe.
 
 | Mode | Recipes | Window | Serial output |
 |------|---------|--------|---------------|
-| `interactive` | `boot`, `boot-fast`, `boot-debug`, `boot-live`, `ui-shots`, `test-remote` | Yes, unless `VIDEO=0` (`ui-shots` and `test-remote` open none) | The terminal |
+| `interactive` | `boot`, `boot-fast`, `boot-debug`, `boot-live`, `ui-shots`, `test-remote` | Yes, unless `VIDEO=0` (`ui-shots` and `test-remote` open none) | The terminal (`ui-shots` and `test-remote` read it themselves) |
 | `logged` | `boot-log` | No | `LOG_FILE` |
-| `test` | `test` and its variants, `test-persist`, `test-install`, `test-installer`, `test-usb` and the other checks that boot | No | The test runner |
+| `test` | `test` and its variants, `test-persist`, `test-install`, `test-installer`, `test-usb` and the other checks that boot | No | The test runner, or a log file the check reads |
 
 ## Recipe variables
 

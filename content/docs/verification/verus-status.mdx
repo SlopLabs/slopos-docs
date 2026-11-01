@@ -5,8 +5,8 @@ description: "Which rules in the kernel are proven by a machine, what that proof
 
 For the parts of the SlopOS kernel where a bug would corrupt memory or let a
 program take more than it is allowed, you can rely on more than tests. Most
-of them are in the trusted core; SlopRing's queues and zero-copy TCP sends
-are the exceptions. A tool has checked, for every possible sequence of
+of them are in the trusted core; SlopRing and zero-copy TCP sends are the
+exceptions. A tool has checked, for every possible sequence of
 operations, that rules such as "a page of memory is never freed twice" can't
 be broken, and every change has to keep those checks passing. The proofs
 cover the logic of each mechanism, written out as a small model next to the
@@ -50,9 +50,9 @@ rules those steps must preserve. Verus then proves that every step keeps every
 rule.
 
 Many proofs also contain a deliberately broken version of a step, such as a
-release that frees a page before resetting it, and show that Verus rejects it.
-That checks the rules are strong enough to catch a real mistake, because a
-rule that even the broken version satisfies says nothing.
+release that frees a page before resetting it, and prove that it breaks one of
+the rules. That checks the rules are strong enough to catch a real mistake,
+because a rule that even the broken version satisfies says nothing.
 
 The proofs are models, so they can drift from the code, and this has happened.
 The page-table proof passed while the kernel had a bug in it: when mapping a
@@ -107,11 +107,12 @@ buy the most.
 
 ```bash
 just verify                   # check every proof
-just verify task_ownership    # check one proof, by file name
+just verify task_ownership    # check one proof, by file name without .rs
 ```
 
 The first run downloads the pinned version of Verus into
-`third_party/verus` (`just ensure-verus` does only that step). Any statement
+`third_party/verus` and installs, through `rustup`, the Rust release Verus is
+built against (`just ensure-verus` does only that step). Any statement
 Verus can't prove fails the run, and the failing proof file is named. CI runs
 every proof on each change, in the same job as Miri.
 
@@ -126,8 +127,9 @@ build Verus from the pinned commit and point `VERUS_BIN` at it.
   main branch, not its experimental `async` branch, because the kernel has no
   `async`.
 - **Bumping it.** At most once a quarter, and only when a needed feature
-  lands. A bump has to pass `just verify` unchanged: a proof that breaks is
-  fixed or the bump is reverted, never weakened. If Verus stops being
+  lands. A bump has to pass `just verify`: a proof that breaks on the new
+  Verus is fixed or the bump is reverted, and no rule is weakened to make it
+  pass. If Verus stops being
   maintained, the fallback is bounded model checking with Kani, which checks
   inputs up to a size limit and is a weaker guarantee.
 - **Adding a proof.** One file per module it models, named after it, in
