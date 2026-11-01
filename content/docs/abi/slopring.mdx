@@ -115,8 +115,8 @@ Bit 2 is unused.
 |---|---|---|---|
 | 0 | `OP_NOP` | Nothing | Completes with `0` |
 | 1 | `OP_READ` | `read` on a file or socket | At the descriptor's file position, which it advances, as `read` does |
-| 2 | `OP_WRITE` | `write` on a file or socket | At the descriptor's file position, as `write` does |
-| 3 | `OP_RECVMSG` | `recvmsg` on a socket, including passed descriptors (`SCM_RIGHTS`) on a Unix socket | `addr` is the `msghdr`; at most 4096 bytes per operation; multishot. With a fixed or provided buffer the data goes into that buffer, `addr` is unused and passed descriptors are closed |
+| 2 | `OP_WRITE` | `write` on a file or socket | At the descriptor's file position, which it advances, as `write` does |
+| 3 | `OP_RECVMSG` | `recvmsg` on a socket, including passed descriptors (`SCM_RIGHTS`) on a Unix socket | `addr` is the `msghdr`, and at most 4096 bytes move per operation; multishot. With a fixed or provided buffer the data goes into that buffer instead, up to its length, `addr` is unused and passed descriptors are closed |
 | 4 | `OP_SEND` | Send a buffer on a socket | At most 4096 bytes per operation from `addr`; a fixed buffer has no such limit |
 | 5 | `OP_ACCEPT` | Accept a connection and install its descriptor | The peer's address is not reported; multishot |
 | 6 | `OP_POLL_ADD` | Wait until a descriptor is ready | `op_flags` is the poll mask, of which only `POLLIN` and `POLLOUT` are waited for; `POLLERR` and `POLLHUP` are always reported. The result is the ready events; multishot |
@@ -156,8 +156,8 @@ entry's own result: `0` if it found one, `-ENOENT` if not. With
   ends, so closing or reusing the descriptor number does not affect it.
 - With `min_complete > 0`, the caller sleeps until the files its in-flight
   operations wait on become ready, the nearest `OP_TIMEOUT` passes or 50 ms
-  have gone by, retries them, and returns once the completion queue holds `min_complete`
-  completions or a signal arrives. An `OP_TIMEOUT`'s `-ETIME` counts as one
+  have gone by, retries them, and returns once the completion queue holds
+  `min_complete` completions or a signal arrives. An `OP_TIMEOUT`'s `-ETIME` counts as one
   completion; it does not end the wait by itself.
 - Completions are posted only inside `ring_enter`. No kernel thread completes
   operations in the background, and the ring descriptor never becomes
@@ -175,8 +175,9 @@ entry's own result: `0` if it found one, `-ENOENT` if not. With
   `OP_RECVMSG` and `OP_POLL_ADD`; other opcodes ignore it) stays in flight and
   posts one completion per event with `SLOPRING_CQE_F_MORE` set: per accepted
   connection, per message, or for `OP_POLL_ADD` each time the set of ready
-  events changes to a set that is not empty. An error, end of stream, or for `OP_POLL_ADD` `POLLERR` or
-  `POLLHUP`, posts the last completion, with the flag clear. Cancelling it
+  events changes to a set that is not empty. An error, end of stream, or
+  for `OP_POLL_ADD` `POLLERR` or `POLLHUP`, posts the last completion, with
+  the flag clear. Cancelling it
   posts one `-ECANCELED` with the flag clear. A multishot submission that
   also selects a buffer is `-EINVAL`.
 

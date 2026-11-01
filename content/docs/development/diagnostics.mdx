@@ -106,8 +106,8 @@ answers when nothing else does.
 - **The key came too late, or wasn't a command key.** On the keyboard the
   trigger stays armed for three seconds (`kconsole.arm_ms`). A key after
   that, or any key that is not a letter, a digit or a modifier such as
-  Shift, disarms it and reaches the program as usual. A letter or digit no command takes logs a line starting
-  `kconsole: no command for`.
+  Shift, disarms it and reaches the program as usual. A letter or digit no
+  command takes logs a line starting `kconsole: no command for`.
 - **The serial trigger is off.** `kconsole.serial=off` disarms BREAK.
 
 Nothing a program does can reach a command that changes the machine: the
@@ -156,11 +156,11 @@ While the CPU stays stuck, the report comes again each time the stall
 doubles (at 200, 400 and 800 samples with the default threshold). The first
 report at five times the threshold or more is fatal, which with the default
 is the one at 800 samples. A chain of CPUs waiting on each other in a circle
-(a deadlock) is fatal at its first report. Under a hypervisor, a CPU that the host didn't schedule looks exactly like a
-stuck one, so there the watchdog only reports unless you boot with
-`watchdog.panic=on`. A fatal stall ends the machine as a panic does,
-leaving a crash record (below) with the message
-`NMI watchdog: CPU made no progress, sustained`.
+(a deadlock) is fatal at its first report. Under a hypervisor, a CPU that
+the host didn't schedule looks exactly like a stuck one, so there the
+watchdog only reports unless you boot with `watchdog.panic=on`. A fatal
+stall ends the machine as a panic does, leaving a crash record (below) with
+the message `NMI watchdog: CPU made no progress, sustained`.
 
 ## A program died with an oops
 
@@ -333,8 +333,10 @@ prof stop
 `prof report <label>` prints the report's lines, which start `PROF[<label>]:`.
 Copy the file to the host (`just remote pull` on a paired machine, or
 `just export-file` once the development machine has shut down), where
-`scripts/prof_report.py --label slow slow.log` turns them into tables. To profile one of the self-hosting checks instead, add `prof=on`
-to its command line through `TEST_CMDLINE_EXTRA` (which `test-toolchain` and
+`scripts/prof_report.py --label slow slow.log` turns them into tables.
+
+To profile one of the self-hosting checks instead, add `prof=on` to its
+command line through `TEST_CMDLINE_EXTRA` (which `test-toolchain` and
 `test-selfhost` read, and `just test` does not), and the report comes at the
 end of its test run:
 
@@ -386,8 +388,8 @@ that starts `LOCK DEPENDENCY CYCLE`. On a test boot, during boot, or anywhere
 else the kernel can't recover from a panic, that is a kernel panic. In a
 program's system call or a kernel thread on a running system it is an oops
 instead (see [A program died with an oops](#a-program-died-with-an-oops)),
-whose `panic recovery:` line carries the same message. Before either, the
-log has the full report:
+whose `panic recovery:` line carries the same message. Before the panic,
+the log has the full report:
 
 ```
 LOCKDEP: dependency cycle
@@ -405,11 +407,11 @@ path" is the order the checker saw earlier, which this acquisition
 contradicts. One of the two orders is wrong; fix the code so both places
 take the locks in the same order.
 
-**What to do.** The first violation stops the test run or the boot, so if you
-suspect more than one, boot with `lockdep=warn`: the checker reports each problem once and
-carries on, so one boot lists them all. SysRq `d` shows how full the checker's
-tables are. The kernel also prints a summary line at boot and after each test
-phase:
+**What to do.** Each violation panics, so a test run ends at the first one.
+If you suspect more than one, boot with `lockdep=warn`: the checker then
+reports each problem once and carries on, so one boot lists them all. SysRq
+`d` shows how full the checker's tables are. The kernel also prints a summary
+line at boot and after each test phase:
 
 ```
 LOCKDEP[boot]: ACTIVE classes=<n>/<max> (<n>%) edges=<n>/<max> chains=<n>/<max> declared=<n>/<n> held_max=<n>/<max> held_drops=0 chain_hit=<n> chain_miss=<n> violations=0 reports=0 collisions=0 leaked=0 mode=Panic

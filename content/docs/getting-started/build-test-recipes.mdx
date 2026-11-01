@@ -101,13 +101,14 @@ just test
 ```
 
 This builds a kernel with the test harness compiled in, boots it in QEMU with
-no window, and runs every kernel test and then every userland test. A progress
-bar shows how far it is. When QEMU exits, the runner prints a summary and
-exits 0 if every test passed and 1 if any failed. It exits 2 when the run
-proves nothing: QEMU never reached the test harness, or the harness planned
-no tests although nothing filtered them. It exits 64 when it could not start
-a run at all, for example because the build failed. Each run starts from a freshly built
-test disk, so no run depends on what the last one wrote.
+no window, and runs every kernel test and then every userland test, leaving
+out only the few a host script has to drive. A progress bar shows how far it
+is. When QEMU exits, the runner prints a summary and exits 0 if every test
+passed and 1 if any failed. It exits 2 when the run proves nothing: QEMU
+never reached the test harness, or the harness planned no tests although
+nothing filtered them. It exits 64 when it could not start a run at all, for
+example because the build failed. Each run starts from a freshly built test
+disk, so no run depends on what the last one wrote.
 
 ### 2. Read a failure
 

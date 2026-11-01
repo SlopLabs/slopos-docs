@@ -96,7 +96,7 @@ Some calls check a further capability, or a seat, inside the handler
 | `net_query` | `NetAdmin` | The owner of a socket the caller does not own |
 | `efivar_get`, `efivar_set` | `BootEntry` | `Boot####`, `BootOrder`, `BootNext` and `BootCurrent` |
 | `ioctl` (`FS_IOC_SETFLAGS`) | `Seal` | Setting or clearing the immutable flag |
-| `read`, `write`, `fsync` and `ioctl` (`BLKRRPART`) on a block device node; `read` and `unlink` in `/dev/crash` | `RawBlock` | Any call |
+| Every read and write, `fsync`, `fdatasync` and `ioctl` (`BLKRRPART`) on a block device node; `read` and `unlink` in `/dev/crash` | `RawBlock` | Any call |
 | Every call that checks file permissions | `DacOverride` | Passing every mode check, and `chown` to any owner |
 | `fb_flip`, `cursor_set_image`, `cursor_move`, `set_display_mode` | The screen seat | Any call (`EPERM` otherwise) |
 | `input_poll_batch` | The input seat | Any call (`EPERM` otherwise) |

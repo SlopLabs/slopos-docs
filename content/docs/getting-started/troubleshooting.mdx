@@ -50,8 +50,9 @@ it.
 | `gen_verity: python3 is required` | Python 3 |
 | `qemu_run.sh: GIT_SSH_PEER needs sshd on PATH or at /usr/sbin/sshd` | OpenSSH's server; only `just test-toolchain` asks for it, once a toolchain is built |
 
-The boot-disk tools are needed by `just boot` and the checks that build a boot
-disk; the live ISO does not need them.
+The boot-disk tools, and `zstd`, which unpacks the firmware a boot disk
+boots with, are needed by `just boot` and the checks that build a boot disk;
+the live ISO does not need them.
 
 ## The build cannot find LLVM
 
@@ -105,10 +106,10 @@ preserve: the image is damaged, or a boot left it dirty (see above)
 The development machine's disk holds whatever you did inside it, so the build
 never deletes it. Before each boot it updates what the host installs there
 (the toolchain and the apps under `/usr/local`), and it stops when it cannot
-do that safely: the image is damaged or was not shut
-down cleanly, it cannot be grown, it falls short of the ext4 features every
-SlopOS volume has, or it carries a kind of integrity trailer the build would
-not keep.
+do that safely: `e2fsck` finds the image damaged, it cannot be grown, it
+falls short of the ext4 features every SlopOS volume has, or it carries a
+kind of integrity trailer the build would not keep. (A disk that was only
+closed mid-write is not refused; see the end of this section.)
 
 To keep your work, run the `Fix it:` command when there is one. `e2fsck -fy`
 repairs the filesystem, and may throw away what it cannot repair. When the
@@ -135,8 +136,8 @@ recovery](/docs/architecture/crash-recovery) explains the journal.
 The root filesystem came up read-only. The kernel mounts a disk read-only
 when it cannot write it safely (the last boot ended mid-write and the journal
 could not be replayed, the disk records errors, or it uses a feature this
-kernel does not write), and it leaves the repair to `e2fsck`. The boot log names the reason
-in a line that starts `ext4: mounting read-only` or
+kernel does not write), and it leaves the repair to `e2fsck`. The boot log
+names the reason in a line that starts `ext4: mounting read-only` or
 `ext4: MOUNTING READ-ONLY`. A read-only disk cannot be the root, so the
 system runs with its root in memory instead, as the live ISO does, and
 mounts the real disk at `/mnt`. Everything looks normal, but nothing written

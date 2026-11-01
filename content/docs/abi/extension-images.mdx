@@ -157,7 +157,7 @@ What the extension asks for. The file is at most 64 KiB.
 | `config` | The extension has `/etc/<name>` for settings | No |
 | `runtime` | The extension has `/run/<name>`, where its unix sockets go | No |
 | `command <command>` | Links `/opt/<name>/bin/<command>` into `/opt/bin` | Each command once |
-| `app <id>` | Shows the app entry `/opt/<name>/share/slopos/apps/<id>.app` in the dock | Each app once |
+| `app <id>` | Shows the app entry `/opt/<name>/share/slopos/apps/<id>.app` in the dock, unless an extension earlier in name order, the base, `/usr/local` or the person's `~/.local` has an entry of that id | Each app once |
 | `service <service>` | Starts a service block | Each service once |
 | `action <action>` | Starts an action block, the privd action `ext.<name>.<action>` | Each action once |
 
@@ -172,7 +172,7 @@ log, state and runtime directories and runs its actions.
 | `args <word>...` | The arguments after the program. Each word printable, without `"` or `*`, at most 64 bytes. Once | No | None |
 | `user` or `user <suffix>` | Which declared user it runs as. Once | No | The first user |
 | `caps <capability>...` | The capabilities it asks for. Once | No | None |
-| `after <service>` | Starts once that declared service is ready. Repeats | No | |
+| `after <service>` | Starts once that declared service is ready, has run 30 seconds or will not start. Repeats | No | |
 | `reads <path>` | A file it reads, or with a trailing `/` a directory: under `/opt/<name>`, where it must exist in the image, or under `/etc/<name>`, which needs `config`. At most 255 bytes. Repeats | No | |
 | `listen tcp <port>` | A TCP port, 1 to 65535, that init binds on every address and keeps. Repeats | No | |
 | `listen udp <port>` | A UDP port that init binds and keeps. Repeats | No | |
@@ -214,8 +214,8 @@ has the exact rules), with these differences for an extension:
   extension's action: its connection goes only to the base's mechanisms.
 - An action is *unasked* when it allows `user` with no level or `alone`,
   `admin` with no level, `paired`, or any `program`. Unasked actions are
-  listed in the grant line, and their capabilities together are held to a
-  key's `user` ceiling.
+  listed in the grant line, and for an image a key signed their capabilities
+  together are held to that key's `user` ceiling.
 
 ### Rules for the whole file
 
@@ -354,7 +354,7 @@ ceiling Power Mount RawBlock NetAdmin ConsoleConfig SysInspect Clock DacOverride
 `BaseUpdate`, `ExtensionUpdate`, `Seal`, `BootEntry`, `SetId`, `ProcSignal`,
 `TestHarness`, `DisplaySeat`, `InputSeat` and `SeatSwitch` are never granted,
 nor is a capability every program holds: a ceiling file that names one is
-refused, and every grant is cut to leave them out.
+refused, and so is an image that asks for one.
 An action's capabilities are further limited to those privd can hand out,
 which leaves out `SchedHigh`.
 

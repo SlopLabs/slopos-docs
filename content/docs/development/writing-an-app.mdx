@@ -350,10 +350,10 @@ after the terminal's:
 
 The test binaries are built with the `testbins` feature, which brings in the
 `slopos-apps` crate, so `apps_test` can build the stopwatch's view directly.
-Run the two tests, with the test that mounts the root first:
+Run the two tests:
 
 ```bash
-just test '*ext4_aaa*,*utest_apps,*utest_dock'
+just test '*utest_apps,*utest_dock'
 ```
 
 The default view shows progress and failures only. To see each case, run the
@@ -362,7 +362,7 @@ same filter raw, and the new ones appear among the cases of
 `KTAP` and a tab:
 
 ```bash
-builddir/run_tests --raw --filter '*ext4_aaa*,*utest_apps,*utest_dock'
+builddir/run_tests --raw --filter '*utest_apps,*utest_dock'
 ```
 
 ```

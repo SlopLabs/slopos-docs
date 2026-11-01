@@ -572,10 +572,11 @@ interfaces are the ones that cross that gap.
 ### Init re-execution state
 
 - **What:** what init hands the next `/sbin/init` when it re-executes itself
-  as `/sbin/init --resume <fd>`: a first line `kept <fds>`, then the header
-  `slopos-init-state 1` and its services, start budgets, sessions, consent
-  links and listener; and the extensions' services, in further pipes, under
-  the header `slopos-init-units 1`.
+  as `/sbin/init --resume <fd> [<fd>,...]`: in the first pipe, a line
+  `kept <fds>`, then the header `slopos-init-state 1` and its services, start
+  budgets, sessions, consent links and listener; and the extensions'
+  services, in the pipes the comma-separated list names, again after a
+  `kept` line, under the header `slopos-init-units 1`.
 - **Between:** the running init and the `/sbin/init` of the base now in
   place, after a base switch changed it.
 - **Level:** versioned by the header lines.

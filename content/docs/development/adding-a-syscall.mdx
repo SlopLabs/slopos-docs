@@ -416,12 +416,11 @@ Run only these tests:
 
 ```bash
 just test 'slopos_core::syscall::tests_build_floor_signal::*'
-just test '*ext4_aaa*,*libc_abi*'
+just test '*libc_abi*'
 ```
 
-The second filter includes `*ext4_aaa*` because the test that mounts the test
-filesystem (`test_ext4_aaa_init`) must run before any test that writes files.
-To see the kernel test's own result line, run the first filter with the
+The second filter needs nothing else: a userland test runs on the booted
+system, after its disk is mounted. To see the kernel test's own result line, run the first filter with the
 runner's `--raw` flag:
 
 ```bash
