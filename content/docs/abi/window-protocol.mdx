@@ -98,8 +98,9 @@ version: rebuild this program").
 
 A tag of 16 or more is a malformed message. `SurfaceAttach` takes a
 descriptor only when `has_fd` is set; `ClipboardCopy` and `ClipboardRead`
-always take one, so a client sends a descriptor with each of them, or the
-request takes whichever descriptor a later message carries.
+always take one, so a client sends a descriptor with each of them. One sent
+without takes the oldest descriptor already queued, which belongs to a later
+message, or none, and a request left with none is ignored.
 
 | Request | What the compositor does |
 |---|---|
@@ -236,8 +237,9 @@ its console.
 `set_max_size`, in pixels of content (the title bar not included):
 
 - `0` is no limit in that dimension; values are capped at 16384.
-- A maximum equal to a non-zero minimum is a window that does not resize: no
-  edge takes a resize and its zoom button does nothing.
+- A maximum equal to the minimum in both dimensions, neither of them `0`, is
+  a window that does not resize: no edge takes a resize and its zoom button
+  does nothing.
 - The compositor holds an interactive resize and a zoom to the limits, and
   to its own least window of 200 × 150 unless the window's maximum is
   smaller.

@@ -310,8 +310,8 @@ sealed, which is stricter than Linux. A RAM filesystem keeps only the seal,
 and once set it stays.
 
 Setting or clearing the seal needs the `Seal` capability, on top of owning
-the file. Only init, privd and the programs privd runs for a few actions
-hold it: the installer, the install medium's rescue shell, `extctl` for
+the file. Only init, privd and the programs they start for a few jobs hold
+it: the installer, the install medium's rescue shell, `extctl` for
 extensions and `users` for accounts. That is because the seal is what holds
 the system's records whole: the user database, the accounts record and the
 extension store are only believed while their files are sealed, and the

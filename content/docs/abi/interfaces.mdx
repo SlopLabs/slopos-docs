@@ -197,9 +197,9 @@ interface lasts.
   the kernel can index and mount (every name canonical and present once, none
   beneath a file, the base directories and every directory on the way to one
   directories, `/tmp`, `/run` and `/dev` directories with nothing in devfs, no
-  symlink the kernel refuses, at most 2048 records, an interface and a
-  manifest), and the packer, `bootctl base install` and `bootdisk base` all
-  apply it.
+  symlink the kernel refuses, at most 2048 records, an interface, and a
+  manifest that lists every other record with its mode and SHA-256), and the
+  packer, `bootctl base install` and `bootdisk base` all apply it.
 - **Checked by:** `boot-core`'s and `tools/initramfs`'s host tests
   (`just test-host`); the kernel's base tests; `live_base_test`;
   `just test-install`, which installs bases and rolls them back.
@@ -216,7 +216,7 @@ interface lasts.
   `SLOPOS_BUILTIN_CMDLINE` appends that line to the loader's.
 - **Level:** unversioned.
 - **Held by:** a kernel ignores an option it does not know, and keeps the
-  default for a known option whose value it cannot read, logging a
+  value it had for a known option whose value it cannot read, logging a
   `Boot option: ... ignored` line for most.
 - **A change:** a renamed or removed option leaves installed disks naming the
   old spelling, which a newer kernel ignores.
@@ -489,9 +489,9 @@ interface lasts.
 
 - **What:** `/etc/<name>`, for an extension that declares `config`: a sealed
   directory owned by uid 0 that everyone can read, holding at most 64 sealed
-  files one level deep, each what the computer changed of the extension's
-  configuration. A file's name is letters, digits, `.`, `_` and `-`, at most
-  64 bytes and not starting with `.`; a file is at most 256 KiB. A signed
+  files, one level deep, of the extension's configuration on this computer.
+  A file's name is letters, digits, `.`, `_` and `-`, at most 64 bytes, and
+  starts with a letter or a digit; a file is at most 256 KiB. A signed
   file arrives with a sidecar `<file>.meta` (`name`, `file`, `serial` and
   `sha256` lines) and its signature `<file>.meta.sig`, made with
   `ssh-keygen -Y sign -n extension-config@slopos`.
@@ -511,8 +511,8 @@ interface lasts.
 ### Extension commands
 
 - **What:** `/opt/bin`, holding a link `/opt/bin/<command>` to
-  `/opt/<name>/bin/<command>` for each command the grant of every shown
-  extension names. `/opt/bin` is last on the default search path
+  `/opt/<name>/bin/<command>` for each command the grant of every extension
+  activated at `/opt/<name>` names. `/opt/bin` is last on the default search path
   (`slopos_abi::fs::DEFAULT_PATH`, `/bin:/sbin:/usr/local/bin:/opt/bin`), so
   an extension's command shadows no command of the base or of `/usr/local`.
 - **Between:** `extctl`, in the base, which rewrites the links after every
@@ -543,7 +543,8 @@ interfaces are the ones that cross that gap.
   base reads the manifest of the next.
 - **Level:** unversioned.
 - **Held by:** `boot-core::base`; `boot-core::base::check` refuses a base
-  whose manifest is missing or has a line that does not parse.
+  whose manifest is missing, has a line that does not parse, leaves out a
+  record or misstates one's mode or digest.
 - **Checked by:** `boot-core`'s and `tools/initramfs`'s host tests;
   `live_base_test`.
 - **See:** [Base system](/docs/architecture/base),
@@ -794,9 +795,9 @@ interfaces are the ones that cross that gap.
 
 ### C++ runtime
 
-- **What:** `libc++.so` (libc++ and libc++abi in one object, in no base: the
-  tests image and the toolchain's sysroot carry it), the ABI flags it is built
-  with
+- **What:** `libc++.so` (libc++ and libc++abi in one object, which the
+  shipped base does not carry: the tests base and the toolchain's sysroot
+  do), the ABI flags it is built with
   (`scripts/make_slopos_cxx.sh --print-abi-flags`), and every symbol it leaves
   for `libc.so` to define.
 - **Between:** the runtime, built from the llvm-project release
@@ -816,8 +817,9 @@ interfaces are the ones that cross that gap.
   subtest lines and diagnostic blocks; and the JSON lines the host runner
   writes from them, which carry every key in every event, an absent one as
   `null`.
-- **Between:** the kernel's `ktesting` and the userland test runner, which
-  print, and the host runner `tools/run_tests`, which reads.
+- **Between:** the kernel's `ktesting`, which prints both phases (a userland
+  test reports its cases to the kernel through `test_report`), and the host
+  runner `tools/run_tests`, which reads.
 - **Level:** private. The grammar is the Linux kernel's KTAP; the emitter
   and the parser are built from one commit.
 - **Checked by:** `just check-tests-host` (the runner's Go tests); every

@@ -41,7 +41,7 @@ const PHASES: Phase[] = [
   },
   {
     name: 'Services',
-    note: 'in this order; all but the Wheel start again when they exit, five times a minute at most',
+    note: 'in this order; privd, remoted and the console login start again when they exit, five times a minute at most, and an extension’s service as it declares',
     steps: [
       {
         title: 'privd',

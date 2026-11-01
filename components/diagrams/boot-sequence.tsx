@@ -20,7 +20,7 @@ const STAGES: Stage[] = [
   },
   {
     title: 'Kernel setup',
-    detail: 'CPU tables, the choice of base, memory, interrupt controllers, timers, the other CPUs, devices',
+    detail: 'CPU tables, the choice of base, memory, interrupt controllers, the other CPUs, timers, devices',
     seen: 'a ring of twelve segments lighting up clockwise',
   },
   {

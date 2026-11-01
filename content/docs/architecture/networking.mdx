@@ -6,7 +6,7 @@ description: "What the network stack gives your programs, which network cards it
 import { PacketPath } from '@/components/diagrams/packet-path';
 
 A program on SlopOS talks to the network the same way it would on Linux:
-through *sockets*, with the same calls, flags and error codes. You get TCP
+through *sockets*, with the same calls, numbers and error codes. You get TCP
 connections, UDP datagrams, ping, local Unix sockets between programs on the
 same machine, name lookups through DNS, and an address handed out
 automatically by DHCP on every network card the kernel finds. The kernel
@@ -129,6 +129,12 @@ A few things behave in ways worth knowing:
   mode, which is also what Linux does.
 - **Writing to a closed connection** raises `SIGPIPE`, unless you pass
   `MSG_NOSIGNAL`.
+- **Per-call flags are refused.** `MSG_NOSIGNAL` on a send is the only
+  `MSG_*` flag the kernel takes. Any other, on a send or a receive
+  (`MSG_PEEK`, `MSG_DONTWAIT`, `MSG_WAITALL`, `MSG_OOB`...), fails with
+  `EINVAL` rather than being ignored, because a receive that ignored
+  `MSG_PEEK` would consume the data it was asked only to look at. Make the
+  socket non-blocking instead of passing `MSG_DONTWAIT`.
 - **A restarted server gets its port back.** A TCP listener that sets
   `SO_REUSEADDR` can listen on a port that its predecessor's old connections
   still hold in their closing state (`TIME_WAIT`); only another listener on
@@ -281,7 +287,7 @@ with the client, but nothing starts it.
 - **Some socket kinds.** No Unix datagram or sequenced-packet sockets, and no
   raw or packet sockets for capturing traffic.
 - **TCP out-of-band data.** Urgent bytes arrive inline with the rest, and
-  `MSG_OOB` is refused.
+  `MSG_OOB` is refused like every per-call flag but `MSG_NOSIGNAL`.
 - **Forwarding.** SlopOS doesn't route packets between its cards.
 
 [Known limitations](/docs/status/known-limitations) keeps the current list.

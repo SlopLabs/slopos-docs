@@ -168,7 +168,8 @@ SlopOS has three USB drivers:
 | `usb-storage` | Sticks and other disks speaking Bulk-Only SCSI (class `08`, subclass `06`, protocol `50`) | Disks `sda`, `sdb`, ... |
 | `usb-net` | Ethernet adapters speaking CDC ECM or NCM (class `02`, subclass `06` or `0D`) | Interfaces `eth1` and up |
 
-A function no driver takes is listed as having `no driver` and left alone.
+A function no driver takes is left alone, and the bus listing (below) shows
+it as `no driver`.
 
 Two kernel threads serve every controller. The **`usb`** thread runs the
 controllers: it notices ports changing, steps each enumeration, recovers
@@ -280,7 +281,7 @@ the same way.
 
 ## Network adapters
 
-Most USB Ethernet adapters offer a standard configuration besides the
+Many USB Ethernet adapters offer a standard configuration besides the
 vendor's own: CDC *ECM*, which carries one Ethernet frame per transfer, or
 *NCM*, which packs several frames into one transfer. `usb-net` speaks both.
 It reads the adapter's MAC address from the device, declines one that can't
@@ -298,8 +299,9 @@ the stack is careful about what a lease from a device someone just plugged in
 may change: [Networking](/docs/architecture/networking) explains the rules.
 When the adapter leaves, its interface, routes and DHCP client go with it
 and the name is free again. Whether the cable is plugged in is what the
-adapter last reported; an adapter that never reports it is taken as always
-connected.
+adapter last reported, and counts as unplugged until its first report; an
+adapter with no way to report it (no notification endpoint) is taken as
+always connected.
 
 ## When the boot waits for USB
 
@@ -333,7 +335,7 @@ boots one.
   [`priv`](/docs/architecture/privd), which runs the command once an
   administrator allows it:
 
-  ```bash
+  ```sh
   mkdir $HOME/stick
   priv mount /dev/sda1 $HOME/stick
   priv umount $HOME/stick

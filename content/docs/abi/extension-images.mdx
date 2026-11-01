@@ -69,10 +69,12 @@ name twice or whose `.` or `..` is wrong, and an inode at two names.
 The kernel's `ext_activate` refuses, with `EINVAL`, a volume that has no ext4
 superblock, has blocks other than 4 KiB, does not fill the image's data, is
 not marked `read-only`, has no metadata checksums, has a first inode other
-than 11, or has a journal that needs recovery, and one whose tree holds more
-than 65536 entries, an inode at two names, or anything but directories,
-regular files and symlinks. A first block that fails the tree under the root
-given is `EIO`.
+than 11, or has a journal that needs recovery. It refuses the same way a tree
+that holds more than 65536 entries, an inode at two names, a name twice in a
+directory, a `.` or `..` that names the wrong directory, an entry naming a
+reserved inode, an entry whose type is not its inode's, anything but
+directories, regular files and symlinks, or directories larger together than
+the volume. A first block that fails the tree under the root given is `EIO`.
 
 ## Paths
 
@@ -206,7 +208,8 @@ has the exact rules), with these differences for an extension:
 - `root` and `greeter` are refused.
 - `program <path>` names one of the extension's own programs outside its
   `lib/`, which matches only a requester running that file of the image the
-  record installed, or a base program under `/bin`, `/sbin` or `/usr/bin`.
+  record installed, or a base program under `/bin`, `/sbin` or `/usr/bin`,
+  which must be statically linked or privd leaves the action out.
 - `paired` is accepted, but no request of the paired agent reaches an
   extension's action: its connection goes only to the base's mechanisms.
 - An action is *unasked* when it allows `user` with no level or `alone`,
@@ -283,10 +286,10 @@ installed and at every activation:
 | Rule | Applies to |
 |---|---|
 | Dynamically linked | Every executable and shared object |
-| Interpreter `/lib/ld-slopos.so.1` | Every program: every executable, and every ELF file outside `/lib` |
-| Needs `libc.so` | Every program |
+| Interpreter `/lib/ld-slopos.so.1` | Every program (every executable, and every ELF file outside `/lib`), and a shared object in `/lib` that names an interpreter |
+| Needs `libc.so` | The same files |
 | Each library it needs is `libc.so`, or a shared object found in the image at `/lib/` followed by the name it needs, directly or through at most 7 relative symlinks | Every executable and shared object |
-| Every undefined symbol is exported by `libc.so` or a library it needs, directly or not | Every executable and shared object |
+| Every undefined symbol that is not weak is exported by `libc.so` or a library it needs, directly or not | Every executable and shared object |
 | At most 64 needed libraries, and a closure of at most 256 | Every executable and shared object |
 | At most 1 GiB | Every ELF file |
 
@@ -348,9 +351,10 @@ No extension is granted a capability outside the base's ceiling,
 ceiling Power Mount RawBlock NetAdmin ConsoleConfig SysInspect Clock DacOverride SchedHigh
 ```
 
-Whatever the ceiling file says, `BaseUpdate`, `ExtensionUpdate`, `Seal`,
-`BootEntry`, `SetId`, `ProcSignal`, `TestHarness`, `DisplaySeat`, `InputSeat`
-and `SeatSwitch` are never granted, nor is a capability every program holds.
+`BaseUpdate`, `ExtensionUpdate`, `Seal`, `BootEntry`, `SetId`, `ProcSignal`,
+`TestHarness`, `DisplaySeat`, `InputSeat` and `SeatSwitch` are never granted,
+nor is a capability every program holds: a ceiling file that names one is
+refused, and every grant is cut to leave them out.
 An action's capabilities are further limited to those privd can hand out,
 which leaves out `SchedHigh`.
 
@@ -377,7 +381,7 @@ and its signature are each at most 4096 bytes.
 | Namespace | `extension@slopos` |
 | Key | Ed25519 only |
 | Hash | `sha512` (what `just extension` asks for) or `sha256` |
-| Verification | Strict Ed25519: a canonical public key outside the small-order subgroup, `S` below the group order, `R` the canonical encoding |
+| Verification | Strict Ed25519: a canonical public key outside the small-order subgroup, `S` below the group order, `R` the canonical encoding of `[S]B - [k]A` |
 | Signed bytes | The sidecar file, exactly |
 
 ```sh
@@ -402,7 +406,8 @@ sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 `sha256` is the file's SHA-256, and `serial` a number above 0 that must be
 above the last serial applied for the extension. It is signed as an image's
 sidecar is, under the namespace `extension-config@slopos`, into
-`<file>.meta.sig`, by the key that installed the extension.
+`<file>.meta.sig`, by the key that installed the extension, which the owner
+must still trust.
 
 ## Store files
 
@@ -441,7 +446,7 @@ image current
 |---|---|
 | `enabled` | `yes` or `no` |
 | `signer` | The fingerprint of the key whose updates go in unasked, or `-` |
-| `floor` | The highest version installed, and its root |
+| `floor` | The version floor and its image's root: the highest version installed, or after a rollback the version it made current. An older version is refused, and so is this version with other bytes |
 | `refused` | Versions a rollback left, refused to signed installs; `-` for none |
 | `uids` | Every uid ever given the extension, kept after removal; the uid of its own name is its number |
 | `config` | The last serial of a signed settings file, when there has been one |

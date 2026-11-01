@@ -197,10 +197,11 @@ front, then types into it:
   capability and answers `ENOSYS` on any boot that isn't running the tests,
   so no system a person uses has a keyboard a program can type on.
 - `userland/src/bin/tests/support/asking.rs` asks privd from a child process
-  as a given uid and session, waits until the question is on screen, and runs
-  the keys you give it (`tab_and_enter`, `escape`, `type_text` and `key`),
-  waiting out the moment the dialog ignores input after it appears. Its
-  result is a line such as `ran 0` or `denied by the person …`.
+  as a given uid and session, waits until the question is on screen, and then
+  runs the function you give it to answer. `tab_and_enter` and `escape` first
+  wait out the moment the dialog ignores input after it appears; `key` and
+  `type_text` press keys at once, so call `armed` before them. The result is
+  a line such as `ran 0` or `denied by the person …`.
 - `userland/src/bin/tests/support/sessions.rs` reads the session table and
   waits until a session is in front.
 
@@ -230,13 +231,20 @@ that the test that sets up the test filesystem still runs first.
 Other ways to run the suite:
 
 ```bash
-just test-rerun-failed          # only the tests that failed last time
-just test-verbose 'mm::*'       # also print the log of tests that passed
-just test-quiet                 # print only failures and the summary
-just test-userland-only         # skip the kernel tests
-just test-raw                   # the raw serial output, unparsed
-just test-elf builddir/guest-tests.elf   # the suite on a kernel built elsewhere
+just test-rerun-failed                         # only the tests that failed last time
+just test-verbose 'slopos_mm::*'               # also print the log of tests that passed
+just test-quiet                                # print only failures and the summary
+just test '*ext4_aaa*,slopos_core::utests::*'  # the userland test programs, and the disk mount
+just test-raw                                  # the raw serial output, unparsed
+just test-elf builddir/guest-tests.elf         # the suite on a kernel built elsewhere
 ```
+
+A pattern matches the whole name, so `'mm::*'` matches nothing: every name
+starts with its crate, `slopos_mm::`. Every `utest!` is registered in
+`core/src/utests.rs`, which is why `slopos_core::utests::*` selects all the
+test programs. Don't use `just test-userland-only` for that: at this commit
+its pattern matches no test in either phase, so it runs nothing and the
+runner exits 2.
 
 [Building and testing](/docs/getting-started/build-test-recipes) lists every
 test recipe. To run a subset in a manual boot rather than through the
