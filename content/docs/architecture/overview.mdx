@@ -6,15 +6,17 @@ description: "What the parts of SlopOS are, what each one is responsible for, an
 import { SystemLayers } from '@/components/diagrams/system-layers';
 
 SlopOS gives you a working Unix-like system on a 64-bit x86 PC or in QEMU: a
-shell, the core utilities, an editor, network tools and a desktop, all running
-as ordinary programs that can't read each other's memory or take down the
-machine. If you have written programs for Linux, the interface will be
-familiar, because SlopOS uses Linux's system call numbers, signals and error
-codes. What is unusual is inside the kernel, which is written in Rust: all of
-its `unsafe` code sits in one small trusted core, and the compiler checks the
-rest. This page names each part of the system, says what it is responsible
-for, and then follows one ordinary action, a program reading a file, down
-through all of them and back.
+desktop that each person logs in to, a shell, the core utilities, apps such
+as an editor and a file manager, network tools, and a Rust and C toolchain
+that can rebuild SlopOS from its own source. All of it runs as ordinary
+programs that can't read each other's memory or take down the machine. If you
+have written programs for Linux, the interface will be familiar, because
+SlopOS uses Linux's system call numbers, signals and error codes. What is
+unusual is inside the kernel, which is written in Rust: all of its `unsafe`
+code sits in one small trusted core, and the compiler checks the rest. This
+page names each part of the system, says what it is responsible for, and then
+follows one ordinary action, a program reading a file, down through all of
+them and back.
 
 Almost nothing here was invented for SlopOS. The way the kernel is split, with
 one small trusted part underneath everything else, comes from the
@@ -25,11 +27,18 @@ Linux's, down to the numbering.
 ## The parts of SlopOS
 
 The shell, the terminal, the desktop, `ls` and `cat` are all ordinary user
-programs, under the same rules as the programs you write. The few that need
-more, such as the compositor taking over the screen or `bootctl` writing the
-boot slots, are granted a specific permission by the kernel when they start
-([Permissions](/docs/architecture/authority)). The kernel itself is split in
-two: a small trusted core at the bottom, and everything else on top of it.
+programs, under the same rules as the programs you write. Each runs as some
+user, as on Linux: your programs as you, the system's own services as root
+or as users of their own. Unlike Linux, being root gives a program no power
+over the machine. Powers such as taking over the screen, writing a raw disk or
+rebooting are *capabilities*, named bits a process holds, and a program can
+only be handed them by the program that starts it. When you ask for
+something that needs one, such as installing a new kernel, your request goes
+to a broker, privd, which checks the system's policy, asks you to confirm when
+the policy says so, and runs the program that does the work
+([Capabilities](/docs/architecture/authority),
+[Privileged actions](/docs/architecture/privd)). The kernel itself is split
+in two: a small trusted core at the bottom, and everything else on top of it.
 
 <SystemLayers />
 
@@ -40,9 +49,10 @@ compiler can't check: setting up the CPU, building the tables that decide what
 memory each program can see, switching between programs, copying bytes to and
 from a program's memory, and receiving interrupts from devices. All of these
 need `unsafe` Rust, which is Rust's way of saying "the compiler can't prove this
-is correct; a person has to". SlopOS puts every line of the kernel's own
-`unsafe` code in this one library, called OSTD (the trusted core), and the
-build refuses `unsafe` anywhere else in the kernel.
+is correct; a person has to". SlopOS puts the kernel's own `unsafe` code in
+this one library, called OSTD (the trusted core), bar a few declarations the
+kernel binary itself has to make, and the build refuses `unsafe` anywhere else
+in the kernel.
 
 That changes what a bug can do. A mistake in the rest of the kernel can still
 return a wrong answer, crash a program or even allow something it shouldn't,
@@ -62,28 +72,42 @@ is split by responsibility:
 - **Processes and scheduling.** Processes, threads, signals and job control
   behave as on Linux. The scheduler preempts on a timer and keeps one run
   queue per CPU, and almost every wait in the kernel ends at once when the
-  task is killed. See [Processes and signals](/docs/architecture/processes),
-  [Scheduling and waiting](/docs/architecture/scheduler-wait-protocol) and
+  task is killed. On a CPU with fast and efficient cores it places work by
+  core type, and where the CPU supports it, each core picks its own clock
+  speed as the load changes. See
+  [Processes and signals](/docs/architecture/processes),
+  [Scheduling and waiting](/docs/architecture/scheduler-wait-protocol),
+  [CPU frequency](/docs/architecture/cpu-frequency) and
   [Task lifetimes](/docs/architecture/task-ownership).
 - **Memory.** Each process gets its own address space, filled in on first
   use, and `fork` shares pages copy-on-write. Unlike Linux, the kernel
   refuses memory when a program asks for it rather than when it first
   touches it, so running out is usually an error the program can handle
-  instead of a kill. See [Memory](/docs/architecture/memory) and
+  instead of a kill. Each program has budgets for files, threads and address
+  space, and each person a share of the machine's processes and threads. See
+  [Memory](/docs/architecture/memory) and
   [Resource limits](/docs/architecture/resource-accounting).
-- **Permissions.** Some system calls, such as rebooting the machine or taking
-  over the screen, are only for programs that have been given the right to
-  make them. See [Permissions](/docs/architecture/authority).
-- **Filesystem.** Disks, the read-only base image and the special files under
-  `/dev` form one directory tree. Disks use ext4 with a journal, the same
-  format Linux uses. See [Filesystem](/docs/architecture/filesystem),
+- **Capabilities and users.** Every process carries a capability mask and a
+  set of Unix user and group ids. The calls that change the machine check the
+  mask; every file access checks the file's owner and mode against the ids.
+  See [Capabilities](/docs/architecture/authority),
+  [Users and file permissions](/docs/architecture/users) and
+  [Sessions and login](/docs/architecture/sessions).
+- **Filesystem.** Disks, the read-only base, extensions and the special files
+  under `/dev` form one directory tree. Disks use ext4 with a journal, the
+  same format Linux uses. See [Filesystem](/docs/architecture/filesystem),
   [Disks](/docs/architecture/storage) and
   [Crash recovery](/docs/architecture/crash-recovery).
-- **Network stack.** TCP, UDP, IPv4, DHCP and DNS run inside the kernel, as
-  they do on Linux. See [Networking](/docs/architecture/networking).
+- **Network stack.** TCP, UDP and IPv4 run inside the kernel, as they do on
+  Linux, and so do the DHCP client and a small DNS resolver, which on Linux
+  are ordinary programs. See [Networking](/docs/architecture/networking).
 - **Drivers.** NVMe and virtio disks, virtio network and graphics, the Intel
-  Xe display, the PS/2 keyboard and an I²C touchpad, each matched to its
-  device in one declarative step. See [Drivers](/docs/architecture/drivers).
+  Xe display, the Realtek RTL8168 Ethernet chip, PS/2 keyboards and mice, an
+  I²C touchpad, and USB through an xHCI controller (keyboards, mice and
+  tablets, memory sticks and Ethernet adapters, plugged in and pulled out
+  while the system runs). Each driver is matched to its device in one
+  declarative step. See [Drivers](/docs/architecture/drivers) and
+  [USB](/docs/architecture/usb).
 
 [Boot](/docs/architecture/boot) describes how all of this is started, in
 order, when the machine powers on.
@@ -92,23 +116,42 @@ order, when the machine powers on.
 
 Above the system call line is *userland*:
 
+- **The base.** The system's own programs and libraries ship as one read-only
+  image, the *base*, which the kernel mounts over `/bin`, `/sbin`, `/lib`,
+  `/usr/bin`, `/usr/share` and `/etc/ssl`. The disk keeps what the machine
+  writes: `/etc`, `/var`, people's homes, and software installed under
+  `/usr/local`. A new base can replace the running one without a reboot. See
+  [Base system](/docs/architecture/base).
 - **The C library**, slibc, is written in Rust. Every program links against
   it, Rust programs included through the standard library, and it doubles as
-  the dynamic loader.
+  the dynamic loader. Its shared form, `libc.so`, is held to only gaining
+  functions, so a program built outside the base keeps working when the base
+  changes. See [Userland](/docs/architecture/userland).
 - **SlopRing** is a queue of requests a program shares with the kernel, so it
   can have many operations in flight without one system call each. A small
-  async runtime for Rust programs is built on it. See
+  async runtime for Rust programs is built on it. Its calls are private ones,
+  so only the base's own programs use it. See
   [SlopRing](/docs/abi/slopring).
-- **The programs**: `init`, which the kernel starts first and which starts the
-  desktop; the shell; the core utilities; an editor; and network tools such as
-  `curl`, `ping` and `nc`.
+- **Init and the system's services.** `init`, which the kernel starts first,
+  starts privd, the sessions people log in to, and the other services, and
+  starts the long-running ones again when they exit, at most five times a
+  minute each. See
+  [Init and services](/docs/architecture/init) and
+  [Privileged actions](/docs/architecture/privd).
+- **The programs**: the shell; the core utilities; network tools such as
+  `curl`, `ping` and `nc`; and the system's tools, such as `bootctl` for the
+  boot partition, `users` for accounts and `priv` for running a command with
+  power over the machine.
 - **The desktop**: a compositor, which owns the screen and combines the other
-  programs' windows into one picture, and the apps that draw into those
-  windows, the terminal among them.
-
-[Userland](/docs/architecture/userland) covers the C library and the programs,
-and [Desktop and windowing](/docs/architecture/userland-windowing) covers the
-compositor and how windows reach the screen.
+  programs' windows into one picture; the terminal and the System Monitor;
+  and apps installed outside the base, such as the editor, the file manager
+  and the image viewer. See [Windowing](/docs/architecture/userland-windowing),
+  [Desktop](/docs/architecture/desktop) and
+  [Installed software](/docs/architecture/software).
+- **Extensions**: images that add services, commands and apps beside the
+  base, installed once an administrator approves them or a key they trust has
+  signed them. Each is shown read-only at `/opt/<name>` and holds only the
+  powers it was granted. See [Extensions](/docs/architecture/extensions).
 
 ## Following a read through the system
 
@@ -116,8 +159,9 @@ Here is what happens when you type `cat notes.txt` in the shell and `cat`
 reads the file from the disk. Every layer from the diagram takes part.
 
 1. **The program asks.** `cat` has already opened the file and holds a file
-   descriptor for it. It calls `read()` in the C library with a buffer in its
-   own memory.
+   descriptor for it; when it opened the file, the kernel checked the file's
+   owner and mode against the user `cat` runs as. Now `cat` calls `read()` in
+   the C library with a buffer in its own memory.
 2. **The C library makes the system call.** It puts the number of the `read`
    call (0, the same as on Linux), the file descriptor, the buffer's address
    and its size into CPU registers, and executes the `syscall` instruction.
@@ -125,10 +169,9 @@ reads the file from the disk. Every layer from the diagram takes part.
    core registered at boot. The trusted core saves `cat`'s registers so it can
    resume it later.
 3. **The kernel finds the handler.** It looks up call 0 in its table of system
-   calls and finds the `read` handler. Reading needs no special permission:
-   holding the file descriptor is the permission, because `cat` could only
-   have got one by opening the file itself or by being handed it by another
-   program.
+   calls and finds the `read` handler. Reading needs no capability: holding
+   the file descriptor is the permission, because `cat` could only have got
+   one by opening the file itself or by being handed it by another program.
 4. **The filesystem works out where the bytes are.** The handler looks up the
    descriptor in the process's table of open files and asks the filesystem
    for the bytes. The ext4 code works out which blocks of the disk hold that
@@ -155,17 +198,22 @@ output, and a similar trip happens through the terminal instead of the disk.
 
 ## How the parts are checked
 
-The design only helps if its rules hold, so the build checks them rather than
-trusting people to remember:
+The design only helps if its rules hold, so the compiler and the checks CI
+runs on every change enforce them rather than trusting people to remember:
 
-- A source check fails the build if `unsafe` appears in any kernel crate other
-  than the trusted core, and another expands every macro first, so `unsafe`
-  can't hide inside one.
-- Another check fails the build if any kernel code uses `async`. The kernel
-  blocks a task while it waits; asynchronous code is a userland feature, built
-  on SlopRing.
-- Every system call states, where it is defined, which permission it needs,
-  and the build fails if any entry in the table lacks one.
+- Every kernel crate but the trusted core tells the compiler to refuse
+  `unsafe` code. A source check fails CI if `unsafe` appears in one anyway,
+  and another expands every macro first, so `unsafe` can't hide inside one.
+- Another check fails CI if any kernel code uses `async`. The kernel blocks a
+  task while it waits; asynchronous code is a userland feature, built on
+  SlopRing.
+- Every system call states, where it is defined, which capability it needs
+  (or that it needs none, and why), and the build fails if any entry in the
+  table lacks one.
+- The SlopOS-only calls a base relies on carry an interface number, and a
+  check refuses any change to them that doesn't take a new number; another
+  holds `libc.so` to only gaining functions. That is what lets a kernel and a base
+  be updated separately ([Base system](/docs/architecture/base)).
 - The trusted core's most dangerous invariants are proved with the Verus proof
   checker, the core runs under Miri, and the kernel's test suite boots it under
   QEMU on every change. See [Proofs](/docs/verification/verus-status),
@@ -175,25 +223,28 @@ trusting people to remember:
 ## For contributors
 
 The source tree is a Cargo workspace with one crate per subsystem, and
-`Cargo.toml` lists every one. Crate names are directory names. These are the
+`Cargo.toml` lists every one. Most crates live in a directory named after
+them without the `slopos-` prefix (`mm/` holds `slopos-mm`). These are the
 ones you will open most often:
 
-| Crate | Responsibility |
-|-------|----------------|
+| Directory | Responsibility |
+|-----------|----------------|
 | `slopos-ostd` | The trusted core, and the only kernel crate allowed `unsafe` |
 | `kernel`, `boot` | The kernel's entry point and the boot sequence |
-| `abi` | Everything shared with userland: syscall numbers, errno values, flags, structs |
-| `core` | System call dispatch and handlers, `exec`, the OOM killer |
-| `sched` | Task lifecycle, scheduling, sleeps, futexes |
-| `mm` | Physical and virtual memory, address spaces, ELF loading |
-| `fs`, `drivers`, `net` | The filesystem layer, device drivers, the network stack |
-| `*-core` (`ext4-core`, `shell-core`, ...) | Pure logic with no system calls, so its tests also run on the development host |
-| `slibc`, `userland` | The C library and the programs |
+| `abi` | Everything shared with userland: syscall numbers, errno values, flags, structs, capability bits |
+| `core` | System call dispatch and handlers, `exec` and spawn |
+| `sched` | Task lifecycle, scheduling, sleeps, futexes, CPU frequency |
+| `mm` | Physical and virtual memory, address spaces, ELF loading, the OOM killer |
+| `fs`, `drivers`, `net` | The filesystem layer, device drivers (USB among them), the network stack |
+| `*-core` (`ext4-core`, `usb-core`, `priv-core`, ...) | Pure logic with no system calls, so its tests also run on the development host |
+| `slibc`, `userland` | The C library, and the base's programs: init, privd, the compositor, the shell and the rest |
+| `appkit`, `apps` | The toolkit apps are built from, and the apps that live outside the base |
 | `verification` | Verus proofs for the trusted core, checked by `just verify` |
 
 Two pinned third-party crates, `vendor/unwinding` and `vendor/gimli`, are part
-of the trusted code base as named exceptions. They serve OSTD's panic
-unwinding and nothing else.
+of the trusted code base as named exceptions. In the kernel they serve OSTD's
+panic unwinding and nothing else; the C library carries the same unwinder for
+userland programs.
 
 Rules a change must keep:
 
@@ -208,6 +259,10 @@ Rules a change must keep:
 - **The ABI lives in code.** Numbers, structs and flags are defined once, in
   the `abi` crate; reference pages describe them but the source is the
   authority.
+- **Authority is a capability, never a path or a uid.** A check that grants
+  something because of a program's path, a task id or a user id where a
+  capability fits is a second source of authority; see
+  [Capabilities](/docs/architecture/authority).
 
 ## Further reading
 
@@ -233,8 +288,11 @@ Rules a change must keep:
 |---|---|
 | `Cargo.toml` | The workspace: every crate |
 | `slopos-ostd/` | The trusted core |
-| `kernel/src/main.rs` | The kernel's entry point |
+| `boot/limine_entry.s`, `boot/src/early_init.rs` | The kernel's entry point, and the boot sequence it starts |
+| `kernel/src/main.rs` | The kernel binary: its heap allocator and panic handler |
 | `core/src/syscall/handlers.rs` | The system call tables |
+| `abi/src/caps.rs` | The capabilities |
+| `userland/src/apps/init/` | Init, its services and the sessions |
 | `scripts/check_unsafe_outside_ostd.sh`, `scripts/check_no_kernel_async.sh` | Two of the build's rule checks |
 
 [Safety gates](/docs/verification/tcb-discipline) lists every check the build

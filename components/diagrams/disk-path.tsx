@@ -2,7 +2,7 @@ const LAYERS = [
   { title: 'Programs and the filesystem', detail: 'read and write files, or /dev/nvme0n1p2 directly' },
   { title: 'Block layer', detail: 'names, partitions, claims: who may write which part of a disk' },
   { title: 'Request engine', detail: 'a fixed set of request slots per queue, timeouts, ordering' },
-  { title: 'Driver', detail: 'NVMe or virtio-blk: turns a request into the device\u2019s own format' },
+  { title: 'Transport', detail: 'NVMe, virtio-blk or USB Bulk-Only: turns a request into the device\u2019s own format' },
   { title: 'Disk', detail: 'reads or writes the blocks and reports back' },
 ] as const;
 
@@ -12,7 +12,7 @@ export function DiskPath() {
       <ol
         className="grid gap-2"
         role="img"
-        aria-label="A disk request passes from a program through the block layer, the request engine and a driver to the disk, and the answer comes back the same way."
+        aria-label="A disk request passes from a program through the block layer, the request engine and a transport to the disk, and the answer comes back the same way."
       >
         {LAYERS.map((layer, i) => (
           <li

@@ -1,0 +1,393 @@
+---
+title: "Package an extension"
+description: "Lay out an extension, pack and sign it, install it on a SlopOS machine, and check that its daemon and command run."
+---
+
+By the end of this page you will have packed an extension called `hello`,
+installed it on a SlopOS machine, and seen its daemon write to its log and its
+command run from any shell. You will also have shipped an update and know how
+to have a key you trust install updates without anyone being asked. For why
+extensions work the way they do, read
+[Extensions](/docs/architecture/extensions).
+
+## What you need first
+
+- A SlopOS machine whose root is a disk, on which you are an administrator.
+  The [development machine](/docs/self-hosting/development-machine)
+  (`just boot`) and a computer you installed SlopOS on both qualify, and the
+  first person on either is an administrator. A live boot from the install
+  medium does not: extensions need a disk root.
+- A checkout of SlopOS on the host, to pack the extension with `just
+  extension`. You can also pack it on the machine itself with `extctl build`,
+  which does not sign it; `just extension` signs it when you ask.
+- To install from the host, the machine [paired](/docs/self-hosting/remote-control)
+  with it, so that `just remote` reaches it.
+- To sign, `ssh-keygen` on the host.
+
+The example's programs are shell scripts, so nothing needs compiling. A
+compiled program must be linked dynamically against the base's `libc.so`
+through `/lib/ld-slopos.so.1`, as every program outside the base is. On a
+machine with the toolchain installed, `cc -o hellod hellod.c` links one that
+way; `just extension` and the install both refuse anything else.
+
+## 1. Lay out the tree
+
+An extension is a directory laid out as it will appear under `/opt/hello`,
+plus two files under `.extension/`. Make it anywhere on the host, or in your
+home on the machine:
+
+```text
+hello/
+  .extension/release
+  .extension/declare
+  bin/hello
+  libexec/hellod
+```
+
+`.extension/release` names the extension and its version:
+
+```text
+name     hello
+version  1
+summary  Says hello
+```
+
+`.extension/declare` says what it asks for: a user of its own, a command on
+everyone's `PATH`, and a service that runs as that user:
+
+```text
+user
+command hello
+service hellod
+  program /opt/hello/libexec/hellod
+```
+
+`bin/hello` is the command:
+
+```sh
+#!/bin/sh
+echo "Hello from the hello extension, version 1."
+```
+
+`libexec/hellod` is the daemon. It writes a line when it starts and the date
+every minute:
+
+```sh
+#!/bin/sh
+echo "hellod started"
+while true; do
+    date
+    sleep 60
+done
+```
+
+Make both executable, or the image will not count them as programs:
+
+```bash
+chmod +x hello/bin/hello hello/libexec/hellod
+```
+
+The base has no `chmod`, so on the machine make the directories first
+(`mkdir -p $HOME/hello/.extension $HOME/hello/bin $HOME/hello/libexec`),
+write each script somewhere else and copy it into place with `install`,
+which makes the copy executable:
+`install hellod.sh $HOME/hello/libexec/hellod`.
+
+[Extension images](/docs/abi/extension-images) lists everything a
+declaration can say: more users, state and settings directories, sockets,
+privileged actions, apps.
+
+## 2. Pack it
+
+<Tabs items={['On the host', 'On the machine']}>
+<Tab value="On the host">
+
+From the SlopOS checkout, with the path to your tree:
+
+```bash
+just extension ~/hello
+```
+
+The recipe builds the userland first if it is not built, so the first run
+takes a while. It packs the tree, checks it as an install would against this
+build's `libc.so`, and prints what it wrote and the grant a first install will
+ask for:
+
+```text
+name hello
+version 1
+image builddir/extensions/hello.ext
+root 3f9c2a1b7d4e…
+sidecar builddir/extensions/hello.meta
+grant - unasked - users hello commands hello
+```
+
+`hello.ext` is the image and `hello.meta` its sidecar, which names the
+extension, its version and the image's root: the digest at the top of the
+SHA-256 tree that every block of the image is checked against when the
+machine reads it.
+
+</Tab>
+<Tab value="On the machine">
+
+Pack it into `/var/tmp`, where the install in step 4 can read it:
+
+```bash
+extctl build $HOME/hello /var/tmp
+```
+
+```text
+hello 1: /var/tmp/hello.ext (root 3f9c2a1b7d4e…) and /var/tmp/hello.meta
+```
+
+`extctl build` checks the image's shape but not its programs; the install
+checks those.
+
+</Tab>
+</Tabs>
+
+## 3. Sign it, if a key should vouch for it
+
+Skip this step and every install is a first install: at the machine, an
+administrator approves each one, seeing exactly what is granted (the paired
+host installs unasked either way). Sign it, and an administrator or the
+paired host installs updates signed by the same key with no question, within
+limits the owner set for the key.
+
+Decide before the first install. A key only ever updates an extension whose
+first install it signed: once a person has approved an install, the record
+names no key, and that stays so even after the extension is removed.
+
+Make an Ed25519 key on the host if you have none for this:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/slopos-extension
+```
+
+Pack again with `EXTENSION_KEY` naming it:
+
+```bash
+EXTENSION_KEY=~/.ssh/slopos-extension just extension ~/hello
+```
+
+The output ends with an extra line, and `builddir/extensions/hello.meta.sig`
+now lies beside the sidecar:
+
+```text
+signed builddir/extensions/hello.meta.sig with /home/you/.ssh/slopos-extension
+```
+
+The machine must trust the key once. `ceiling` names the capabilities its
+extensions may be granted and `user` what their unasked actions may hold
+together, each as names joined by commas, or `-` for none. `hello` asks for
+no capability, so `-` will do for both:
+
+<Tabs items={['From the host', 'At the machine']}>
+<Tab value="From the host">
+
+```bash
+just remote push ~/.ssh/slopos-extension.pub /var/tmp/
+just remote run -- extctl key add /var/tmp/slopos-extension.pub ceiling - user -
+```
+
+</Tab>
+<Tab value="At the machine">
+
+Copy `~/.ssh/slopos-extension.pub` to the machine, here to `/var/tmp`,
+then:
+
+```bash
+extctl key add /var/tmp/slopos-extension.pub ceiling - user -
+```
+
+The terminal prints `extctl: waiting for you to allow this on the screen`
+and the desktop asks you to allow it. The details under the question show
+the command line, with the key's fingerprint and both ceilings. Choose
+*Change*.
+
+</Tab>
+</Tabs>
+
+```text
+SHA256:bbXpuKG6zhzdmnxq256TlqzFBzRl2f6OOg722cYNbU8 trusted with ceiling - and user ceiling -
+```
+
+## 4. Install it
+
+<Tabs items={['From the host', 'At the machine']}>
+<Tab value="From the host">
+
+```bash
+just remote install --extension builddir/extensions/hello.ext
+```
+
+The script pushes the image, and the sidecar and signature when they lie
+beside it, then runs `extctl install-signed` for a signed image or
+`extctl install` naming the root it pushed for an unsigned one. Either way it
+runs unasked, because the paired host may install extensions. Among its
+output:
+
+```text
+remote: pushed builddir/extensions/hello.ext: … bytes, sha256 …, root 3f9c2a1b7d4e…
+hello 1 installed; it runs as activation 2
+```
+
+followed by `bootctl status` and `extctl status`.
+
+</Tab>
+<Tab value="At the machine">
+
+Run it from `/var/tmp`. The install runs as uid 0 without the power to
+override file permissions, in your directory, so both the image and the
+directory must be readable by anyone:
+
+```bash
+cd /var/tmp
+extctl install hello.ext
+```
+
+The terminal prints `extctl: waiting for you to allow this on the screen`.
+The desktop asks whether to install an extension and give it what it asks
+for. The details under the question show the command line, which names the
+image's root and the grant, `grant - unasked - users hello commands hello`.
+Choose *Install*:
+
+```text
+hello 1 installed; it runs as activation 2
+```
+
+For a signed image, copy `hello.meta` and `hello.meta.sig` beside
+`hello.ext` and run `extctl install-signed hello.ext` instead. It asks no
+administrator anything.
+
+</Tab>
+</Tabs>
+
+The activation number differs from machine to machine; it counts every image
+shown since the boot.
+
+## 5. Check that it runs
+
+At the machine, or with `just remote run -- ...` from the host:
+
+```bash
+extctl status hello
+```
+
+```text
+hello: enabled, running, floor 1
+  uids hello=100
+  current 1 3f9c2a1b7d4e by the person: grant - unasked - users hello commands hello
+```
+
+A signed install names the key's fingerprint instead of `the person`, and the
+uid is the lowest free one from 100. The command is on everyone's `PATH`
+through a link in `/opt/bin`:
+
+```bash
+hello
+```
+
+```text
+Hello from the hello extension, version 1.
+```
+
+The daemon's output goes to its log:
+
+```bash
+cat /var/log/hello/hellod.log
+```
+
+```text
+hellod started
+```
+
+followed by a line with the date for every minute it has run. The daemon
+runs as the user `hello`, and its log belongs to that user, not to you or to
+root, although the base's `ls -l` shows no owners to prove it. After a
+restart, `extctl status hello` still says `running`: init shows every enabled
+extension again at boot, checking it against its record first.
+
+## 6. Ship an update
+
+Change the command's message to say `version 2`, raise the version in
+`.extension/release` to 2, and pack it again as in step 2 (with
+`EXTENSION_KEY` set if you signed version 1). Install it as in step 4.
+
+A signed update goes in without a question; an unsigned one asks again, as a
+first install does. Either way `extctl status hello` now shows the new image
+as `current` and the old one as `previous`, and `hello` prints the new
+message. `hellod` keeps running from the old image: nothing it runs or reads
+changed. Change `libexec/hellod` in the next version and init restarts it.
+
+Installing changed bytes under a version number already installed is
+refused, so raise the version every time:
+
+```text
+extctl: hello.ext: version 1 was installed with other bytes
+```
+
+## 7. Roll back, turn off or remove
+
+Each of these asks an administrator at the machine, and runs unasked from the
+paired host:
+
+```bash
+extctl rollback hello
+extctl disable hello
+extctl enable hello
+extctl remove hello
+```
+
+`rollback` makes the previous image current again and lowers the version
+floor to it, but refuses the version it left to a signed install, so the
+next signed update has to be version 3. `disable` takes the
+extension away from `/opt/hello`, stops its service and removes its command
+until `enable`. `remove` deletes its images but keeps its record, so its
+version floor (1, after the rollback) and uids stay:
+
+```text
+hello removed; its record keeps version floor 1
+```
+
+## What usually goes wrong
+
+- **`/.extension/declare names /opt/hello/libexec/hellod, which the image
+  does not hold`.** The program is missing, or not executable when it was
+  packed. Make it executable (`chmod +x` on the host, `install` on the
+  machine) and pack again.
+- **`outside bin, libexec, lib and share`.** The tree holds something else at
+  its top. Only those four directories and `.extension` may be there.
+- **`a service's log, state and runtime directory are its extension's first
+  user's, so it declares a user`.** A service, `state` or `runtime` needs a
+  `user` line, and so does an action.
+- **`statically linked, not against libc.so`** (from `just extension`,
+  `static, with no PT_INTERP`) or **`binds <name>, which nothing it needs
+  exports`.** A compiled program was linked statically, or needs a function
+  the machine's `libc.so` does not have. `just extension` checks against the
+  host build's `libc.so`; a machine running an older base may lack a function
+  a newer one has.
+- **`version 1 was installed with other bytes`** or **`is older than`**.
+  Raise the version.
+- **`it is signed by SHA256:…, which the owner does not trust`.** Trust the
+  key first (step 3).
+- **`the store's record names another authority than this key, so a person
+  approves it`.** The extension's first install was not signed by this key.
+  Install the update with `extctl install`, which asks the person.
+- **`hello is a person's name`.** The extension or one of its users has the
+  same name as a person on the machine. Rename it in `release`.
+- **The install fails reading the image although your session can read
+  it.** The install reads it as uid 0 without the power to override file
+  permissions. Put the image, and run the command, in a directory everyone
+  can read, such as `/var/tmp`.
+- **`extctl status` says `stopped:` and a reason.** A check at activation
+  refused the image, usually because its key was removed or a ceiling
+  lowered. Fix the cause and run `extctl enable hello`.
+- **It installed but `not running`.** The machine booted with
+  `extensions=off`. The install says so: `extensions are off this boot, so
+  it is not shown`.
+
+Read next: [Extension images](/docs/abi/extension-images) for sockets,
+settings in `/etc/hello`, privileged actions and apps, and
+[Extensions](/docs/architecture/extensions) for how the grant, the store and
+the service supervision work.

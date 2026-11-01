@@ -94,12 +94,23 @@ it; it also shares pages between a parent and child process until one of
 them writes, and only then makes a private copy. Both start as a fault, the
 kernel resolves it, and the program carries on without knowing.
 
-A fault the kernel can't resolve, such as a read from an address with nothing
-mapped, becomes a signal, usually `SIGSEGV`. If the program has installed a
-handler for it, the kernel runs the handler; otherwise the program ends,
-with the signal as its exit status. Either way, the rest of the system is
-unaffected. [Processes and signals](/docs/architecture/processes) explains
-signals and how a program ends.
+A page fault the kernel can't resolve, such as a read from an address with
+nothing mapped, becomes `SIGSEGV`. If the program has installed a handler for
+it, the kernel runs the handler, unless `SIGSEGV` is blocked (as it is while
+that handler runs); otherwise the program ends, with the signal as its exit
+status. An invalid instruction ends the program at once with `SIGILL`, and a
+general-protection fault with `SIGSEGV`, even if it has a handler. Only the
+page-fault path is built to pause and to build the frame a handler runs on;
+the other fault handlers run with rescheduling held off, so SlopOS doesn't
+hand those faults to a handler. In all of these cases the rest of the system
+is unaffected.
+
+Not every fault is handled that way yet. A divide error (an integer division
+by zero, or one whose quotient doesn't fit its register) or a stack fault in
+user mode is treated as a kernel error and stops the whole machine with a
+panic.
+[Processes and signals](/docs/architecture/processes) explains signals and
+how a program ends.
 
 ## How SlopOS crosses the boundary
 
@@ -120,11 +131,15 @@ sure nothing from the kernel leaks into them.
 **System calls come back to that loop.** The `syscall` instruction lands in a
 short piece of assembly in the trusted core. It saves the program's registers
 into the task's saved register record and returns to the loop, which runs the
-system call and then enters user mode again.
+system call and then enters user mode again. The record belongs to the task,
+not to the CPU, so a task that moves to another CPU takes its registers with
+it.
 
 **Interrupts and faults are handled where they land.** The trusted core's
 interrupt entry code saves the program's registers on the task's kernel stack
-and calls the kernel's handler. If the handler decides another task should
+(or, for the few vectors that have one, on a stack of their own; see
+[For contributors](#for-contributors)) and calls the kernel's handler. If the
+handler decides another task should
 run, the switch happens there, and the original task resumes later from the
 same point.
 
@@ -141,15 +156,23 @@ table to see that every page is present and accessible to the program (and
 writable, for a copy into it). Only then does it open the SMAP window, copy,
 and close it again; no other code in the kernel can open that window. If a
 page isn't filled in yet, because the program allocated memory but hasn't
-touched it, the kernel fills it in the way a fault would have and tries once
-more. If a fault interrupts the copy halfway, the routine stops, reports how
-far it got, and the copy is retried once. A buffer that still can't be
-copied makes the system call fail with `EFAULT`; it never crashes the kernel.
+touched it, or is still shared with a parent after `fork`, the kernel fills
+it in the way a fault would have and copies again. It keeps doing so while
+filling in succeeds, up to a fixed number of rounds, because another
+thread's `fork` can make a page shared again between the fill and the copy.
+If a fault interrupts the copy halfway, the routine stops and reports how far
+it got, and the same loop retries it. A buffer that still can't be copied
+makes the system call fail with `EFAULT`; it never crashes the kernel. A
+copy made where the kernel can't wait (in an interrupt handler, with
+interrupts off, or with preemption held off) fills in only what needs no
+waiting: a page that must be read from its file, or memory the
+out-of-memory killer would first have to free, makes it fail with `EFAULT`
+instead.
 
 **The legacy interface is closed.** Old 32-bit Linux programs make system
-calls with the `int 0x80` instruction. SlopOS doesn't support that; the
-instruction is answered with `ENOSYS` ("function not implemented") rather
-than killing the program.
+calls with the `int 0x80` instruction. SlopOS installs no gate a program may
+reach with `int`, so the instruction is a general-protection fault and the
+program ends with `SIGSEGV`.
 
 ## Switching between programs cheaply
 
@@ -164,14 +187,14 @@ doesn't have to empty the cache. Each CPU keeps 16 tags for programs (plus
 one for the kernel alone) and remembers which address space last held each
 one, so switching back to a recently run program reuses its cached
 translations. The kernel's own mappings are marked *global*, which keeps them
-in the cache across every switch. The scheme follows Linux's
-(`arch/x86/mm/tlb.c`). On CPUs without PCIDs, or with a known erratum that
+in the cache across every switch. The scheme follows the one Linux uses on
+x86-64. On CPUs without PCIDs, or with a known erratum that
 disables them, every switch empties the program part of the cache, which is
 slower but correct.
 
-## What SlopOS doesn't do
+## No kernel page-table isolation
 
-**No kernel page-table isolation.** In 2018 the Meltdown flaw showed that on
+In 2018 the Meltdown flaw showed that on
 many Intel CPUs a program could read memory that is mapped but marked
 kernel-only, by exploiting speculative execution. Linux's defence, KPTI,
 gives each process a second page table with the kernel almost entirely
@@ -185,8 +208,8 @@ lists this.
 Tests check the boundary from both sides. Kernel tests check the CPU's
 descriptor tables and the system call registers after boot, that a deep chain
 of traps from user mode can't overwrite the frames the kernel returns into,
-and that a user copy which faults partway through is retried. Host tests of the trusted
-core check that the copy routine refuses addresses outside the program's
+and that a user copy which faults partway through is retried. Host tests of
+the trusted core check that the copy routine refuses addresses outside the program's
 half, pages the program can't access and read-only pages. The invariant that
 user mappings can't reach kernel memory is one of the properties proved with
 Verus (see [Proofs](/docs/verification/verus-status)).
@@ -200,15 +223,17 @@ The rules any change to this boundary must keep:
   `slopos-ostd`. Every other kernel crate is `#![forbid(unsafe_code)]`, and
   [Safety gates](/docs/verification/tcb-discipline) lists the checks that keep
   it that way.
-- **`UserMode::execute` is the only way into ring 3.** It returns a
-  `ReturnReason` read from the task's own `UserContext`, never from a per-CPU
-  slot, so a preemption or migration after entry can't mix up two tasks.
+- **`UserMode::execute` is the only way into ring 3.** It returns when the
+  program makes a system call, with the program's registers in the task's own
+  `UserContext`, never in a per-CPU slot, so a preemption or migration after
+  entry can't mix up two tasks; the round trip asserts that the context it
+  published is still the one it returns to.
 - **The `SYSCALL` trampoline (`__ostd_user_return`) never pushes onto the
   kernel stack.** The top of that stack is where the next interrupt's `IRETQ`
   frame goes, so user state is spilled through per-CPU scratch slots instead.
-  The kernel's user loop handles only `ReturnReason::Syscall`; interrupts and
-  exceptions from ring 3 enter through the OSTD IDT stubs and return with
-  their own `IRETQ`.
+  The round trip only ever ends in a system call, which the kernel's user
+  loop dispatches; interrupts and exceptions from ring 3 enter through the
+  OSTD IDT stubs and return with their own `IRETQ`.
 - **`SFMASK` clears** the interrupt, trap, direction, alignment-check, I/O
   privilege and nested-task flags on `SYSCALL`, and the trampoline re-enables
   interrupts. `STAR` follows the AMD64 selector order, with user data before
@@ -230,10 +255,14 @@ The rules any change to this boundary must keep:
   `__ostd_usercopy_end`, which the page-fault handler recognises.
 - **Address spaces.** Every process table shares the kernel half (PML4
   entries 256 to 511) with the kernel master table, supervisor-only and
-  global. The user half is changed only through VM-space cursor operations.
-  PCID 0 is kernel-only loads; PCIDs 1 to 16 are per-CPU slots. `INVPCID` is
-  used where the CPU has it. The dual-table KPTI scaffolding in
-  `mm/src/mmu/kpti.rs` and `mm/src/mmu/trampoline.s` is not linked in.
+  global. The user half is changed only through VM-space cursor operations,
+  and the kernel half has one writer outside the trusted core,
+  `slopos_mm::kernel_mappings` (`scripts/check_kernel_pml4_writer.sh` holds
+  that). PCID 0 is kernel-only loads; PCIDs 1 to 16 are per-CPU slots.
+  `INVPCID` is used where the CPU has it.
+- **No user-reachable gate.** Every IDT gate is installed at descriptor
+  privilege level 0, so `int n` from ring 3 reaches no handler. Keep it that
+  way: `SYSCALL` is the one way into the kernel on purpose.
 
 ## Further reading
 
@@ -262,9 +291,9 @@ The rules any change to this boundary must keep:
 |---|---|
 | `slopos-ostd/src/user/mode.rs`, `slopos-ostd/src/user/asm/user_return.s` | Entering user mode and the `SYSCALL` return trampoline |
 | `slopos-ostd/src/irq/asm/handlers.s`, `slopos-ostd/src/irq/idt.rs` | Interrupt and exception entry |
-| `slopos-ostd/src/user/copy.rs` | The user-memory copy routine |
+| `slopos-ostd/src/user/copy.rs`, `mm/src/user_copy.rs` | The user-memory copy routine, and filling pages in before a copy |
 | `slopos-ostd/src/cpu/x86_64/security.rs` | Turning on SMEP, SMAP and global pages |
 | `core/src/syscall/user_loop.rs` | The loop that runs each user task |
 | `boot/src/gdt.rs`, `boot/src/ist_stacks.rs` | System call registers and IST stacks |
 | `mm/src/mmu/asid.rs` | PCID slots |
-| `boot/src/exception.rs` | User faults becoming signals |
+| `boot/src/exception.rs`, `boot/src/user_fault.rs` | User faults becoming signals |

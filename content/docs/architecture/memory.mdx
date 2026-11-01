@@ -9,7 +9,7 @@ Every program on SlopOS sees its own private memory, starting from the same
 addresses as every other program, and it can't read or damage anyone else's.
 Memory you ask for costs almost nothing until you use it, `fork` doesn't copy
 the parent's memory, and a hundred programs that load the same library share
-one copy of it in RAM. When the machine runs short, SlopOS usually refuses the
+one copy of its code in RAM. When the machine runs short, SlopOS usually refuses the
 request for memory rather than killing the program later; the exceptions are
 described on [Resource limits](/docs/architecture/resource-accounting).
 
@@ -55,9 +55,12 @@ the fault handler takes a zeroed frame, maps it and returns, so pages the
 program never touches never cost a frame. This is called *demand paging*.
 
 Faulting one page at a time would be slow for a program that walks through a
-large buffer, so when it is safe the fault handler maps a few neighbouring
-pages at once (the stack excepted, which grows one page at a time). Idle
-processors also zero free frames ahead of time, and faults take those first.
+large buffer, so a fault in the heap or in an ordinary anonymous mapping also
+fills the untouched pages around it, up to 32 at a time, and a fault in a
+mapped file also maps the neighbouring pages already in memory. The stack, a
+`MAP_NORESERVE` mapping and the anonymous memory a `fork` child inherited are
+filled one page at a time. Idle processors also zero free frames ahead of time, and
+faults take those first.
 
 ### How `fork` avoids copying memory
 
@@ -67,10 +70,12 @@ straight away and throws the copy out. So SlopOS gives the child page tables
 that point at the parent's frames and marks every private page read-only in
 both processes. When either one writes a page, the processor faults, and the
 kernel copies that one frame and gives the writer the copy with write
-permission. The other keeps the original. This is *copy-on-write*, and even
-`mprotect` won't make a shared copy-on-write page writable. To start a new
-program without copying an address space at all, SlopOS also has
-`posix_spawn` (see [Processes and signals](/docs/architecture/processes)).
+permission. The other keeps the original, and when it writes the page in turn
+the frame is no longer shared, so it gets write permission back without a
+copy. This is *copy-on-write*, and even `mprotect` won't make a shared
+copy-on-write page writable. To start a new program without copying an
+address space at all, SlopOS also has `posix_spawn` (see
+[Processes and signals](/docs/architecture/processes)).
 
 ### Files mapped into memory are shared
 
@@ -81,30 +86,51 @@ processes' writes; a private one (`MAP_PRIVATE`) is copy-on-write, so the
 first write gives the process its own copy of that page.
 
 This matters most for libraries: every dynamically linked program maps the C
-library, and they all share one copy. When the last process unmaps a file,
-its frames stay cached, so a compiler that loads the same libraries on every
-run finds them already in RAM.
+library, and they all share one copy of its code. A library's writable data
+is the exception, because the dynamic loader reads it into the program's own
+memory rather than mapping it: relocation rewrites nearly every page of it
+anyway. A program's own file isn't shared either. `exec` copies the program,
+and its dynamic loader, into fresh memory when it starts, so two running
+copies of one program each hold their own. When the last process unmaps a
+file, its frames stay cached, so a compiler that loads the same libraries on
+every run finds them already in RAM.
+
+### Making memory executable
+
+A program can also map memory as code: with `PROT_EXEC` on a mapping, or by
+`mprotect` on memory it already has, which is how a loader or a just-in-time
+compiler works. That is allowed, but it changes one thing. The kernel records
+which program each process runs, so that privd can tell who is asking it for
+something ([Privileged actions](/docs/architecture/privd)). The record can
+vouch only for code from the [base](/docs/architecture/base) (or, for an
+extension's program, from its own image). So when a process maps code from a
+file anywhere else or from anonymous memory, or `mprotect` makes any page
+executable that wasn't, the kernel drops the record before that code can
+run. The program itself carries on unaffected; privd treats it as an unknown
+program until its next `exec`.
 
 ### Sharing memory between programs with memfd
 
 To share memory that isn't a file, a program calls `memfd_create`, which
 returns a file descriptor for an anonymous block of memory. It sizes the block
-with `ftruncate`, maps it, and passes the descriptor to another process over a
-Unix socket, which maps the same frames. The desktop works this way: every
+with `ftruncate`, maps it (a memfd is reached only through `mmap`, not with
+`read` or `write`), and passes the descriptor to another process over a Unix
+socket, which maps the same frames. The desktop works this way: every
 window's pixels live in a memfd that the application draws into and the
-compositor reads (see
-[Desktop and windowing](/docs/architecture/userland-windowing)).
+compositor reads (see [Windowing](/docs/architecture/userland-windowing)).
 
-A memfd can be sized only once, and its frames are allocated at that moment.
-They count against the limits of the process that sized it. If that process
-exits while another still holds the descriptor, the memory lives on and is
-counted against the system as a whole.
+A memfd can be sized only once, to at most 64 MiB, and its frames are
+allocated at that moment, so sizing one is refused with `ENOMEM` when the
+machine can't promise them. They are charged to the process that sized it,
+not to the processes that map it. If that process exits while another still
+holds the descriptor or a mapping, the memory lives on and is charged to the
+system as a whole. At most 64 memfds exist at once in the whole system.
 
 ### When RAM runs low
 
 SlopOS has no swap, so memory is never written out to disk to make room. When
-an allocation finds no free frame, the kernel first takes back memory it can
-drop without losing anything, in this order:
+a page fault or an `mmap` call finds no free frame, the kernel first takes
+back memory it can drop without losing anything, in this order:
 
 1. frames from recently unmapped pages, once every processor has discarded
    its cached translation for them;
@@ -112,9 +138,12 @@ drop without losing anything, in this order:
 3. cached files that no process has mapped.
 
 Changes that haven't reached the disk are never thrown away. Since most
-requests that can't be met are refused up front, running out here is rare;
-when it happens, the out-of-memory killer described on
-[Resource limits](/docs/architecture/resource-accounting) ends a process.
+requests that can't be met are refused up front, running out here is rare.
+When a program's page fault still finds no frame, the out-of-memory killer
+described on [Resource limits](/docs/architecture/resource-accounting) ends a
+process so that the fault can be served. Memory the kernel needs for its own
+work is not covered by the killer: the system call that needed it fails
+instead.
 
 ### How the kernel reaches into a program's memory
 
@@ -128,17 +157,23 @@ call fails with `EFAULT`.
 
 - **Reserving memory is cheap.** A large mapping costs a little bookkeeping
   until you touch it.
-- **If `mmap` or `brk` succeeds, the memory is there.** SlopOS checks that it
-  can back private memory when you ask for it, so a program isn't killed for
-  touching memory it was given. The exceptions (pages a `fork` child writes,
-  stack growth, and mappings made with `MAP_NORESERVE`) are explained on
+- **If `mmap` or `brk` succeeds, the memory is promised.** SlopOS checks that
+  it can back private memory when you ask for it, so touching memory you were
+  given never runs into that limit later. RAM itself can still run out,
+  because the kernel's own memory and the file pages programs map come from
+  the same RAM without being promised; that case, and the
+  memory with no promise behind it (pages a `fork` child writes, stack growth,
+  and mappings made with `MAP_NORESERVE`), are explained on
   [Resource limits](/docs/architecture/resource-accounting).
 - **New memory reads as zero.** Every frame a program receives was cleared.
-- **`fork` takes the same time whatever the parent's size.** Only page tables
-  are copied.
-- **Addresses differ between runs.** The stack and heap start at a random
-  offset each time a program starts, which makes memory-corruption bugs harder
-  to exploit.
+- **`fork` copies no memory.** It copies the parent's page tables, so it
+  costs more for a parent with more memory filled in, but no page is copied
+  until one side writes to it.
+- **Some addresses differ between runs.** The stack and heap start at a
+  random offset each time a program starts, which makes memory-corruption
+  bugs harder to exploit. The program itself and the area `mmap` places
+  memory in (where shared libraries go) start at the same addresses every
+  time.
 
 ## Differences from Linux
 
@@ -146,8 +181,11 @@ call fails with `EFAULT`.
 |---|---|---|
 | Asking for more memory than can be backed | Usually allowed; a process is killed later if memory runs out | Refused with `ENOMEM` at `mmap`, `brk` or `exec` |
 | Swap | Optional | None |
-| Huge pages | Available | Not supported; every page is 4 KiB |
-| memfd | Can be resized and sealed | Sized once; no sealing |
+| Huge pages | Available | Not supported; every page a program gets is 4 KiB |
+| Shared anonymous memory (`MAP_SHARED` with `MAP_ANONYMOUS`) | Supported | Refused with `ENOMEM`; share memory through a memfd instead |
+| A program's own file at `exec` | Mapped from the file and shared between running copies | Copied into fresh memory for each process; only what the dynamic loader maps is shared |
+| memfd | Can be resized, sealed, read and written | Sized once, at most 64 MiB, and at most 64 in the whole system at once; no sealing; reached only through `mmap` (`read` and `write` fail with `EINVAL`) |
+| Address randomisation | Program (when built position-independent), libraries, `mmap` area, stack and heap | Stack and heap only |
 
 ## How it is tested
 
@@ -169,31 +207,47 @@ paging, copy-on-write, memfd, reclaim, TLB flushing and the OOM killer. See
 whether it is in use: `UNUSED` (owned by the allocator), `BUSY` (one thread
 building or tearing it down) or a live count of typed `Frame<M>` handles.
 Frames a program or device can write are `UFrame<M>`, which allow byte copies
-and atomic word access but never a Rust reference.
+and atomic word access but never a Rust reference. The first MiB of physical
+memory never reaches the allocators, because firmware is known to write there
+after it has handed the machine over, and nothing in SlopOS needs it.
 
 **Kernel allocation.** Kernel code allocates only through
 `slopos_ostd::mm::heap` (`KBox`, `KVec`, `KArc` and friends). Every
 constructor is fallible, so running out of memory is an error the caller
 handles, not a panic. Build large objects in place with `KBox::try_init` or
-`PinBox::try_init`: a gate fails the build if any stack frame in the final
-ELF exceeds 2 KiB.
+`PinBox::try_init`: a gate fails the build if a stack frame in the final ELF
+exceeds 2 KiB without a measured exemption, and none may pass the 4 KiB guard
+page.
 
 **Address spaces.** A `VmSpace` changes only through a `CursorMut`, which only
 the per-process VM lock hands out, so there is one writer at a time. Entries
 are relaxed atomics because the processor sets accessed and dirty bits
 concurrently. `CursorMut::map` returns the frame in the error if the map is
-refused, so nothing frees it twice.
+refused, so nothing frees it twice. The kernel's own half has one writer
+outside OSTD, `slopos_mm::kernel_mappings`, and a build check
+(`check_kernel_pml4_writer.sh`) refuses a second.
 
-**TLB flushing.** Unmapped frames wait in quarantine until every CPU that
-might cache the old translation has flushed it; mapping a previously empty
-page needs no shootdown, because x86 doesn't cache missing translations.
-There is no kernel page-table isolation (KPTI): the kernel half stays mapped,
+**TLB flushing.** An unmap sends no interrupt to the other CPUs: the CPU
+doing it invalidates its own entries, and the freed frames wait in quarantine
+until every CPU has flushed its whole TLB since (`mm/src/mmu/quiesce.rs`).
+Mapping a page where nothing was mapped needs no shootdown, because x86
+doesn't cache missing translations, unless an earlier unmap in the same
+address space may still be cached on another CPU (`mmu::luf::may_hold_stale`);
+then the new mapping pays for one. `fork` flushes the CPUs running the
+parent's other threads before it lets go of the parent's address-space lock:
+a sibling still holding a writable translation would otherwise write into the
+frame the child now shares. There is no
+kernel page-table isolation (KPTI): the kernel half stays mapped,
 supervisor-only, in every process's table.
 
 **User access.** `copy_from_user` and `copy_to_user` keep preemption off
 while they hold the address-space reference, so a fault that needs the
-address space exclusively waits for them. Vectored I/O revalidates each
-segment as it goes, so a concurrent `munmap` becomes an error.
+address space exclusively waits for them. A copy that finds a page absent or
+copy-on-write populates it and tries again, up to a bounded number of
+rounds, because a sibling thread's `fork` can mark the fresh page
+copy-on-write again in between; a valid buffer must not fail with `EFAULT`
+for that. Vectored I/O revalidates each segment as it goes, so
+a concurrent `munmap` becomes an error.
 
 **Reclaim.** Taking a reference on a parked file page set unparks it, so
 reclaim can't free a frame a fault is about to map. How regions are charged
@@ -214,7 +268,7 @@ is on [Resource limits](/docs/architecture/resource-accounting#for-contributors)
   in the Linux kernel documentation. The same ideas in Linux's terms.
 - The man pages for [`mmap(2)`](https://man7.org/linux/man-pages/man2/mmap.2.html)
   and [`memfd_create(2)`](https://man7.org/linux/man-pages/man2/memfd_create.2.html),
-  whose Linux semantics SlopOS follows.
+  whose Linux semantics SlopOS follows apart from the differences above.
 
 ## In the source
 

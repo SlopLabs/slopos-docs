@@ -20,35 +20,54 @@ The wrapper runs in one of three modes, chosen by the recipe.
 
 | Mode | Recipes | Window | Serial output |
 |------|---------|--------|---------------|
-| `interactive` | `boot`, `boot-fast`, `boot-debug`, `boot-live` | Yes, unless `VIDEO=0` | The terminal |
+| `interactive` | `boot`, `boot-fast`, `boot-debug`, `boot-live`, `ui-shots`, `test-remote` | Yes, unless `VIDEO=0` (`ui-shots` and `test-remote` open none) | The terminal (`ui-shots` and `test-remote` read it themselves) |
 | `logged` | `boot-log` | No | `LOG_FILE` |
-| `test` | `test` and its variants, `test-persist`, `test-install` and the other checks that boot | No | The test runner |
+| `test` | `test` and its variants, `test-persist`, `test-install`, `test-installer`, `test-usb` and the other checks that boot | No | The test runner, or a log file the check reads |
 
 ## Recipe variables
 
-Read by the `justfile` and turned into kernel command-line options or recipe
-behaviour.
+Read by the `justfile` and turned into kernel command-line options, build
+choices or recipe behaviour.
 
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `ROULETTE` | `1` | `0`, `false`, `off`, `no` or `skip` adds `roulette=skip`: no Wheel of Fate |
 | `DEBUG` | `0` | `1`, `true`, `on` or `yes` adds `boot.debug=on` |
 | `VIDEO` | `1` for `boot` and `boot-live` | `0` opens no window; the console is the terminal |
-| `KERNEL_RELEASE` | `1` for `boot`, otherwise unset | `1` builds and boots the optimised kernel, `0` the dev kernel |
-| `BOOT_CMDLINE` | `tests=off root=initramfs` | The live ISO's whole kernel command line (`iso`, `boot-live`, `boot-log`). `boot` ignores it |
+| `KERNEL_RELEASE` | `1` for `boot`, and for `iso` when `PAYLOAD=1`; otherwise `0` | `1` builds and boots the optimised kernel, `0` the dev kernel. `test-installer`, `test-install-guest`, `test-selfhost` and `bench-selfhost` always use the optimised tests kernel |
+| `PAYLOAD` | `0` | `1` makes `just iso` add the toolchain and a clone of `HEAD` in a partition of the ISO, which the installer copies to the disk it installs |
+| `REMOTE` | `0` | `1` makes `just iso` pack a base paired with this host's remote-control broker. That ISO carries the broker's token |
+| `BOOT_CMDLINE` | `tests=off root=initramfs` | The live ISO's kernel command line (`iso`, `boot-live`, `boot-log`), to which `DEBUG` and `ROULETTE` add their options. `boot` ignores it |
 | `BOOT_LOG_TIMEOUT` | `15` | Seconds `boot-log` runs before QEMU is stopped |
 | `LOG_FILE` | `test_output.log` | Where `boot-log` writes the serial log, with ANSI escapes removed |
-| `DEV_QEMU_MEM` | `4G` | Memory for `boot` when `QEMU_MEM` is unset |
+| `DEV_QEMU_MEM` | `6G` | Memory for `boot`, the self-hosting checks and `test-installer` when `QEMU_MEM` is unset |
 | `PERSIST_IMAGE_SIZE` | `512M` | Minimum size of the persistent root; a larger value grows the existing image in place |
-| `ROOT_FREE_FLOOR` | `6G` | Free space the persistent root keeps for builds; a root with less is grown |
+| `ROOT_FREE_FLOOR` | `6G` | Free space the persistent and self-hosting roots keep for builds; a root with less is grown |
+| `TOOLCHAIN_STAGE` | `builddir/slopos-toolchain/install` | The toolchain the persistent and self-hosting roots carry at `/usr/local` |
+| `FS_IMAGE_SIZE` | `32M` | Size of `fs/assets/ext4.img` |
+| `FS_IMAGE_SIZE_TESTS` | `128M` | Size of `fs/assets/ext4-tests.img` |
 | `CAPACITY_IMAGE_SIZE` | `16G` | Size of the `test-capacity` volume |
 | `CAPACITY_INODE_RATIO` | `16384` | Bytes per inode for the `test-capacity` volume |
 | `CAPACITY_QEMU_MEM` | `2G` | Memory for `test-capacity` when `QEMU_MEM` is unset |
+| `TEST_CMDLINE` | the justfile's `test_cmdline` | The kernel command line `test-userland-only` and `test-elf` give the tests ISO, before each adds its `tests.run=`. `just test` and its variants ignore it and build theirs from `test_cmdline` and their arguments, and the other checks set their own |
+| `TEST_CMDLINE_EXTRA` | empty | Appended to the command line of `test-toolchain`, `test-selfhost` and `bench-selfhost`, for example `prof=on` |
+| `BENCH_PROF` | `prof=on` | What `bench-selfhost` adds to its command line; set it empty to profile nothing |
+| `INSTALLER_PAYLOAD` | `1` | `0` builds `test-installer`'s medium without the toolchain, so each installed disk clones a slot instead of building the system |
+| `UI_SHOTS_WIDTH`, `UI_SHOTS_HEIGHT` | `1280`, `800` | Screen size for `ui-shots` |
 | `BUILD_DIR` | `builddir` | Build output directory |
 
 `ports` is a justfile variable, not an environment variable, and goes between
 `just` and the recipe: `just ports=7777,8080 boot`. See
 [Networking](#networking).
+
+The long checks have their own budgets, in seconds: `INSTALL_TIMEOUT_SECS`
+(`test-install`, `test-install-guest`), `INSTALLER_TIMEOUT_SECS`,
+`INSTALLER_BOOT_TIMEOUT_SECS` and `INSTALLER_STALL_SECS` (`test-installer`),
+`SELFHOST_TIMEOUT_SECS` (`test-selfhost`, `bench-selfhost`) and
+`REMOTE_TEST_TIMEOUT_SECS` (`test-remote`). Raise them when QEMU runs without
+KVM, which runs a guest's build many times slower. `test-remote` also reads
+`REMOTE_STEP_TIMEOUT`, the seconds each `remote.py` step but an install may
+take (180), and `REMOTE_TEST_PORT`, the broker's port (a free one by default).
 
 ## Machine
 
@@ -65,30 +84,37 @@ behaviour.
 | `QEMU_ACCEL` | `kvm:tcg` on Linux, `hvf:tcg` on macOS | Accelerators, tried in order |
 | `QEMU_CPU` | `host` | CPU model |
 | `QEMU_SMP` | `4` | CPU count; must be a power of two |
-| `QEMU_MEM` | `4G` for `boot`, `1G` in test mode, `512M` otherwise | Guest memory |
+| `QEMU_MEM` | `6G` for `boot`, `1G` for `test`, `512M` otherwise; some checks set their own | Guest memory |
 
 On Linux, KVM is used when `/dev/kvm` exists and is readable and writable. When
 no hypervisor is usable (also on macOS when QEMU lists no HVF), the wrapper
-prints `No hardware acceleration` and runs TCG with `-cpu max`, because
-`-cpu host` needs a hypervisor.
+prints `No hardware acceleration — using TCG with -cpu max` and runs TCG with
+`-cpu max`, because `-cpu host` needs a hypervisor.
+
+The machine has the q35 chipset's PS/2 keyboard and mouse. It has no USB
+controller unless a test adds one (see [Disks](#disks) and
+[USB](#usb)).
 
 ## Firmware
 
 QEMU boots UEFI firmware (OVMF), fetched on first use and checked against
-pinned SHA-256 sums. Each run boots from a fresh copy of the firmware's
-variable store.
+pinned SHA-256 sums.
 
 | Boot medium | Recipes | Firmware |
 |-------------|---------|----------|
-| Live ISO on an AHCI CD-ROM | `boot-live`, `boot-log`, `test` | Pinned edk2 nightly in `third_party/ovmf` |
-| UEFI boot disk on NVMe | `boot`, `boot-fast`, `boot-debug`, the install checks | Pinned Arch `edk2-ovmf` build in `third_party/ovmf-nv` (`OVMF_NV_DIR` overrides the directory) |
+| Live ISO on an AHCI CD-ROM | `boot-live`, `boot-log`, `ui-shots`, `test` | Pinned edk2 nightly in `third_party/ovmf` |
+| UEFI boot disk on NVMe, or the ISO as an install stick or CD | `boot`, `boot-fast`, `boot-debug`, `test-install`, `test-installer`, `test-install-guest`, `test-remote` | Pinned Arch `edk2-ovmf` build in `third_party/ovmf-nv` (`OVMF_NV_DIR` overrides the directory) |
 
-The boot disk needs the second build because it chooses its next boot through
-a UEFI variable (`LoaderEntryOneShot`), which the nightly does not keep across
-a reset. `BOOT_DISK_IMG` names the boot disk and selects this firmware; the
-boot recipes set it. In interactive mode a guest reboot resets the machine
-inside the same QEMU process, keeping the variable store; in test mode QEMU
-exits on a reboot unless `QEMU_ALLOW_REBOOT=1`, which the install checks set.
+A boot disk needs the second build because it chooses its next boot through
+UEFI variables (`LoaderEntryOneShot`, `LoaderEntryDefault`, the firmware's
+`Boot####` entries), which the nightly does not keep across a reset.
+`BOOT_DISK_IMG`, `INSTALL_STICK` or `INSTALL_CDROM` selects this firmware.
+
+| Variable | Effect |
+|----------|--------|
+| `BOOT_DISK_IMG` | Boot from this disk image instead of the ISO; the boot recipes set it |
+| `OVMF_VARS_FILE` | Keep the firmware's variables in this file from one QEMU run to the next, as a machine's flash does; made from the template when absent. Without it, each run starts from a fresh copy |
+| `QEMU_ALLOW_REBOOT` | `1` lets a guest reboot reset the machine inside the same QEMU in `test` mode, keeping the variables, instead of ending QEMU; the install checks set it. Interactive mode always does |
 
 Download overrides (`OVMF_BASE_URL`, `OVMF_NV_PKG_URL`, `LIMINE_URL` and
 others) are listed in
@@ -97,40 +123,73 @@ others) are listed in
 ## Disks
 
 Every NVMe controller is probed before any virtio one, in command-line order,
-so a root disk, when one is attached, is `nvme0n1`.
+and a namespace is named by its number, so a root disk, when one is attached,
+is `nvme0n1`, and an optional disk that is absent renames nothing.
 
 | Guest name | When | Contents |
 |------------|------|----------|
-| `nvme0n1` | `boot` | `fs/assets/ext2-persist.img`, the persistent root |
-| `nvme0n1` | test mode, except `test-install` | `fs/assets/ext2-tests.img`, rebuilt every run |
-| `nvme0n2` | test mode | Blank 8 MiB scratch for destructive block tests |
+| `nvme0n1` | `boot` | `fs/assets/ext4-persist.img`, the persistent root |
+| `nvme0n1` | `test` mode | `fs/assets/ext4-tests.img`, rebuilt every run; for the self-hosting checks `fs/assets/ext4-selfhost.img` |
+| `nvme0n2` | `test` mode | Blank 8 MiB scratch for destructive block tests |
 | `nvme0n3` | `CAPACITY_IMG` names an existing file (`test-capacity`) | The capacity volume, kept between runs |
-| `nvme1n1` | test mode | ext4 volume labelled `slopos-media`, 4096-byte logical blocks, mounted at `/media` |
-| `nvme1n2` | test mode | Blank scratch with 4096-byte logical blocks |
-| `nvme2n1` | test mode | Scratch on a controller that a test shuts down |
-| `nvme1n1` | `boot` | `builddir/boot-disk.img`, the boot disk (see below) |
-| `nvme3n1` | install checks | The boot disk, after the test controllers |
-| `vda` | test mode | `fs/assets/ext2.img`, the shipped verified image, copy-on-write |
-| `vdb` | test mode | Blank virtio scratch |
+| `nvme1n1` | `test` mode | 16 MiB ext4 volume labelled `slopos-media`, 4096-byte logical blocks, mounted at `/media` |
+| `nvme1n2` | `test` mode | Blank scratch with 4096-byte logical blocks |
+| `nvme2n1` | `test` mode | Scratch on a controller that a test shuts down |
+| last controller | `BOOT_DISK_IMG` | The boot disk: `nvme1n1` for `boot`, `nvme3n1` beside the test disks, `nvme0n1` with neither a root disk nor test disks |
+| `vda` | `test` mode | `fs/assets/ext4.img`, the shipped verified image, copy-on-write |
+| `vdb` | `test` mode | Blank virtio scratch |
+| `sda` | `test` mode | Blank 8 MiB scratch on a USB stick, behind a `qemu-xhci` controller at PCI address `00:10.0` |
+| `sda` | `INSTALL_STICK` | The ISO on a USB stick behind `qemu-xhci`, write-protected unless `INSTALL_STICK_WRITABLE=1`, booted first |
+| none | `INSTALL_CDROM` | The ISO in an AHCI CD drive, booted first; the kernel has no driver for it, so the system sees no payload |
 
-`QEMU_NO_ROOT_DISK=1` omits the root disk. `boot-live` and `boot-log` set it,
-so they attach no disk at all; `test-install` sets it because its root is a
-partition on the boot disk. Test-mode scratch files go in `SCRATCH_DIR`
-(default `builddir`). [Disks](/docs/architecture/storage) explains device
-naming.
+Each test-mode disk carries a `serial=`, which `/dev/disk/by-id` names it by.
+`QEMU_NO_ROOT_DISK=1` omits the root disk; `boot-live`, `boot-log`,
+`ui-shots`, `test-install`, `test-installer`, `test-remote` and `test-usb` set
+it.
+`QEMU_TEST_DISKS=0` keeps the suite's own disks (everything marked `test`
+mode above but the root) off a machine whose disks a test lays out itself.
+Test-mode scratch files go in `SCRATCH_DIR` (default `builddir`), and
+`VERIFIED_IMG` names another image for `vda`. [Disks](/docs/architecture/storage)
+explains device naming.
 
 The boot disk (`scripts/build_bootdisk.sh`) is a GPT disk in the layout
 SlopOS uses on a real machine:
 
 | Partition | Contents |
 |-----------|----------|
-| EFI system partition | Limine and its `limine.conf` under `\EFI\SlopOS\`, plus a copy at the removable-media path `\EFI\BOOT\` |
-| SlopOS boot | FAT32; one directory per slot (`/boot/a`, `/boot/b`), each holding `kernel.elf` and `base.img` |
-| SlopOS root | Only when `BOOTDISK_ROOT_IMAGE` names an ext4 image (`test-install`); the slots boot with it as root |
-| SlopOS crash | Raw, zeroed |
+| EFI system partition | Limine, its `limine.conf`, `LICENSE.limine` and `3RDPARTY.limine.md` under `\EFI\SlopOS\`, plus the loader and configuration at the removable-media path `\EFI\BOOT\` |
+| SlopOS boot | FAT32: a kernel per slot (`/boot/a/kernel.elf`, `/boot/b/kernel.elf`) and the base every slot boots, as both `/boot/base/current.img` and `/boot/base/previous.img` |
+| SlopOS root | Only when `BOOTDISK_ROOT_IMAGE` names an ext4 image (`test-install`, `test-remote`); the slots boot with it as root |
+| SlopOS crash | 4 MiB, raw, zeroed |
 
-`BOOTDISK_PANIC_ENTRY=1` adds a slot `bad` whose kernel panics and resets.
-[Installing a system](/docs/self-hosting/installing-a-system) explains slots.
+`BOOTDISK_PANIC_ENTRY=1` adds slots `bad` and `abort`, whose kernel panics and
+resets, through the panic report and through the format-free abort.
+[Updating SlopOS](/docs/self-hosting/updating) explains slots and bases.
+
+## USB
+
+A test-mode boot has one `qemu-xhci` controller with one scratch stick
+(`sda`). `just test-usb` builds its own machine through `scripts/test_usb.py`:
+both of QEMU's xHCI models, `qemu-xhci` on MSI-X and `nec-usb-xhci` on MSI,
+with sticks at every speed, QEMU's full-speed hub with a stick, a tablet and a
+mouse behind it, a keyboard, an ext4 stick, a read-only drive and a `usb-net`
+adapter on a SLIRP network of its own (`10.0.3.0/24`). `just ui-shots` adds a
+USB tablet and a blank 16 GiB NVMe disk. Both drive QEMU through a control
+socket:
+
+| Variable | Effect |
+|----------|--------|
+| `QEMU_QMP` | Open a QMP socket at this path, through which the host plugs and pulls devices and injects input |
+| `QEMU_PCI_DEVICES` | Extra QEMU arguments, space-separated, appended to the command line |
+
+`QEMU_PCI_DEVICES` takes any devices. For example, this gives the live ISO a
+blank disk the installer can offer, attached as `just ui-shots` attaches one:
+
+```bash
+truncate -s 16G builddir/blank.img
+QEMU_MEM=2G QEMU_PCI_DEVICES="-drive file=builddir/blank.img,if=none,id=blank,format=raw -device nvme,serial=blank,drive=blank" \
+  ROULETTE=0 just boot-live
+```
 
 ## Display
 
@@ -152,13 +211,14 @@ SlopOS uses on a real machine:
 | `vga` | Plain framebuffer; pair with `video=framebuffer` in `BOOT_CMDLINE` |
 
 When QEMU cannot create the virtio device, the wrapper warns and uses `vga`.
-The framebuffer size is written into the bootloader configuration when the
+The framebuffer size is written into the boot loader configuration when the
 ISO or boot disk is built, which the boot recipes do on every run.
 `just show-qemu-resolution` prints the size detection would pick.
 
 ## Networking
 
-QEMU user networking (SLIRP) backs a `virtio-net-pci` card in every mode.
+QEMU user networking (SLIRP) backs a `virtio-net-pci` card in every mode,
+which the guest names `eth0` and configures by DHCP.
 
 | Setting | Default | Effect |
 |---------|---------|--------|
@@ -169,25 +229,25 @@ QEMU user networking (SLIRP) backs a `virtio-net-pci` card in every mode.
 `ports` does not reach the inner `just boot` that `boot-fast` and `boot-debug`
 start; use `ROULETTE=0 just ports=7777 boot`.
 
-These services run inside the SLIRP network, started by QEMU per connection:
+These services run inside the SLIRP network, started by QEMU per connection,
+so nothing listens on the host:
 
 | Address | Service | Variables |
 |---------|---------|-----------|
 | `10.0.2.100:9999` | TCP echo service the network tests dial | `ECHO_PEER_ADDR`, `ECHO_PEER_PORT`, `ECHO_PEER_CMD` (default `/bin/cat`) |
-| `10.0.2.4:9418` | `git daemon` serving this checkout, read-only | |
+| `10.0.2.4:9418` | `git daemon` serving this checkout, read-only | Only with `GIT_PUSH_REPO` |
 | `10.0.2.4:9419` | `git daemon` serving a bare repository that accepts pushes | `GIT_PUSH_REPO`, an absolute path, created if absent |
+| `10.0.2.4:22` | The host's `sshd`, serving git over ssh to one fixture key | `GIT_SSH_PEER`, a directory holding its `sshd_config` (`test-toolchain` sets it) |
 
 `boot` sets `GIT_PUSH_REPO` to `fs/assets/guest-push.git`.
 [Development machine](/docs/self-hosting/development-machine) shows how the
-guest uses both.
+guest uses it.
 
 ## Debugging
 
 | Variable | Effect |
 |----------|--------|
 | `QEMU_DEBUG=1` | GDB stub on TCP port 1234 and the QEMU monitor on `/tmp/slopos-monitor.sock`. `boot-debug` sets it |
-| `QEMU_ENABLE_ISA_EXIT=1` | Add the `isa-debug-exit` device (port `0xf4`) outside test mode, so the guest can end QEMU with a status |
-| `QEMU_PCI_DEVICES` | Extra QEMU arguments, space-separated, appended to the command line |
 
 `just debug-gdb`, `just debug-bt` and `just debug-monitor` attach to a running
 `boot-debug`. See [Debugging with GDB](/docs/development/debugging-gdb-record-replay).

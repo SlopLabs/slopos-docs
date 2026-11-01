@@ -1,0 +1,378 @@
+---
+title: "Desktop"
+description: "What the SlopOS desktop looks like, the theme and toolkit every app draws with, and the checks that keep apps looking like the rest of the system."
+---
+
+import { DesktopAnatomy } from '@/components/diagrams/desktop-anatomy';
+
+The SlopOS desktop is meant to read as one product: the window frames, the
+dock, the lock screen, the installer and every app use the same colours, the
+same type, the same spacing and the same words. You get that without trying
+when you build an app from **appkit**, SlopOS's toolkit, because the toolkit's
+components carry the look and the behaviour: text takes a role rather than a
+size, and a gate refuses an app that makes a colour of its own. What it
+doesn't promise: there is one dark theme, one screen scale and no way for a
+person to choose another yet.
+
+This page describes the theme, the components, the checks that hold apps to
+them, the parts of the desktop the compositor draws, and the apps that ship.
+How pixels and input travel between apps and the compositor is on
+[Windowing](/docs/architecture/userland-windowing); writing your own app is
+[Write an app](/docs/development/writing-an-app).
+
+## Where it comes from
+
+None of the ideas here are new. Colours are named by the surface they sit on
+and by what they mean, as libadwaita, GNOME's toolkit, names its own (window,
+view and card colours; accent, destructive, success, warning and error). The
+contrast rules are WCAG 2.2's: 4.5:1 for text, 3:1 for the edges of controls
+and focus indicators. Icons are glyphs of Lucide, an open icon set shipped as
+a font. App icons follow GNOME's and Apple's guidance: a few simple filled
+shapes, no shadows of their own. An app is a function from its state to a
+view plus a function that applies messages, which is the Elm architecture.
+And refusing a raw colour where a named one belongs is what the
+[`HardCodedColor`](https://android.googlesource.com/platform/prebuilts/checkcolor/+/refs/tags/android-12.0.0_r14/README.md)
+lint check does for parts of Android's own source, which
+must take their colours from theme attributes; here the check is one of the
+gates every change must pass.
+
+## Why the look is enforced rather than suggested
+
+Before the theme existed, each app picked its own colours and sizes. Page
+titles came out the same size as the paragraph under them, a disabled option
+dimmed its title but not its reason, and one app had three names: *Editor* in
+the dock, *Sloped* in its title bar and "SlopOS editor" in its About box.
+Nothing about this is hard to fix once found, but finding it means looking at
+every screen at every width after every change, which nobody does. So SlopOS
+moves the decisions into code (a theme of named roles and components that
+apply them), makes the shortcuts fail a gate, and checks the result by
+laying every screen out off screen and measuring it.
+
+## The theme
+
+`theme-core` holds the desktop's design values, and both appkit and the
+compositor read them through it. No app built on appkit defines a colour of
+its own, except where colours are its content, such as the editor's syntax
+palette.
+
+- **Colours are roles.** A surface (`Base` for a window's content, `Raised`
+  for cards, popovers and dialogs, `Sunken` for fields and lists, `Chrome`
+  for title and menu bars), a text *tone* (`Normal`, `Secondary`,
+  `Disabled`, `Accent`, `Danger`, `Warning`, `Success`, `Info`), and the
+  edges, focus ring and selection. Every status hue exists twice: a light
+  *ink* for text on a surface, and a deep *fill* for white text on it, which
+  is how a filled button or a danger button is drawn. Hover and pressed are
+  derived from the role, never listed per control: a filled control lightens
+  under the pointer and darkens while pressed.
+- **Text has roles too.** Each role is a size, a weight and a line height:
+
+  | Role | Size and weight | Used for |
+  |---|---|---|
+  | `Hero` | 64 px semibold | the time on the lock and login screens, nothing else |
+  | `Display` | 24 px semibold | a page that is one number |
+  | `Title` | 18 px semibold | a page's title |
+  | `Heading` | 15 px semibold | a section, the menu bar's app name |
+  | `Body` | 14 px | text |
+  | `Label` | 13 px | controls, the dock's labels |
+  | `Caption` | 12 px | small print under something |
+  | `Mono` | 13 px | code and command lines |
+
+- **Space comes in steps** of 4 px (`space::XS` 4, `SM` 8, `MD` 12, `LG` 16,
+  `XL` 24), with named insets for a page, a section, a card and a control.
+  Controls have 6 px corners, cards and windows 12 px. Focus is drawn 2 px
+  wide where an edge is 1 px, so it shows by more than a change of colour.
+- **The chrome's own values** live there as well: the wallpaper's gradient,
+  the glass of the dock and the menu bar, the rims and shadows of windows,
+  eight app tile hues and seven distinct series colours for charts.
+
+There is one table, a dark graphite one. A light theme would be a second
+table, with no change to any app.
+
+Interface text is set in Inter, code and the terminal in JetBrains Mono, and
+icons in Lucide, all loaded at run time from `/usr/share/fonts`. They are
+never compiled into a program, because the text fonts' licence (the SIL Open
+Font License) and SlopOS's own could not both govern one binary. Every glyph
+in a line sits on one baseline, pairs are kerned from the font's own table,
+and measuring, fitting and drawing share one layout, so text that measured
+as fitting draws as fitting.
+
+## Components
+
+An app describes its window as a tree of *components*, each of which says
+what a thing is rather than how to draw it: a `Page` (a title, a sentence about
+it, content that scrolls and a row of buttons under a separator), a
+`Section`, a `PropertyList` of names and values, a `Notice`, a `ButtonRow`, a
+`List` of `ListRow`s, a `Sidebar`, a `Toolbar` of `IconButton`s, a
+`SearchField`, a `StatusBar`, a `Tag`, an `EmptyState`, a `Disclosure`, a
+`Dialog`, a `Graph`, and `Text` in a role and a tone. For lists of many
+things and documents there are tables, trees, a code view, tabs, menus and a
+zoomable picture. The appkit guide in the source tree, `appkit/GUIDE.md`,
+says which to use when.
+
+What makes them worth using is what comes with every one of them:
+
+- **Text that doesn't fit is cut with `…`**, at its end or, for a path or a
+  file name, at its start, and the whole text shows in a tooltip. Text set to
+  wrap breaks at spaces and shows every word, unless the app caps its number
+  of lines, when the last line is cut with `…` too.
+- **Every control has its states.** It lights under the pointer, shows when
+  pressed, can be disabled and shows that too. Focus is one ring around the
+  control, or around the row the keyboard is on in a list, table, tree or
+  menu.
+- **The keyboard works the same everywhere.** Tab and Shift+Tab move focus.
+  Enter and Escape that no control took press the confirming and the back or
+  cancel button of the page or dialog in front, and Enter never reaches a
+  destructive button that way: only one that has focus takes it. A dialog
+  keeps the keyboard and the pointer until it is answered or dismissed.
+- **Every control and every row is at least 28 px across**, so a pointer can
+  find it.
+- **Windows describe themselves.** An app states the size its window opens
+  at, the least it can be laid out at, and whether it resizes, and the
+  compositor holds it to that. A window showing a document is titled
+  `<document> — <App>`, any other by the app's name alone, and that name is
+  the one its dock entry uses.
+- **Refusals say why.** When the computer refuses to open or change a file,
+  appkit works out the reason from what the kernel says about the file and
+  the filesystem it is on (`statfs` and the file's flags, never its path):
+  the system's own file, an extension's, one locked against changes, a disk
+  that can't be written, or permissions. The app says which.
+
+The widget gallery (`widget_gallery`, or `widget_gallery --page <name>` for
+one of its pages) shows every component in each of its states.
+
+## How the look is checked
+
+Three kinds of check hold apps to all this, none of which needs anyone to look
+at a screen.
+
+**The theme's own tests.** `theme-core`'s host tests compute WCAG 2.2's
+contrast ratio for the pairs the desktop puts together: body and
+secondary text against every surface, hovered and selected rows included, at
+4.5:1; status inks on plain surfaces at 4.5:1; white text on every fill in
+every state at 4.5:1; and edges, the focus ring, disabled text and an app
+icon's glyph against its tile at 3:1. Disabled text is held to 3:1 although
+WCAG asks nothing of inactive controls. Another test checks that every icon
+the code names is a glyph of the shipped font.
+
+**The layout audit.** `appkit::audit` lays a tree out at a given size, paints
+it off screen and measures what came out. It reports text cut by an edge
+instead of an ellipsis, siblings that overlap, a child outside its parent,
+text over text, a row whose texts don't share a baseline, a control whose
+focus doesn't show all the way round, a control under 28 px, and text under
+its contrast floor against the colour actually behind it. `appkit_test` holds
+every component and every gallery page to it at 360, 640 and 960 px wide,
+after first planting each kind of mistake to see that the audit finds it. The
+consent dialog, the installer's pages, the System Monitor and the compositor's
+own screens are audited the same way.
+
+**Gates on the source.** `scripts/check_ui_literals.sh` fails an app that
+constructs a colour or gives a spacing or an inset a number. A file whose
+colours are its content, such as the editor's syntax palette, is exempt by a
+line in `scripts/gates/ui-literals.txt` that says why.
+`scripts/check_app_deps.sh` fails an app under `apps/` that depends on
+anything but appkit, the editor's core and the image decoder, so no app
+reaches past the toolkit into the kernel's interface or the toolkit's
+internals.
+
+## Words
+
+Words are checked too, wherever a screen keeps them as data (a menu's
+entries, privd's policy, the installer's pages) rather than spelling them out
+in drawing code. The glossary in `theme_core::words` lists what a screen a
+person acts on never says, and what it says instead:
+
+| Never | Instead |
+|---|---|
+| machine | computer |
+| drive | disk |
+| medium | installer |
+| volume, region | partition |
+| reboot | restart |
+| halt, shut down | power off |
+| admin | administrator |
+| end session | log out |
+| switch person | switch user |
+| program, client | app |
+| boot order, firmware entry | startup order |
+
+A *label* (a button, a menu entry, a heading) starts with a capital and has no
+full stop; a *sentence* starts with a capital and ends with a full stop or a
+question mark; neither names a command-line flag or writes an ellipsis as
+three dots. Buttons are verbs, and an ellipsis marks one that asks something
+further (*Restart…*). Everything uses sentence case, unlike GNOME's
+guidelines, which capitalise headings and buttons. Memory and file sizes are
+binary (`512 bytes`, `1.5 KiB`, `8 MiB`), and disk sizes decimal, as a
+drive's label gives them. Host tests hold privd's policy, every page of the
+installer and the compositor's menus and screens to these rules.
+
+## What the compositor draws
+
+The compositor draws everything on screen that isn't an app's content.
+
+<DesktopAnatomy />
+
+- **The desktop** is the theme's wallpaper, a dark gradient lit softly from
+  above, drawn at the screen's size and dithered so it shows no bands. The
+  compositor would cover it with the picture `SLOPOS_WALLPAPER` names, but
+  init starts every desktop without that variable, so the gradient is what
+  you see.
+- **Window frames** are rounded at all four corners, with a dark hairline
+  just outside and a light one along the top, and a shadow that is half as
+  dark on a window without focus; a maximised window is square and has
+  neither hairlines nor shadow. The close, minimise and zoom buttons are
+  coloured discs that show their glyphs while the pointer is over the three
+  of them, and are grey on a window without focus until the pointer comes
+  over them; a window that can't be resized has a grey zoom button with no
+  glyph. A resize takes a press up to 8 px outside the frame. Zoom fills the
+  space between the menu bar and the dock, or gives the window the nearest
+  size its limits allow, centred; pressing it again puts the window back, as
+  long as it is still maximised or still where zoom put it.
+- **The menu bar** is a strip of glass across the top. On the left,
+  SlopOS's mark opens the system menu and the focused window's app is named;
+  on the right, the network item opens the network panel and the clock shows
+  the time as `HH:MM`, in UTC, since SlopOS has no time zones, with the date
+  a click away.
+- **The system menu** names the person and offers *Lock screen*, *Switch
+  user…*, *Log out…*, *Restart…* and *Power off…*. Only once a new base has
+  changed the desktop's own programs does *Restart desktop…* appear, at the
+  top, under the notice *Restart the desktop to finish updating*, and the
+  menu then opens by itself to offer it. Each entry that ends something asks
+  first, with *Cancel* focused.
+- **The dock** floats as a pane of glass above the bottom of the screen. It
+  holds the pinned apps, then the running apps that no entry names, a dot
+  under each app that runs, and each icon grows a little as the pointer
+  nears and is named in a label above it while the pointer is over it.
+- **The lock and login screens** dim the wallpaper and show the time and
+  date, the person's initial in a circle and their name (or, on the login
+  screen, the people as rows, five at a time), a password field and *Unlock*
+  (beside *Switch user…*) or *Log in*.
+- **Questions** are drawn over everything: the ones the system menu asks
+  before it ends something, and privd's consent dialog. The consent dialog is
+  a card centred over the window of the app that asks, when it has one, with
+  the headline `<App> wants to <do something>.`, the app's icon, what
+  follows from allowing it, *Cancel*, and a button naming what it allows,
+  filled with the danger tone when the action destroys something.
+  [Privileged actions](/docs/architecture/privd) explains how it guards what
+  you type and click.
+
+The frames and the dock are drawn by the compositor's own drawing code, but the
+compositor's other surfaces (the lock and login screens, the system menu, the
+panels and the questions) are appkit trees like any app's, laid out and
+painted into the compositor's own buffer (`appkit::embed`), so they are built
+from the same components and audited the same way.
+
+[Sessions and login](/docs/architecture/sessions) covers what locking,
+switching user and logging out do.
+
+## App icons
+
+Every app icon is one white glyph on a rounded tile in one of the theme's
+tile hues, lit slightly from its top-left corner and nothing more: no sheen,
+no rim, no shadow, since the dock casts the shadow. The shipped icons are
+drawn by code (`just icons`, `tools/icons/src/art.rs`) from a few filled
+shapes on a 64-unit grid. Each glyph fills a guide rectangle (a *keyline*:
+landscape, portrait or square, all of about the same area), so no icon looks
+bigger than another, and depth comes only from a shape behind at 60% white
+or from detail cut out of a white shape.
+They ship at 64 px and as `<id>@2x.png` at 128 px, and a host test fails when
+a shipped PNG is not what the code draws. An app that ships no icon is shown
+as a glyph of the icon font on a tile whose hue its app id picks.
+
+## How the dock uses app entries
+
+The dock learns which apps exist from *app entries*, small files that name an
+app, the program it runs and its icon. It reads them once, when the desktop
+starts, so an app installed while you are logged in appears only once your
+desktop starts again (after you log out and back in, for example). It
+sorts them by name and shows at most 16 apps, pinned and running together. A
+window belongs to an entry when its app id is the entry's id, which is also
+how the menu bar names the focused window's app.
+
+A click on an app that has a window brings that window to the front,
+restoring it if it was minimised. A click on an app that isn't running starts
+the program its entry names, with the desktop's environment. A window whose
+app has no entry still gets an icon after the pinned ones, named by the
+window's title.
+
+[Installed software](/docs/architecture/software#app-entries) describes the
+entry files, the places the dock reads them from and which entry wins when
+two share an id; [Extensions](/docs/architecture/extensions) says what an
+extension's entries may do.
+
+## The apps that ship
+
+Some apps are part of the base, the read-only system every boot runs; the
+rest are installed at `/usr/local`, outside the base, so they can be updated
+on their own ([Installed software](/docs/architecture/software) explains
+why).
+
+| App | Program | Where | What it is |
+|---|---|---|---|
+| Terminal | `terminal` | base | A shell on a *pseudo-terminal* (a pair of endpoints that look like a serial line to the shell), emulating an xterm closely enough for full-screen programs and mouse reporting. Resizing re-wraps long lines in the scrollback; Ctrl+Shift+PgUp and PgDn scroll it. |
+| System Monitor | `sysmon` | base | A *Performance* tab with a graph of the last minute for the processor, memory, each disk, each network adapter and the graphics adapter, and a *Processes* tab listing every process with its threads folded in, which can end one (through privd when it belongs to another person, and saying why when it can't). `sysmon --page cpu`, `memory`, `disk`, `network`, `gpu` or `processes` opens on a page. |
+| Install SlopOS | `installer-ui` | base | The installer's window, shown only when the computer started from the install medium ([Installing SlopOS](/docs/self-hosting/installing)). |
+| Editor | `editor` | `/usr/local` | A text editor with tabs, a file tree, syntax highlighting, find and replace and a command palette. It saves through a synced copy renamed over the file, so a failed save never leaves half a file, and asks before replacing a file that changed since it was opened. Its manual is `share/slopos/doc/editor.md`. |
+| Files | `file_manager` | `/usr/local` | A file manager with places in a sidebar, a toolbar and a table of the folder. |
+| Image Viewer | `image_viewer` | `/usr/local` | Shows a PNG fitted to the window, zoomed with the wheel or `+` and `-`, `f` to fit again and `0` for actual size. |
+| Widget Gallery | `widget_gallery` | `/usr/local` | Every appkit component in each of its states. It has no dock entry; start it from a terminal. |
+
+## Looking at it
+
+`just ui-shots` boots the live ISO under QEMU, plays scenes of keys, clicks
+and commands typed at the serial console, and saves a PNG of each screen
+under `builddir/ui-shots/`: each installer page, the consent dialog, the
+system menu, the question *Power off…* asks, the clock's date, the lock and
+login screens, the desktop with two windows and the pointer on the dock, each
+app and each page of the gallery. Naming scenes takes only those (`just
+ui-shots apps`; the scenes are `installer`, `chrome`, `desktop`, `apps` and
+`gallery`), and `--no-install` stops the installer at its review page.
+Nothing compares the shots with anything: they are for people to look at
+before and after a change. The audit and the tests are the gate.
+
+## For contributors
+
+- **Name roles, never values.** An app names a `Tone`, a `Surface`, a
+  `TextRole`, a `space` step or an `inset`, and appkit itself constructs no
+  colour (the checks behind a picture's transparent pixels aside). A new role
+  goes in `theme-core`, with a contrast test for every surface it may sit on.
+- **A new component owns its behaviour.** Its states, focus ring, overflow and
+  hit target are the component's job, and it joins the gallery
+  (`appkit::catalogue`), so `appkit_test` audits it at three widths.
+- **Words are data where they can be.** A surface whose words are data holds
+  them to `theme_core::words` in a host test, and keeps trade words (device
+  names, paths, sizes in bytes) in its details.
+- **A new icon is a glyph of the shipped font.** Add an `Icon` variant naming
+  Lucide's codepoint; the font test fails on one the font lacks. An app icon
+  is a new `Art` in `tools/icons`, rendered with `just icons`.
+
+## Further reading
+
+- [Understanding SC 1.4.3 Contrast (Minimum)](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)
+  and [SC 1.4.11 Non-text Contrast](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html).
+  The two thresholds `theme-core`'s tests encode, explained with examples.
+- [libadwaita's CSS variables](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/css-variables.html).
+  How GNOME's toolkit names its colours by surface and by meaning, the model
+  for the theme's roles.
+- [GNOME HIG: App Icons](https://developer.gnome.org/hig/guidelines/app-icons.html)
+  and [Apple HIG: App icons](https://developer.apple.com/design/human-interface-guidelines/app-icons).
+  The icon rules `tools/icons` follows.
+- [GNOME HIG: Writing style](https://developer.gnome.org/hig/guidelines/writing-style.html).
+  Short, plain interface text and when a label takes an ellipsis.
+- [*The Elm Architecture*](https://guide.elm-lang.org/architecture/). The
+  model, view and update split appkit's `App` uses.
+- [Design Tokens Format Module](https://www.designtokens.org/tr/2025.10/format/).
+  The cross-tool vocabulary for named design values like `theme-core`'s.
+- [Lucide's licence](https://lucide.dev/license). The icon font's terms, ISC
+  with MIT for the icons derived from Feather.
+
+## In the source
+
+| Path | What is there |
+|---|---|
+| `theme-core/` | Colours, text roles, spacing, icons and the words, host-tested |
+| `appkit/` | The toolkit: components, the audit, the gallery, `GUIDE.md` |
+| `userland/src/apps/compositor/` | Frames, dock, menu bar, wallpaper; `views.rs` for its appkit surfaces |
+| `chrome-core/` | The models behind the lock screen, the system menu, the clock and placement, host-tested |
+| `apps/` | The apps outside the base, their entries and icons |
+| `tools/icons/` | The app icons' artwork and its tests |
+| `scripts/ui_shots.py` | `just ui-shots` |

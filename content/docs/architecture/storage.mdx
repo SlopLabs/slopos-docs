@@ -1,23 +1,29 @@
 ---
 title: "Disks"
-description: "How SlopOS finds disks, names them, splits them into partitions, and keeps two writers off the same one."
+description: "How SlopOS finds disks, names them, splits them into partitions, copes with one being unplugged, and keeps two writers off the same one."
 ---
 
 import { DiskPath } from '@/components/diagrams/disk-path';
 
-SlopOS reads and writes two kinds of disk: NVMe drives, which is what almost
-every modern laptop has, and virtio-blk disks, which is what a virtual machine
-can offer. Whichever you have, it shows up under `/dev` with the name Linux
-would give it (`nvme0n1`, `vda`), each partition gets its own name
-(`nvme0n1p2`), and you can also refer to a partition by its label or ID
-through `/dev/disk/by-label` and friends. SlopOS makes sure only one thing at
-a time writes to any part of a disk, and when a disk stops answering, the
-request fails instead of hanging the machine. What SlopOS can't do yet is
-format, check or partition a disk itself: the host does that.
+SlopOS reads and writes three kinds of disk: NVMe drives, which is what almost
+every modern laptop has; virtio-blk disks, which is what a virtual machine
+can offer; and USB sticks and drives. Whichever you have, it shows up under
+`/dev` with the name Linux would give it (`nvme0n1`, `vda`, `sda`), each
+partition gets its own name (`nvme0n1p2`, `sda1`), and you can also name a
+disk or partition by something stored on it through `/dev/disk/by-id`,
+`/dev/disk/by-label` and friends. Only one thing at a time writes to any part
+of a disk. A disk that stops answering fails the request instead of hanging
+the machine, a stick that is pulled out takes its names with it, and a disk
+that says it is write-protected is only ever mounted read-only. What SlopOS
+doesn't do is mount anything you plug in by itself, or partition a disk
+outside the [installer](/docs/self-hosting/installing).
 
 The design is Linux's, reduced to what SlopOS needs. The names, the
-`/dev/disk/by-*` links and the partition handling all follow Linux and udev,
-and the two drivers follow the public NVMe and virtio specifications.
+`/dev/disk/by-*` links and the partition handling all follow Linux and
+systemd's udev rules, and the drivers follow the public NVMe, virtio and USB
+mass storage specifications. The rest of the page explains what a disk is to
+the kernel, how a request reaches one, how disks are named, and what happens
+when two programs, or a pulled cable, get in each other's way.
 
 ## What a disk looks like to the kernel
 
@@ -36,36 +42,50 @@ a *completion* into a second queue, and raises an interrupt. The kernel then
 wakes the program that was waiting. OSTEP's chapter on I/O devices, listed
 under further reading, walks through this pattern from scratch.
 
-### NVMe and virtio-blk
+### NVMe, virtio-blk and USB disks
 
 **NVMe** is the standard way an SSD plugged into the PCI Express bus talks to
-the computer. It defines those queues and the format of each request. The
-NVMe driver sets up one queue for management commands (asking the drive what
-it is, shutting it down) and one pair for reads and writes. A single drive
-can present several independent disks, called *namespaces*; most have one.
-Some cheaper drives have no memory of their own and ask to borrow some of the
-computer's, which the driver grants.
+the computer. It defines those queues and the format of each request. A
+single drive can present several independent disks, called *namespaces*;
+most have one. The NVMe driver sets up one queue for management commands
+(asking the drive what it is, shutting it down), one pair for reads and
+writes that every namespace on the drive shares, and a second, small pair
+that only a kernel panic uses, so the panic can write its
+[crash record](/docs/development/diagnostics#the-kernel-panicked) without waiting on anything.
+Some cheaper drives have no memory of their own and ask to
+borrow some of the computer's, which the driver grants. At power off and
+restart the driver takes that memory back and tells the drive to shut down
+cleanly.
 
 **virtio-blk** is a disk that exists only inside a virtual machine. The
 virtual machine (QEMU, in our case) offers a simple queue-based device
 defined by the virtio specification, so the guest doesn't have to pretend to
 drive real hardware. SlopOS supports it because it is the most common disk in
-virtual machines, and the test suite keeps one attached so the driver stays
+virtual machines, and the test suite keeps two attached so the driver stays
 tested.
 
-Under QEMU, SlopOS's own development and test disks are NVMe: the root
-filesystem is the first NVMe namespace, and the boot disk sits on the last
-controller. On the laptop, the drive is NVMe too.
+**USB sticks and drives** speak SCSI commands over USB's *Bulk-Only
+Transport*: the kernel sends a small command block down one pipe, the data
+moves on the same pipe or a second one, and a status block comes back.
+Each logical unit (most sticks have one) that answers as a disk becomes a
+disk of its own. [USB](/docs/architecture/usb) explains how a stick is found
+and how the driver recovers one that stops responding mid-command; on this
+page a stick is simply a disk that can leave.
+
+Under QEMU the root filesystem is the first NVMe namespace (`nvme0n1`) and
+the boot disk sits on the last NVMe controller; the test suite adds virtio
+and USB disks beside them so that every transport is exercised. On the
+laptop, the drive is NVMe too.
 
 ## How a request reaches the disk
 
 <DiskPath />
 
-Every disk goes through the same layers, whichever driver serves it:
+Every disk goes through the same layers, whichever transport serves it:
 
 1. A program reads a file, or the filesystem writes back changes. Either way
    the filesystem asks the **block layer** for some blocks of a named disk or
-   partition. A program with the right permission can also read or write a
+   partition. A program holding the right capability can also read or write a
    disk directly through its `/dev` node.
 2. The block layer checks that the caller may write there (see
    [claims](#why-two-things-cant-write-one-disk)), turns a partition-relative
@@ -75,20 +95,27 @@ Every disk goes through the same layers, whichever driver serves it:
    a request never has to allocate memory on the way. If the request doesn't
    start or end on a block boundary, the engine reads the edge block, patches
    it and writes it back.
-4. The **driver** turns the request into the device's own format and hands
-   it to the device.
+4. The **transport** turns the request into the device's own format: an NVMe
+   submission entry, a chain of virtio descriptors, or a Bulk-Only command
+   block.
 5. When the completion arrives, the engine wakes exactly the caller waiting
    for that request, and the data goes back up.
 
-There is one request engine for both drivers. A driver only has to say how
-to submit a request, how to collect completions and what the device's status
-codes mean. Everything about slots, retries, timeouts and ordering is shared,
-so a fix there fixes both drivers, and so will a future driver for SATA or
-USB disks.
+There is one request engine for all three transports. A transport only has
+to say how to submit a request, how to collect completions and what the
+device's status codes mean. Everything about slots, retries, timeouts and
+ordering is shared, so a fix there fixes every driver, and the engine's tests
+run against all three. Beyond that a transport chooses only a few numbers,
+among them how many slots it has, how long a request has to complete, and
+how long a request may wait for a free slot. That wait is a quarter of a second for NVMe and
+virtio-blk, whose requests complete in milliseconds, and as long as a
+Bulk-Only command and its recovery can take for a stick, which keeps one
+command on the wire and one queued.
 
-The engine is also fair: one caller can only have half of a queue's slots in
-use at once, so a program writing a large file can't starve everyone else
-who shares the disk.
+The engine also tells a writer how many writes it may keep in flight at once:
+half of the disk's slots. The filesystem's write-back, which is the one
+writer that keeps many requests going, holds to that, so writing out a large
+file can't starve everyone else who shares the disk.
 
 ## Disk and partition names
 
@@ -96,67 +123,96 @@ Disks are named the way Linux names them:
 
 | Name | What it is |
 |------|------------|
-| `vda`, `vdb`, ... | virtio disks, in the order they were found |
 | `nvme0n1` | Namespace 1 of the first NVMe drive found |
 | `nvme1n2` | Namespace 2 of the second NVMe drive found |
-| `vda1`, `nvme0n1p2` | Partitions. When the disk name ends in a digit, a `p` separates the partition number |
+| `vda`, `vdb`, ... | virtio disks, in the order they were found |
+| `sda`, `sdb`, ... | USB disks, each taking the lowest letter free when it arrives |
+| `vda1`, `sda1`, `nvme0n1p2` | Partitions. When the disk name ends in a digit, a `p` separates the partition number |
 
-"The order they were found" depends on the machine and on which drives are
-plugged in, so `nvme0n1` on one machine can be a different disk from
-`nvme0n1` on another. For anything that has to keep working, name the
-partition by something stored on the disk itself:
+"The order they were found" depends on the machine and on what is plugged
+in, so `nvme0n1` on one machine can be a different disk from `nvme0n1` on
+another, and the stick that was `sdb` yesterday may be `sda` today. For
+anything that has to keep working, name the disk or partition by something
+the disk itself carries:
 
-| Path | Finds the partition by |
+| Path | Finds the disk or partition by |
 |------|------------------------|
+| `/dev/disk/by-id/<id>` | The disk's model and serial number, as the drive reports them |
 | `/dev/disk/by-partuuid/<id>` | The ID in the partition table entry |
 | `/dev/disk/by-uuid/<uuid>` | The ID the filesystem was formatted with (ext2/3/4, btrfs, or a FAT volume serial) |
 | `/dev/disk/by-label/<label>` | The name the filesystem was given when formatted |
 
-Each of these is a symbolic link to the real node, as on Linux. If two disks
-carry the same label or ID (a cloned disk, say), the link points at the one
-found first.
+Each of these is a symbolic link to the real node, as on Linux. The
+`by-id` names are built the way systemd's udev rules build them, so a disk
+has the same name there on SlopOS as on a Linux machine: the bus, then the
+drive's own description, with any unusual character written as `_`. The NVMe
+drive QEMU attaches as the root disk is
+`/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_slopos-root_1` (model, serial,
+namespace), and its second partition is the same name with `-part2` on the
+end. Namespace 1 also gets the shorter name without the `_1`. A virtio disk
+is `virtio-<serial>` and a USB stick
+`usb-<vendor>_<product>_<serial>-0:<unit>`, without the serial part when the
+stick has none. An NVMe or virtio disk that reports an empty model or serial
+gets no `by-id` name at all. A label with a space or other
+unusual character in it appears in `by-label` escaped the way udev escapes
+it (`my\x20disk`). If two disks carry the same name (a cloned disk, say), the
+link points at the one found first.
 
 Everywhere SlopOS takes a disk as an argument, the `mount` system call and the
 `root=` and `mount=` [boot options](/docs/abi/boot-options) included, it
 accepts any of these spellings: `/dev/nvme0n1p3`, plain `nvme0n1p3`,
 `PARTUUID=...`, `UUID=...`, `LABEL=...`, or a `/dev/disk/by-*` path.
+`root=auto`, the default, picks the first disk found that is not a USB disk,
+so a stick left in a port never changes what boots.
 
 ## Partitions
 
 A *partition table* at the start of a disk divides it into independent
 regions, each of which can hold its own filesystem. When a disk is found,
-SlopOS reads its table and gives each partition a node. It understands both
-formats in common use:
+SlopOS reads its table and only then publishes the disk's `/dev` nodes and
+one node per partition. It understands both formats in common use:
 
 - **GPT**, the modern format UEFI firmware uses. It keeps a second copy at
   the end of the disk and checksums both. SlopOS checks the checksums and
   falls back to the backup copy if the first is damaged. It also refuses a
   table whose usable space would overlap the table itself, because mounting
   a partition there read-write would overwrite the table.
-- **MBR**, the older PC format, for its four primary partitions.
+- **MBR**, the older PC format, for its four primary partitions. Logical
+  partitions inside an extended one are not listed.
 
 A disk with neither has no partitions, and a filesystem on it covers the
-whole disk. A disk that has the placeholder MBR that GPT disks carry, but no
-readable GPT behind it, is treated as unreadable. Guessing that the whole
-disk is one big volume could mean writing over real partitions.
+whole disk. A disk whose table is there but can't be used (both GPT copies
+damaged, or the placeholder MBR that GPT disks carry with no readable GPT
+behind it) gets no partition nodes either. The kernel logs why
+(`BLOCK: sda partition table unusable: ProtectiveMbrWithoutGpt`), and the
+disk's own node stays, so a tool holding `RawBlock` can still reach it to
+repair the table.
 
-The kernel and the boot manager (`bootctl`) read GPT with the same code, so
-they always agree about which partition is which.
+The kernel, the boot manager (`bootctl`), the installer and the host's disk
+builder all read GPT with the same code, so they always agree about which
+partition is which.
 
 A disk SlopOS is installed on can share its EFI system partition (the small
 FAT partition the firmware starts boot loaders from) with another operating
-system, and adds partitions of its own: a boot partition holding the
-[boot slots](/docs/self-hosting/installing-a-system), the ext4 root unless
-the root is a disk of its own, and a small crash partition reserved for a
-record of the last panic, which nothing writes yet. These carry partition
-types that belong to SlopOS rather than the standard Linux ones, so a Linux
-on the same disk doesn't mistake them for its own and mount them. The kernel
-itself ignores partition types: the root is whatever the `root=` boot
-option names, and a slot's boot entry names its root partition by
-`PARTUUID`.
+system, and adds partitions of its own: a boot partition holding the kernels
+and bases (see [Updating SlopOS](/docs/self-hosting/updating)), the ext4
+root unless the root is a disk of its own, and a small crash partition where
+a panicking kernel leaves its record. These carry partition types that
+belong to SlopOS rather than the standard Linux ones, so a Linux on the same
+disk doesn't mistake them for its own and mount them. The running kernel
+itself looks at partition types in only two places: it finds its crash
+partition by type on the disk it was loaded from and, when that disk is NVMe,
+holds it for the whole boot, and, booted from an [install medium](/docs/self-hosting/installing),
+it finds the medium's toolchain partition (the *payload*) by type and mounts
+it read-only. Otherwise the root is whatever the `root=` boot option names,
+and a boot entry names its root partition by `PARTUUID`.
 
-SlopOS never writes a partition table. The host partitions disks when it
-builds them.
+The only thing in SlopOS that writes a partition table is the
+[installer](/docs/self-hosting/installing), on the disk you choose to install
+on. A partition table can be read again while the system runs (the
+`BLKRRPART` request, which the installer uses after writing one), but only
+while nothing on that disk is mounted or otherwise claimed, because a mounted
+partition's window must not move under it.
 
 ## Why two things can't write one disk
 
@@ -181,11 +237,42 @@ side by side. A claim on the whole disk covers every partition on it, so you
 can't write raw blocks across a disk while one of its partitions is mounted.
 Unmounting releases the claim, and the disk can then be mounted again.
 
-Reading or writing a disk directly bypasses every file permission on it, so
-it is restricted to programs that hold the `Mount`
-[permission](/docs/architecture/authority) or run as part of the system. The
-boot manager uses this to update the boot slots on its boot partition (see
-[Installing a system](/docs/self-hosting/installing-a-system)).
+Reading or writing a disk directly bypasses every file permission on it (and
+ext4 doesn't erase a deleted file's blocks), so it takes the `RawBlock`
+[capability](/docs/architecture/authority), which ordinary programs never
+hold. The boot manager, the installer and the rescue shell hold it while
+they work. Mounting a volume takes a different capability, `Mount`, which a
+command run through [`priv`](/docs/architecture/privd) holds, so
+`priv mount -r /dev/sda1 <directory>` mounts a stick read-only.
+
+## Disks that come and go
+
+A USB disk can leave at any moment. When it does, the kernel takes its node
+and its partitions' nodes out of `/dev` at once, so nothing new can open
+them, and fails every request the stick still owed. Whatever was still
+holding the old disk keeps its handle until it lets go, but every read or
+write through it fails from then on. For a mounted filesystem that means the
+mount turns read-only (the same `errors=remount-ro` rule that applies to any
+disk error), answers `EROFS` to anything that would write, and stays until
+you unmount it. Anything written but not yet synced to the stick is lost, as
+it would be on Linux.
+
+Plug the stick back in and it becomes a new disk, taking the lowest free
+letter again, usually its old name. Each claim remembers which disk of that
+name it was taken on, so the old mount's eventual unmount releases nothing
+belonging to the new arrival.
+
+The kernel log names each arrival and departure:
+
+```text
+USB: 1-3 LUN 0 is sda, 15272 MB in 512-byte blocks
+USB: 1-3 sda removed
+```
+
+A disk can also say it refuses writes. A USB stick with a write-protect
+switch reports it when asked, and the kernel marks the disk write-protected,
+along with each of its partitions. The `BLKROGET` request answers 1 for such
+a disk, and a filesystem on it mounts read-only whatever the mount asked for.
 
 ## When a disk stops answering
 
@@ -193,75 +280,121 @@ Disks fail, and NVMe drives in particular can stop answering a request
 without reporting an error. If the kernel waited without a limit, the
 program would hang forever, and so would everything queued behind it.
 
-So every request has a deadline. A request the disk rejects with an error it
-marks as worth retrying is retried a few times. A request the disk hasn't
-answered by the deadline fails with an I/O error, and its slot gets fresh
-memory and goes back into service.
+So every request has a deadline, which the transport sets: 30 seconds on
+NVMe, 5 on virtio-blk, and on a stick the time a command and its recovery
+can take. A request the disk rejects with an error it marks as worth
+retrying is retried a few times. A request the disk hasn't answered by the
+deadline fails with an I/O error.
 
 The awkward part is that the disk may still be working on that request, and
 may still copy data into the memory the kernel gave it. So that memory isn't
 reused: it is put aside (*quarantined*) until the disk finally hands the
-request back. If the abandoned request was a write, every later request that
-could land in the wrong order behind it waits until it comes back. Otherwise
-a late write could overwrite newer data with older data.
+request back, and the slot gets fresh memory and goes back into service.
+There is room to put aside two requests per queue; past that, a timed-out
+request keeps its slot, which serves nothing until the disk answers. If the
+abandoned request was a write, every later write or flush to that disk that
+could land in the wrong order behind it waits for it to come back, and fails
+in turn if it hasn't by its own deadline. Otherwise a late write could
+overwrite newer data with older data.
 
-A program killed while waiting on a read is released at once, since a read
-changes nothing wherever it lands. A killed write is waited out for a while
-first and then abandoned to the quarantine.
+Because an abandoned request costs a quarantine place, and an abandoned write
+holds up every later write, a program killed while its request is in flight
+isn't released at once: the kernel goes on waiting for the disk for up to five
+seconds, read or write, and only then abandons the request to the quarantine.
 
-What SlopOS doesn't do yet is cancel a stuck request or reset the drive. A
-disk that keeps ignoring requests ends up with every slot quarantined, logs
-that it is not completing requests, and stops serving until the next boot.
-The filesystem on it turns read-only when it sees the errors; see
-[Filesystem](/docs/architecture/filesystem).
+An NVMe or virtio-blk disk that keeps ignoring requests ends up with every
+slot quarantined and logs that it is not completing requests. It serves
+nothing more until it hands requests back, which a hung drive doesn't do
+before the next boot; SlopOS doesn't reset such a drive. A USB stick is
+different, because Bulk-Only has a recovery procedure: the driver resets the
+stick's pipes and tries the command once more, and a stick that still won't
+answer is reset at its port and found again as if it had been plugged back
+in. Either way the filesystem on the disk turns read-only when it sees the
+errors; see [Filesystem](/docs/architecture/filesystem).
+
+## Disk statistics
+
+Every disk counts what it has served since it appeared: bytes and requests
+read and written, flushes, and how long it has been busy, meaning the wall
+time during which at least one of its requests was in flight (Linux calls
+this `io_ticks`). Any program may read the counters, with its capacity,
+block size, transport and whether it is removable or write-protected,
+through the `block_stats` system call. The System Monitor's disk pages graph
+them; see [Desktop](/docs/architecture/desktop).
 
 ## What this means for you
 
-- Use `UUID=`, `LABEL=` or `/dev/disk/by-*` paths in boot options and mount
-  commands that have to work on more than one machine.
+- Use `/dev/disk/by-id`, `UUID=`, `LABEL=` or the other `/dev/disk/by-*`
+  paths in boot options and mount commands that have to work on more than
+  one machine, or after a stick has been unplugged.
 - Expect `EBUSY` if you write to a disk that is mounted. Unmount it first.
-- Format, check and resize disk images on the host with e2fsprogs. SlopOS has
-  no `mkfs`, `fsck` or partitioning tool.
-- An I/O error from a disk is final for that request. A disk that times out
-  repeatedly needs a reboot.
+- Plugging in a stick mounts nothing. Mount it yourself, and sync or unmount
+  before you pull it out.
+- e2fsprogs is in every base at `/sbin` (`mke2fs`, `e2fsck`, `resize2fs`,
+  `tune2fs`, `debugfs`, `dumpe2fs`), but those programs hold no capability of
+  their own, so they reach a raw disk only when something that holds
+  `RawBlock` runs them: the installer, or the rescue shell. On the
+  development machine, format, check and resize disk images on the host.
+- An I/O error from a disk is final for that request. An NVMe or virtio disk
+  that times out repeatedly needs a restart.
 
 ## How it is tested
 
 The test boot attaches extra disks for the cases that matter: scratch NVMe
 namespaces, a drive with 4 KiB blocks (carrying a labelled filesystem, to
-test `LABEL=`), a drive the test shuts down, and two virtio-blk disks. The
-request engine's rules for slots, timeouts, quarantine and ordering are
-tested once against a simulated device, which covers both drivers. The
-disks QEMU attaches are listed in
-[QEMU options](/docs/getting-started/qemu-options).
+test `LABEL=`), a drive the test shuts down, two virtio-blk disks and a USB
+stick, each with a serial number so the `/dev/disk/by-id` names can be checked
+on all three transports. The request engine's rules for slots, timeouts,
+quarantine and ordering are tested against a simulated device, and host
+tests in `boot-core` spell out the `by-id` names systemd's rules would give
+for awkward model and serial strings. A kernel test registers a
+write-protected USB disk, removes it, and registers another under the same
+name, checking that the departed disk's claim releases nothing of its
+successor's. `just test-usb` goes further on real QEMU USB
+hardware: it pulls an ext4 stick out from under a program writing to it, and
+expects the mount to turn read-only within a minute, unmount cleanly, and the
+stick to come back as `sda` holding everything that was synced. The disks
+QEMU attaches are listed in [QEMU options](/docs/getting-started/qemu-options).
 
 ## For contributors
 
-- **The engine owns ordering.** A driver implements only `QueueOps`: build a
-  submission from a staged request, harvest completions, interpret status.
-  Slot lifetime, retry, timeout, quarantine and the write fence stay in
-  `block/engine.rs`, so their tests cover every driver.
+- **The engine owns ordering.** A transport implements only `QueueOps`: build
+  a submission from a staged request, harvest completions, interpret status,
+  retire a tag. Slot lifetime, retry, timeout, quarantine and the write fence
+  stay in `block/engine.rs`, so their tests cover every transport.
 - **No allocation on the request path.** Each slot's DMA pages are allocated
   at probe, including one page for the driver's own use. A timed-out slot's
   replacement pages are allocated before the engine lock is taken.
 - **Quarantined pages and tags belong to the device** until it completes
   them. Freeing them early lets the device write into reused memory.
-- **The write fence** blocks every later request that could reorder the
-  medium behind an abandoned write, including the read half of a
-  read-modify-write.
+- **The write fence** blocks every later write and flush that could reorder
+  the medium behind an abandoned write, including the read half of a
+  read-modify-write. An identify request (virtio-blk's `GET_ID`) is not
+  fenced.
 - **Block size.** The ext4 driver refuses a volume whose block is smaller
   than the device's logical block, because a read-modify-write torn by a
   crash would damage bytes outside the transaction.
 - **One GPT parser.** GPT parsing lives in `boot-core` (`no_std`, no I/O,
-  host-tested) and is shared by the kernel, `bootctl` and the host disk
-  builder, so they can't disagree about a disk.
+  host-tested) and is shared by the kernel, `bootctl`, the installer and the
+  host disk builder, so they can't disagree about a disk.
+- **A disk's nodes appear only once its table is in place,** and a re-read
+  publishes the new partition nodes only after the table is installed, so no
+  claim through a fresh node meets a scan in progress.
 - **Device nodes.** A block node's inode is never reused, so a descriptor
-  left open across a `BLKRRPART` fails instead of reaching whatever
-  partition now has its name. `BLKRRPART` runs only while nothing on the
-  disk is claimed.
-- **Identity reads.** A volume's UUID and label are read once and again only
-  after a write claim that wrote is released, so an unprivileged task can't
-  make the kernel probe a disk repeatedly.
+  left open across a `BLKRRPART` or an unplug fails instead of reaching
+  whatever now has its name.
+- **A claim carries its disk's generation.** Releasing it after the disk has
+  left touches nothing on a disk registered since under the same name.
+- **Identity reads are bounded.** A volume's UUID and label are read when
+  something first names the node by one, and again only after a write claim
+  that wrote is released, which no unprivileged task can cause. A probe the
+  disk didn't answer is retried after five seconds, not on every lookup.
+- **A transport hands over its `by-id` identity** when it registers the disk
+  (`EngineDisk::identified`), and partitions share it. The names are built in
+  `boot_core::disk_id`, never in a driver.
+- **Write protection is the device's word.** A driver marks the disk
+  (`EngineDisk::protected`), partitions forward it, and ext4 decides
+  read-only from it at mount.
 
 ## Further reading
 
@@ -277,6 +410,18 @@ disks QEMU attaches are listed in
 - [The NVMe specifications](https://nvmexpress.org/specifications/). The
   base specification defines queues, commands and namespaces. Long, but the
   overview chapter is readable.
+- [*Persistent naming attributes*](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_storage_devices/persistent-naming-attributes_managing-storage-devices)
+  in Red Hat's storage guide. Why `sdX` names move between boots and what
+  each `/dev/disk/by-*` directory means; the same reasoning applies here.
+- [systemd's `60-persistent-storage.rules.in`](https://github.com/systemd/systemd/blob/main/rules.d/60-persistent-storage.rules.in).
+  The udev rules whose `by-id` names SlopOS reproduces in the kernel, with no
+  udev daemon.
+- [*Mass Storage Bulk Only 1.0*](https://www.usb.org/document-library/mass-storage-bulk-only-10)
+  from the USB Implementers Forum. The transport USB sticks speak: the
+  command and status wrappers, and the Reset Recovery a stuck stick gets.
+- [I/O statistics fields](https://docs.kernel.org/admin-guide/iostats.html)
+  in the Linux kernel documentation, which defines the busy time
+  (`io_ticks`) that `block_stats` reports.
 - [Linux's device number list](https://docs.kernel.org/admin-guide/devices.html).
   Block nodes use major 259, Linux's number for extended block devices.
 
@@ -284,12 +429,16 @@ disks QEMU attaches are listed in
 
 | Where | What |
 |---|---|
-| `drivers/src/block/` | The block layer: registry, names, claims |
+| `drivers/src/block/` | The block layer: registry, names, claims, disks that leave |
 | `drivers/src/block/engine.rs` | The shared request engine |
+| `drivers/src/block/disk.rs` | A disk over the engine: spans, write protection, the counters `block_stats` reads |
 | `drivers/src/nvme/`, `nvme-core/` | The NVMe driver and its host-tested data structures |
 | `drivers/src/virtio_blk.rs` | The virtio-blk driver |
+| `drivers/src/usb/storage.rs` | USB sticks and drives (Bulk-Only) |
+| `drivers/src/crash.rs` | The crash partition, claimed for the boot |
 | `fs/src/partition.rs` | MBR parsing, and the devices that stand for partitions |
-| `boot-core/src/gpt.rs` | GPT parsing, shared with `bootctl` and tested on the host |
+| `boot-core/src/gpt.rs` | GPT parsing and writing, shared with `bootctl` and the installer |
+| `boot-core/src/disk_id.rs` | The `/dev/disk/by-id` names, host-tested |
 | `boot-core/src/layout.rs` | The partitions of an installed disk and their type IDs |
 | `fs/src/devfs/block.rs` | `/dev` block nodes, ioctls and `/dev/disk/by-*` |
 | `scripts/qemu_run.sh` | Which disks QEMU attaches |

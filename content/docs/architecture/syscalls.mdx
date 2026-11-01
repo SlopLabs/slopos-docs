@@ -19,7 +19,7 @@ The interface is Linux's, described in
 [syscalls(2)](https://man7.org/linux/man-pages/man2/syscalls.2.html), and so
 are the details programs depend on, such as how an interrupted call is
 restarted. What SlopOS adds is inside the kernel: every call declares the
-permission it needs, the kernel checks it in one place, and the build fails
+capability it needs, the kernel checks it in one place, and the build fails
 if any call doesn't declare one.
 
 ## A system call, step by step
@@ -61,31 +61,48 @@ ordinary safe Rust.
 The dispatcher looks the number up in one of two tables. Numbers below 1024
 are Linux's, and each one names the same call in SlopOS or nothing at all.
 Numbers from 1024 up are SlopOS's own calls, for things Linux has no call for,
-such as taking over the screen. An empty slot returns `ENOSYS` ("function not
-implemented"), the same answer Linux gives for a call it doesn't have, and the
-kernel log notes it:
+such as taking over the screen (`screen_acquire`) or replacing the base while
+the system runs (`base_activate`). An empty slot returns `ENOSYS` ("function
+not implemented"), the same answer Linux gives for a call it doesn't have,
+and the kernel log notes it, at a limited rate so a program can't flood the
+log:
 
 ```text
 SYSCALL: Unknown syscall 1999 -> ENOSYS
 ```
 
-[System call ABI](/docs/abi/syscalls) lists every number and how the private
-range is organised.
+The private calls, with every structure they take, form the *base
+interface*: a numbered contract between the kernel and the base, the
+read-only userland it runs. A change to any private call takes the next
+number, and a kernel says which numbers it serves, so at boot it runs only a
+base built for a surface it has. [Base system](/docs/architecture/base)
+explains how that choice is made, and [System call ABI](/docs/abi/syscalls)
+lists every number and how the private range is organised.
 
 ### 4. The kernel checks permission
 
-Each entry in the table carries the permission (the *capability*) that a
-caller needs. Most calls need none beyond what they act on: `getpid` acts only
-on the caller itself, and `read` acts only on a file the caller already has a
-descriptor for, which it could only have got by opening the file or being
-given it. A few, such as rebooting the machine or taking over the screen,
-need a capability that only some programs are given. If the caller lacks it,
-the dispatcher returns `EPERM` ("operation not permitted") without running the
-handler at all.
+Each entry in the table carries the *capability* a caller needs: a named
+power, such as `Power` for rebooting the machine or `Mount` for attaching a
+disk, held as a bit in the calling process's capability mask. Most calls need
+none beyond what they act on: `getpid` acts only on the caller itself, and
+`read` acts only on a file the caller already has a descriptor for, which it
+could only have got by opening the file or being given it. A few need a
+capability that only some programs are given, by init or by the privilege
+broker, privd. If the caller lacks it, the dispatcher returns `EPERM`
+("operation not permitted") without running the handler at all.
 
 Because the check happens in the dispatcher, before the handler runs, a
-handler can't forget it. [Permissions](/docs/architecture/authority) explains
-what the capabilities are and how a program gets one.
+handler can't forget it. Some powers are finer than a whole call, and the
+handler checks those itself against the same mask: any caller may call
+`setuid`, but taking a user id it doesn't already hold needs `SetId`;
+`setpriority` needs `SchedHigh` only to set a nice value below both zero and
+the one the task has; and
+any owner may change a file's flags, but moving its seal needs `Seal`. And a
+call that names a file by its path also checks the file's owner and
+permission bits against the caller's user and group ids, as Unix always has.
+[Capabilities](/docs/architecture/authority) explains the capabilities and
+how a program gets one, and [Users and file permissions](/docs/architecture/users)
+the permission bits.
 
 ### 5. The handler runs
 
@@ -163,9 +180,16 @@ kernel decides what the program sees, the same way Linux does:
 - otherwise the call fails with `EINTR` ("interrupted system call") and the
   program decides what to do.
 
-Calls that take a timeout and don't report how much of it is left
-(`nanosleep`, `poll`, `futex` and the SlopRing wait) always fail with `EINTR`
-instead of restarting, because restarting would begin the full timeout again.
+Only a few calls ask for that: `read`, `write`, `readv` and `writev` on a
+pipe, a FIFO, a terminal or a signalfd. `select`, `pselect6`, `ppoll` and
+`rt_sigsuspend` ask for a narrower version (`ERESTARTNOHAND`), restarted only
+when no handler ran. Every other call that a signal interrupts fails with
+`EINTR`, whatever `SA_RESTART` says: a `read` from a socket, `accept`,
+`wait4` and `flock` among them, which Linux would restart. Calls that wait
+with a timeout (`nanosleep`, `poll`, `futex` and the SlopRing wait) are held
+to that by a debug check, because restarting would begin the full timeout
+again. `nanosleep` writes how much was left into its second argument, so the
+caller can sleep the rest.
 
 Last, the kernel checks whether the task has been killed. A kill sets a flag
 on the task; a task blocked in a call notices it and returns early, and this
@@ -177,25 +201,37 @@ registers and returns to user mode with the `IRETQ` instruction.
 
 - **Linux numbers mean Linux calls.** A Linux x86-64 call number either
   behaves as on Linux or fails with `ENOSYS`. It never does something
-  different. [What works](/docs/status/current-capabilities) says which calls are
-  implemented.
+  different. [System call ABI](/docs/abi/syscalls#linux-numbered-calls) lists
+  the ones that are implemented.
 - **Errors are Linux error numbers**, returned the Linux way, so `errno`,
   `strerror` and `perror` work unchanged.
-- **Interrupted calls behave as on Linux**, including `SA_RESTART` and
-  `EINTR`.
+- **Interrupted calls follow Linux's rules only for the calls that
+  restart.** Pipe, terminal and signalfd reads and writes honour
+  `SA_RESTART` as on Linux; every other interrupted call returns `EINTR`, so
+  a program that relies on `SA_RESTART` for `accept` or `wait4` must retry
+  itself.
 - **`int 0x80` is not supported.** Old 32-bit Linux programs use that
-  instruction for system calls; on SlopOS it returns `ENOSYS`.
+  instruction for system calls; on SlopOS it is a general-protection fault,
+  and the program ends with `SIGSEGV`.
+- **Private calls are held to the base interface.** A private call's number,
+  arguments and structures don't change without the interface number
+  changing. A call that is taken away keeps its number and answers
+  `ENOSYS`, so an older base still boots without what that call did.
 - **A crash in a handler usually costs only the caller.** If a handler
   panics, the kernel catches the panic at the dispatcher, logs it and ends
-  the calling task, and the rest of the system keeps running. There is a
-  limit on how many such panics one boot tolerates before the kernel stops.
-  Test images and `panic.on_oops=on` turn every handler panic into a kernel
-  panic instead, so a bug can't hide. See
+  the calling task, and the rest of the system keeps running. A boot
+  tolerates such panics up to a limit, a hundred by default
+  (`panic.oops_limit=` changes it), and the one that reaches it stops the
+  kernel.
+  A test boot (`tests=on`) and `panic.on_oops=on` turn every handler panic
+  into a kernel panic instead, so a bug can't hide. See
   [Diagnosing the kernel](/docs/development/diagnostics).
 
-A program that needs to make many requests can avoid one system call per
-request with [SlopRing](/docs/abi/slopring), a queue of requests it shares
-with the kernel, in the style of Linux's `io_uring`.
+A program of the base that needs to make many requests can avoid one system
+call per request with [SlopRing](/docs/abi/slopring), a queue of requests it
+shares with the kernel, in the style of Linux's `io_uring`. Its calls are
+private ones, so a program outside the base doesn't use it
+([Userland](/docs/architecture/userland#asynchronous-io)).
 
 ## How it is tested
 
@@ -205,11 +241,13 @@ capability and fail the build when a count changes without the recorded
 number changing with it, so widening who can make a privileged call is always
 a visible, reviewed edit. A separate check reads the call graph of the linked
 kernel and fails if any handler can reach the power-off or reboot code
-without being classified for it or listed with a stated reason. Kernel tests
-that check whether a call is reachable go through the table entry, the same
-way a program does, because calling a handler directly skips the permission
-check. And the kernel and userland test suites make real system calls on
-every run of `just test`.
+without being classified for it or listed with a stated reason, and another
+holds the private calls and their structures, as the compiler's own
+documentation output describes them, to the digest recorded for the current
+base interface number. Kernel tests that check whether a call is reachable go
+through the table entry, the same way a program does, because calling a
+handler directly skips the capability check. And the kernel and userland
+test suites make real system calls on every run of `just test`.
 
 ## For contributors
 
@@ -227,8 +265,8 @@ at the handler's definition. The `raw` form skips argument decoding for
 handlers that read registers themselves.
 
 **Argument types.** Each parameter type implements `SyscallArg`, which decodes
-one or more of the six argument registers; the macro checks at expansion time
-that a handler's parameters fit in six.
+one or more of the six argument registers; a compile-time assertion the macro
+emits checks that a handler's parameters fit in six.
 
 | Type | Decodes to |
 |---|---|
@@ -247,10 +285,15 @@ that rewrite the whole frame (`execve`, `fork`, `clone`, `rt_sigreturn`)
 reach the `UserContext` through it.
 
 **The check.** Ungated classes (`NoneSelf`, `NoneFd`, `NoneRelation`) pass
-without reading task state. For a gated class the dispatcher asks the
-authority module whether the caller's mask names it; under `authority=warn` a
-denial is logged and allowed. Tests asserting reachability must use
-`dispatch_entry`, not `dispatch_handler`, which skips the check.
+without reading task state. For any other class the dispatcher asks whether
+the caller's capability mask names it, and a refusal is a silent `EPERM`: a
+log line per probe would be a denial of service. A check finer than the slot
+goes in the handler, through `SyscallContext::holds` or, where a primitive
+demands a witness, `SyscallContext::require_cap`; both read the same mask. A
+call that reaches the VFS passes `ctx.subject()`, the caller's effective ids
+and whether it holds `DacOverride`, and never decides file access itself.
+Tests asserting reachability must use `dispatch_entry`, not
+`dispatch_handler`, which skips the check.
 
 **Restarts.** A handler may return `ERESTARTSYS` or `ERESTARTNOHAND`.
 `ERESTARTNOHAND` restarts only when no handler ran; `ERESTARTSYS` also
@@ -258,7 +301,9 @@ restarts after an `SA_RESTART` handler. A call in `TIMEOUT_BEARING` that
 returns either trips a debug assertion; it must return `EINTR` itself.
 
 **The histogram.** `core/src/syscall/handlers.rs` holds both tables and a
-`const` histogram, `CAP_COUNTS`, with one row per capability. Compile-time
+`const` histogram, `CAP_COUNTS`, with one row per capability. A capability
+checked only inside handlers (`Seal`, `SetId`, `DacOverride` and others)
+has a row of zero. Compile-time
 assertions recompute the counts from the tables and fail when they differ, so
 a change to who can make a privileged call has to edit that row too. Counts
 cover registered entry points only, so adding an unrelated Linux call doesn't
@@ -292,10 +337,13 @@ primitives, with stated exceptions under `scripts/gates/authority/`.
 |---|---|
 | `slopos-ostd/src/user/asm/user_return.s` | The `syscall` entry point |
 | `core/src/syscall/user_loop.rs` | The per-task loop, panic recovery and the kill check |
-| `core/src/syscall/dispatch.rs` | Lookup, permission check, restarts |
+| `core/src/syscall/dispatch.rs` | Lookup, capability check, restarts |
+| `core/src/syscall/context.rs` | `SyscallContext`: the caller, its capabilities and its credentials |
 | `core/src/syscall/handlers.rs` | The two tables and the capability histogram |
 | `core/src/syscall/macros.rs`, `core/src/syscall/args.rs` | `define_syscall!` and the argument types |
 | `abi/src/syscall/numbers.rs` | Every call number |
+| `abi/src/caps.rs`, `slopos-ostd/src/authority/` | The capability bits, and what each one gates |
+| `abi/src/base_interface.rs`, `scripts/check_base_interface.sh` | The base interface number and the gate that holds the private surface to it |
 | `slibc/src/pal/raw.rs`, `slibc/src/error.rs` | The C library's side: the `syscall` instruction and turning results into `errno` |
 
 [System call ABI](/docs/abi/syscalls) is the reference for numbers and

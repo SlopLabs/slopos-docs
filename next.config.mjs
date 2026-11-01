@@ -21,6 +21,11 @@ const nextConfig = {
     })).concat([
       { source: '/quickstart', destination: '/docs/getting-started/quickstart', permanent: true },
       { source: '/docs/quickstart', destination: '/docs/getting-started/quickstart', permanent: true },
+      {
+        source: '/docs/self-hosting/installing-a-system',
+        destination: '/docs/self-hosting/updating',
+        permanent: true,
+      },
     ]);
   },
 };

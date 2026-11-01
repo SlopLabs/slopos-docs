@@ -1,0 +1,465 @@
+---
+title: "Base system"
+description: "The read-only set of programs every SlopOS kernel boots, how a kernel picks one, and how a new one replaces it while the machine runs."
+---
+
+import { BootPartition } from '@/components/diagrams/boot-partition';
+import { BaseGenerations } from '@/components/diagrams/base-generations';
+
+SlopOS's own programs come as one read-only bundle called the *base*: init,
+privd, the shell, the desktop, the system tools, the C library and its
+loader, and the data they read, such as the privilege policy, the fonts and
+the certificates SlopOS trusts. You can rely on a few things about it. No
+program can change a file of the base, whatever capabilities it holds. Every
+kernel you have installed boots the same current base whenever it can run it,
+so trying another kernel changes your programs only when that kernel can't,
+and then it boots the previous base instead. The base that ran before the
+current one is always kept, so you can go back to it. And a new base usually
+takes over while the machine runs, without a reboot: programs started after
+the switch get the new version, while programs already running keep the
+bytes they started with. Your own files on the root disk are never part of a
+base, so installing one never touches them.
+
+What isn't promised: a new base is not tried once and committed the way a
+new kernel is. If it installs and then misbehaves, it stays until you roll
+it back ([Updating SlopOS](/docs/self-hosting/updating#going-back-to-the-previous-base)).
+
+This page explains what the base holds, where it lives on disk, how a kernel
+decides whether it can run a base, and how a new base replaces the running
+one.
+
+## Where it comes from
+
+The split comes from FreeBSD, which updates its *base system* as a whole,
+together with the kernel, and installs third-party software from packages and
+ports under `/usr/local`. SlopOS draws the same line: its own programs are the
+base, and everything else goes in [`/usr/local` or your home](/docs/architecture/software).
+Treating the system's programs as one read-only tree that is upgraded
+atomically and whole is the model of OSTree, an upgrade system for Linux
+distributions that keeps the operating system's read-only content in `/usr`.
+
+Most such systems apply an update at the next boot, as Android's A/B updates
+and most of its APEX module updates do. SlopOS switches a base while the
+machine runs, and then restarts only the services whose program, or what
+they read of the base, changed, which is how NixOS
+applies a new configuration. The rule for which old base to keep comes from
+FreeBSD's kernel install. Its handbook warns that every kernel install
+overwrites `kernel.old` with the last installed kernel, which may not be
+bootable, and FreeBSD's build now moves the old kernel aside only when it is
+the kernel running; SlopOS keeps a base as *previous* on the same condition.
+
+## Why the system is kept apart from the disk
+
+On most systems the programs and libraries of the operating system live on
+the same writable disk as everything the machine has done since it was
+installed. That causes problems you have probably met:
+
+- An update that stops halfway leaves a mix of old and new programs that may
+  not work together.
+- A program with enough privilege, or a bug in one, can overwrite a system
+  binary. On SlopOS that matters more than usual, because privd decides what
+  to allow partly by which program is asking
+  ([Privileged actions](/docs/architecture/privd)). That only means something
+  if the program at `/bin/bootctl` is the one that was installed.
+- If the root disk is damaged, the tools you need to repair it are on the
+  damaged disk.
+- If programs live next to a kernel, booting a different kernel also changes
+  every program, which makes it hard to tell which of the two caused a
+  problem.
+
+And if the system is one fixed image per boot, every change to a program
+costs a reboot. SlopOS's goal is that only a kernel change needs one.
+
+## What a base holds
+
+A base is a single archive in the `newc` format, the same cpio archive format
+Linux uses for its initramfs. The build packs it (`tools/initramfs`, through
+`scripts/build_initramfs.sh`) into `builddir/initramfs.cpio`, or
+`builddir/initramfs-tests.cpio` for the tests build, and the packing is
+deterministic: the same inputs give the same bytes, with every timestamp and
+owner zeroed.
+
+The base serves six directories:
+
+| Directory | What it holds |
+|-----------|---------------|
+| `/bin`, `/sbin` | The system's programs: `init`, `privd` and `authcheck` in `/sbin`, the rest in `/bin`, the coreutils as links to one program, and e2fsprogs' `mke2fs`, `e2fsck` and friends in `/sbin` |
+| `/lib` | `libc.so` and the dynamic loader, `/lib/ld-slopos.so.1` |
+| `/usr/bin` | `env`, for scripts that name `/usr/bin/env` |
+| `/usr/share` | Fonts, keyboard layouts, licence texts, the base's app entries and icons, the privd policy, the pairing of a [remotely driven](/docs/self-hosting/remote-control) machine, and three files about the base itself |
+| `/etc/ssl` | The certificate bundle SlopOS trusts |
+
+The three files about the base itself are:
+
+- `/usr/share/slopos/base-interface`: the interface number the base was built
+  against (see [below](#how-a-kernel-decides-whether-it-can-run-a-base)).
+- `/usr/share/slopos/base-manifest`: one line per file in the archive, giving
+  its SHA-256, its mode and its path.
+- `/usr/share/slopos/build-tag`: a label for this build, when whoever built it
+  set `SLOPOS_BUILD_TAG`. `cat /usr/share/slopos/build-tag` tells you which
+  build you are running.
+
+Which programs belong in the base follows from what they do. A program goes
+in when the security model rests on it (init, privd, the compositor that
+draws the consent dialog, the shell), when you need it to repair a machine
+(`bootctl`, the installer, e2fsprogs), or when it talks to the kernel through
+SlopOS's own system calls rather than through the C library (`sysmon`, `ss`,
+`ping`, `cpufreq`). The apps (the editor, the file manager, the image viewer
+and the widget gallery) don't qualify, so they live outside the base and
+reach the kernel only through `libc.so`.
+[Installed software](/docs/architecture/software) explains how they are
+installed and why that keeps them working across base updates.
+
+## Where the base lives on disk
+
+A SlopOS disk has a boot partition of its own, a FAT32 partition beside the
+firmware's EFI system partition. It holds a kernel in each of two *slots*,
+and beside the slots, the two bases:
+
+<BootPartition />
+
+`current.img` is the base every slot boots. `previous.img` is the base that
+ran before it, kept for two reasons: a kernel that can't run the current base
+falls back to it, and `bootctl base rollback` makes it current again. Every
+boot entry in the boot loader's menu loads its slot's kernel and both bases,
+which the kernel receives as two in-memory modules named `initramfs` and
+`initramfs-previous`. The boot loader, Limine, refuses to boot an entry whose
+module file is missing, so a disk always holds both files; a fresh install
+writes the same image to each.
+
+Keeping the bases out of the slots is what makes the guarantees at the top of
+this page work. Booting slot `b` instead of slot `a` changes the kernel and,
+as long as both kernels can run the current base, nothing else. A damaged
+root disk still boots to a working shell, because the programs the system
+runs don't live on it. And a base can be rolled back without touching any
+kernel. [Updating SlopOS](/docs/self-hosting/updating) covers the slots and
+the rest of the disk.
+
+## How a kernel decides whether it can run a base
+
+A kernel and a base are built separately, possibly from different versions of
+the source, so something has to say whether they fit together. Most of what a
+base asks of the kernel goes through Linux's own system calls, whose numbers
+and meanings SlopOS keeps exactly as Linux defines them. But SlopOS also has
+system calls of its own, for things Linux has no call for: activating a base,
+taking the screen and the input devices, reading the boot loader's
+variables. That set of private calls, with their
+numbers, arguments and structures, is the *base interface*, and it carries a
+number.
+
+- **A base names the one interface it was built against**, in
+  `/usr/share/slopos/base-interface`.
+- **A kernel serves a range of interfaces**, from a minimum to the newest
+  (`BASE_INTERFACE_MIN` and `BASE_INTERFACE` in the source it was built
+  from). It states the range in two places: in `sys_info`, which the shell's `info`
+  command prints as `Base interfaces:`, and in an ELF note in the kernel file
+  itself (the section `.note.slopos.base-interface`), so tools can read the
+  range from a kernel without booting it.
+
+Any change to the private calls takes the next number. The minimum rises only
+when a change reshapes something an older base already calls. A change that
+only adds a call leaves the minimum where it is, and a call that is taken
+away keeps its number and answers `ENOSYS`, so an older base still boots, just
+without what that call did. A gate in the build holds the private calls to
+the number, so the surface can't change while the number stays the same
+([Interfaces and stability](/docs/abi/interfaces) lists the gate and the
+other interfaces SlopOS keeps stable).
+
+### At boot
+
+Very early, before it has even set up its memory allocator, the kernel reads
+the interface number of both bases and picks one:
+
+1. Current, if the kernel serves current's interface.
+2. Otherwise previous, if the kernel serves that.
+3. Otherwise neither, and the boot stops.
+
+Say the default kernel serves interfaces up to *N*, the running base was
+built against *N*, and you install a base built against *N*+1. The running base
+moves to `previous.img` and the new one becomes `current.img`
+([Updating SlopOS](/docs/self-hosting/updating) has the rules). At the next
+boot the default kernel finds current at *N*+1, which it doesn't serve, and
+boots previous instead, so the machine comes up exactly as it was. The boot
+log says which one it took:
+
+```text
+BOOT: base previous (<n> bytes), interface <N>
+BOOT: base current (interface <N+1>) not booted; its memory goes to the allocator
+```
+
+A kernel built from the same tree as the new base serves *N*+1, so once you
+install and boot one, it boots current.
+
+The base the kernel didn't choose is loaded in memory but never used, so its
+pages are handed to the allocator as free memory before anything else can
+read them. That is why the choice happens so early: the pages join the free
+memory when the allocator is first set up, and nothing has looked at them by
+then.
+
+If the kernel serves neither base, it says so as it chooses, and the
+`initramfs root` boot step then fails, which stops the boot with a kernel
+panic:
+
+```text
+BOOT: no base this kernel serves (interfaces <min>-<max>): current interface <i>, previous interface <j>
+ROOTFS: this kernel serves base interfaces <min>-<max>; current is interface <i> and previous interface <j>
+```
+
+`bootctl` works to make sure that never happens: it refuses to install a
+kernel that serves neither base on the partition, and it refuses to install a
+base that would leave the default kernel, the running one or the one armed
+to boot next serving neither.
+
+## How the base appears in the file tree
+
+The kernel serves the base without copying it: it builds an index of the
+archive's paths at boot and serves each file straight from the module in
+memory. Then it mounts the six base directories over whatever the root turned
+out to be, a writable disk or a filesystem in memory
+([Filesystem](/docs/architecture/filesystem#how-the-root-is-chosen) explains
+how it chooses, and why a disk that refuses writes gets no base):
+
+- Each mount is read-only, and every file in it is *sealed* for good: it
+  reports the immutable flag, and nothing can clear it.
+- Each mount is *pinned*: `umount` refuses it, and `mount` refuses to put
+  anything at or beneath it, with `EPERM`.
+- The directories on the way to a base directory, `/usr` and `/etc`, can't be
+  renamed or removed (`EBUSY`), so nobody can move `/usr` aside and put
+  another `/usr/bin` in its place. A root that has a symbolic link where one
+  of those directories should be fails to boot rather than getting a base in
+  the wrong place.
+
+Everything else under `/` is the root disk's: `/etc` (apart from
+`/etc/ssl`), `/var`, `/home`, `/src` and `/usr/local` hold what the machine
+wrote and survive base updates untouched. When the root lives in memory
+instead, the kernel first copies into it what the archive holds
+outside the six base directories (the skeleton of directories such as `/etc`,
+`/var` and `/home`, and the few files there), and then mounts the base
+directories from the module as it would over a disk.
+
+## How a base is checked before it is used
+
+Two bases with the same manifest hold the same files, byte for byte, with the
+same modes, because the manifest lists every file of the archive in order
+with its SHA-256. A manifest line looks like this:
+
+```text
+<sha256 in hex> <mode in octal> <path>
+```
+
+That is how `bootctl` tells which of the two bases on the partition is the
+running one, how `bootctl status` marks it, and how init works out what a
+base update changed (below).
+
+The kernel has to be able to rely on a base before it uses it, because by
+the time it reads the chosen base in detail, it has already given the other
+one's memory away. So a base must pass one set of rules before it reaches a
+disk, and the same code (`boot-core`'s base check) applies them in three
+places: the packer refuses to write a base that fails, `bootctl base install`
+refuses to install one, and the host's disk builder refuses to build a disk
+with one. The rules:
+
+- Every path is absolute and spelled one way (no `.`, `..` or empty
+  components), appears once, and lies beneath no file.
+- Every record is a file, a directory or a symbolic link the kernel accepts.
+- Each base directory, each directory on the way to one, and `/tmp`, `/run`
+  and `/dev`, where the kernel mounts filesystems of its own, is a directory,
+  and nothing lies beneath `/dev`.
+- The archive names an interface and carries a manifest that lists every
+  other record, in order, with the right mode and digest.
+- There are at most 2048 records, because the check compares records
+  pairwise without allocating memory.
+
+## Replacing the base while the system runs
+
+When `bootctl base install` writes a new base, the system booted from that
+boot partition and the running kernel serves the base's interface, it also
+*activates* it: it hands the kernel the archive and asks for it to become the
+base now. Otherwise the base waits on the disk for the next boot of a kernel
+that serves it, and `bootctl` says which happened
+([Updating SlopOS](/docs/self-hosting/updating#when-the-new-base-runs)). The kernel calls each base it serves in a
+boot a *generation*: the base it booted is generation 1, the first one
+activated after that is generation 2, and so on, never reusing a number
+within a boot.
+
+Here is what happens, in order:
+
+1. `bootctl` passes the kernel the image's bytes from its own memory (the
+   `base_activate` system call), the same bytes it has just checked, so no
+   other program can swap the file between the check and the activation.
+2. The kernel copies the archive into memory it owns, indexes it, checks that
+   it serves the archive's interface, and finds each base directory in it.
+   Anything that can fail happens here, before anything visible changes.
+3. In one step, under the lock that guards the table of mounts, the kernel
+   points all six base directories at the new generation. A program never
+   sees `/bin` from one base and `/lib` from another.
+4. The kernel logs the switch, and the descriptor that the `base_monitor`
+   system call gives programs to watch becomes readable:
+
+   ```text
+   BASE: generation <n> is the base, interface <i>
+   ```
+
+<BaseGenerations />
+
+### What keeps running on the old base
+
+Each generation's number is part of every file identity it serves, so a file
+of one generation can never read another generation's bytes. That lets the
+switch leave everything already in progress alone:
+
+- A program that was running keeps running the code it started with, and
+  libraries it has mapped stay mapped.
+- A file that was open stays open and reads the old version.
+- A program started after the switch runs from the new generation. If the new
+  base dropped a program, it can't be started again, but a copy already
+  running carries on.
+- privd, which recognises base programs by what they run, keeps counting a
+  program from the old generation as that base program for as long as it
+  runs ([Privileged actions](/docs/architecture/privd) explains why that
+  matters).
+
+### When an old generation is freed
+
+The booted generation stays for the whole boot. It costs no memory beyond
+the boot module, and the connections init set up at boot were made by its
+programs. Every other generation that is no longer current is freed once
+nothing holds it: no open file, no memory mapping, no running program. A
+kernel thread, `basefs-reap`, checks for that and frees a generation once two
+checks a second apart both find it unheld, which gives a lookup that was just
+starting time to open the file it found. The log says so:
+
+```text
+BASE: generation <n> freed
+```
+
+While a generation stays held, the checks come further apart, up to a
+minute, so a generation can outlast its last holder by about that long.
+
+Copies have limits, so that bases held by long-running programs can't pile
+up. At most 16 generations are in memory at once, and all their copies
+together may take at most a quarter of memory. An activation that would go
+past either is refused with `EBUSY`, an archive bigger than a quarter of
+memory on its own with `EFBIG`, and one naming an interface the kernel doesn't
+serve with `ENOEXEC`. A refused activation changes nothing: the new base is
+still installed on disk, and the next boot of a kernel that serves it takes
+it.
+
+### What restarts after a switch
+
+Init compares the old base's manifest with the new one's and restarts only
+the services whose program or data changed (privd, remoted, init itself, the
+extensions' services); everything else picks up the new version the next
+time it starts, and your desktop is never restarted under you: when the
+compositor or the terminal changed, the system menu offers *Restart
+desktop…* instead. [Init and services](/docs/architecture/init#when-a-new-base-arrives)
+lists each case.
+
+## What it means in practice
+
+- **To see what runs**, read `/usr/share/slopos/build-tag`, or run
+  `bootctl status`, which lists both bases with their interface numbers and
+  build tags and marks the one running. The shell's `info` command prints
+  the interfaces the running kernel serves.
+- **To change a system program**, build a new base and install it
+  (`scripts/selfhost.sh install` in the guest). There is no way to replace
+  one file of the base; that is the point.
+- **To install anything else**, use `/usr/local` or `~/.local`
+  ([Installed software](/docs/architecture/software)). Those survive base
+  updates and rollbacks.
+- **A base built against a newer interface needs a newer kernel.** Install the
+  base first and the kernel second: `bootctl install` refuses a kernel that
+  serves neither base on the partition, so the new base has to be there
+  before the kernel that needs it.
+- **Long-running programs keep the old version** until they restart. When a
+  new base changes the compositor or the terminal, *Restart desktop…* in the
+  system menu picks them up.
+
+## How it is tested
+
+- `boot-core`'s host tests (`just test-host`) cover the archive reader, the
+  manifest, the check's rules and reading the kernel's ELF note.
+- The kernel's base tests choose between synthetic archives (current,
+  previous, neither) and check that the unused base's pages really are free
+  memory.
+- The `generations` kernel tests stage a copy, check that a file still names
+  its generation after the next one is activated, that a generation stays while a file, a mapping or a
+  running program holds it and is freed after, that the six mounts switch
+  together or not at all, and that the memory budget and the interface range
+  are enforced.
+- `live_base_test` activates a base that changes privd and drops a program,
+  then checks that new programs run the new bytes, that a process started
+  before is still recognised in its own generation, and that privd restarts
+  and serves; then it puts the original base back the same way.
+- `just test-install` installs a base that runs at once, reboots to find it
+  kept, rolls it back, and installs one the kernel doesn't serve, which the
+  next boot passes over for previous.
+
+## For contributors
+
+- **A change to the private calls takes the next interface number.** That
+  covers a call's number, its arguments and every structure it takes, in
+  `slopos-abi`. `scripts/check_base_interface.sh` fails a change that moves
+  the surface without a new number; `--record` appends the new number's row
+  to `scripts/gates/base-interface.txt`, and an issued row is never rewritten.
+  Raise `BASE_INTERFACE_MIN` only when an older base could no longer run;
+  retire a call by answering `ENOSYS` in its slot.
+- **A program that makes SlopOS-only system calls directly belongs in the
+  base.** Anything outside it reaches the kernel only through `libc.so`,
+  whose exports only grow; `scripts/check_loose_programs.sh` holds the apps
+  to that.
+- **There is one definition of a valid base,** `boot_core::base::check`, and
+  one reader of the archive format, `boot_core::newc`. The packer, `bootctl`
+  and the host's disk builder share the check, and the kernel, the packer,
+  `bootctl` and the tests share the reader, so change either in `boot-core`
+  and nowhere else.
+- **Everything that can fail runs before the switch.** The switch itself is a
+  single pass over the mount table under its lock, all six mounts or none.
+- **A generation's lifetime is read, not counted.** The reaper looks for a
+  generation's inodes in the open-file table, the file page sets and the
+  process table rather than keeping a reference count. A new path that keeps
+  a base inode beyond one system call must show up in one of those places
+  (exec holds its files with `basefs::Hold` for this reason), or the reaper
+  can free a generation that is still in use.
+- **The booted generation is never freed.** init made the consent channel and
+  the other connections of the boot under it, and they name its programs.
+
+## Further reading
+
+- [*Introduction*](https://ostreedev.github.io/ostree/introduction/), OSTree's
+  documentation. A short account of an operating system as one read-only
+  tree, upgraded whole and atomically; the closest relative of the base.
+- [*What happens during a system switch?*](https://nixos.org/manual/nixos/stable/#sec-switching-systems),
+  the NixOS manual. How NixOS works out which services a new configuration
+  changed and restarts only those, the same job init does after a base
+  switch.
+- [*hier(7)*](https://man.freebsd.org/cgi/man.cgi?query=hier&sektion=7),
+  FreeBSD. The layout that separates the base system from what packages
+  install under `/usr/local`.
+- [*Building and Installing a Custom Kernel*](https://docs.freebsd.org/en/books/handbook/kernelconfig/),
+  the FreeBSD Handbook. Includes the `kernel.old` warning behind the rule for
+  which base SlopOS keeps as previous.
+- [*APEX file format*](https://source.android.com/docs/core/ota/apex),
+  Android. System modules updated as verified images and, in most cases,
+  activated at the next boot; a useful contrast to a live switch.
+- [*API levels*](https://fuchsia.dev/fuchsia-src/concepts/versioning/api_levels),
+  Fuchsia. Numbered levels a system supports for a while and then retires,
+  the closest analogue to a kernel serving a range of base interfaces.
+- Reference: the Linux kernel's [initramfs buffer format](https://docs.kernel.org/driver-api/early-userspace/buffer-format.html),
+  which describes the `newc` cpio format a base is written in.
+
+## In the source
+
+| Where | What |
+|-------|------|
+| `boot/src/base.rs` | Choosing current or previous at boot; the unused base's pages |
+| `boot-core/src/base.rs`, `boot-core/src/base/check.rs` | Interface, manifest and the rules a base must pass, host-tested |
+| `boot-core/src/kernel.rs` | Reading the interfaces a kernel file serves from its ELF note |
+| `boot-core/src/newc.rs` | The one reader and writer of the archive format |
+| `abi/src/base_interface.rs` | `BASE_INTERFACE`, `BASE_INTERFACE_MIN` and the note's layout |
+| `fs/src/basefs/` | Serving the base, generations, activation, the reaper and `base_monitor` |
+| `boot/src/boot_services.rs` | Mounting the base directories at boot |
+| `userland/src/apps/bootctl.rs` | `bootctl base install`, `base rollback` and `status` |
+| `userland/src/base_watch.rs`, `userland/src/apps/init/` | Noticing a switch and restarting what it changed |
+| `tools/initramfs/`, `scripts/lib/base.sh` | Packing a base, and which programs it carries |
+| `scripts/check_base_interface.sh`, `scripts/gates/base-interface.txt` | The gate and the ledger of issued interface numbers |

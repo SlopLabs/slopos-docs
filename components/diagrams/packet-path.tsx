@@ -1,7 +1,7 @@
 const STEPS = [
   { where: 'Network card', title: 'Packet arrives', detail: 'the card stores it in memory and raises an interrupt' },
-  { where: 'Kernel', title: 'Receive thread wakes', detail: 'collects a batch of packets from the card' },
-  { where: 'Kernel', title: 'Filters and IPv4', detail: 'checks the header, puts fragments back together' },
+  { where: 'Kernel', title: 'netpoll wakes', detail: 'the stack\u2019s receive thread collects a batch from each card' },
+  { where: 'Kernel', title: 'Filters and IPv4', detail: 'drops what is not for this machine, puts fragments back together' },
   { where: 'Kernel', title: 'TCP, UDP or ICMP', detail: 'finds the socket the packet belongs to' },
   { where: 'Kernel', title: 'Socket queue', detail: 'data waits here; programs waiting on this socket wake' },
   { where: 'Your program', title: 'recv returns', detail: 'the bytes are copied into your buffer' },
@@ -13,7 +13,7 @@ export function PacketPath() {
       <ol
         className="grid gap-2 md:grid-cols-3"
         role="img"
-        aria-label="A packet's path from the network card to a program: the card raises an interrupt, a kernel receive thread collects a batch, IPv4 checks it, TCP, UDP or ICMP finds the socket, the data waits in the socket's queue, and the program's recv copies it out."
+        aria-label="A packet's path from the network card to a program: the card raises an interrupt, the kernel's netpoll thread collects a batch, IPv4 checks that it is addressed to this machine, TCP, UDP or ICMP finds the socket, the data waits in the socket's queue, and the program's recv copies it out."
       >
         {STEPS.map((step, i) => {
           const user = step.where === 'Your program';

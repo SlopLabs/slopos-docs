@@ -14,10 +14,10 @@ get is fine control over who goes first: there are a few fixed priority
 levels, ordinary programs can choose between two of them, and `nice` values
 are recorded but have no effect yet.
 
-Waiting follows the check-then-sleep order of the Linux kernel's
-`wait_event`. The rest of the page covers how threads take turns, how a
-thread waits without missing what it waits for, and what happens when a
-waiting thread is killed.
+Waiting takes its steps in the same order as the Linux kernel's
+`wait_event`, which is what keeps a wakeup from being lost. The rest of the
+page covers how threads take turns, how a thread waits without missing what
+it waits for, and what happens when a waiting thread is killed.
 
 ## Sharing the CPUs
 
@@ -44,10 +44,23 @@ Each CPU keeps its own queue of ready tasks, so CPUs don't contend for one
 shared list every time they switch. The cost is that the queues can get out of
 balance, which SlopOS corrects in three places. A new process or thread starts
 on whichever CPU has the least to do. A task that wakes up goes back to the
-CPU it last ran on, because that CPU's caches probably still hold its data.
-And a CPU with nothing to run takes a waiting task from any CPU that has at
-least two more than it does, while every few ticks a busy CPU checks whether
-it should hand work to a quieter one.
+CPU it last ran on if that CPU is idle, because its caches probably still
+hold the task's data, and otherwise to an idle or lightly loaded one. And a
+CPU with nothing to run takes a waiting task from any CPU that has at least
+two more than it does, while every few ticks a busy CPU checks whether it
+should hand work to a quieter one. An idle CPU halts until its next tick or
+some other interrupt, so a CPU that queues a task behind a running one sends an
+idle CPU an interrupt to come and take it at once rather than up to a tick
+later. When a sleeping task is due before the next tick, an idle CPU also sets
+a one-off timer for it before halting, so a 1 ms sleep ends after 1 ms, not
+10.
+
+On a processor whose CPUs are not all alike (fast and slow cores, or two
+hardware threads sharing one core), "idle" isn't enough: the scheduler ranks
+the idle CPUs and picks the best, a fast core with nothing on it first. A
+running task is never moved for this; it lands somewhere better the next
+time it wakes. [CPU frequency](/docs/architecture/cpu-frequency#how-the-scheduler-places-work)
+explains the ranking. On identical CPUs, QEMU's included, nothing changes.
 
 ### Priorities
 
@@ -56,25 +69,27 @@ the highest tier that has one ready:
 
 | Tier | Used by | Who can choose it |
 |------|---------|-------------------|
-| High | The compositor, which every window's frames pass through | Granted by the kernel to `/bin/compositor` only |
-| Kernel I/O | Kernel threads that move network packets and run network timers | Kernel only |
+| High | The compositor, which every window's frames pass through | A spawner holding the `SchedHigh` capability; init starts the compositor there |
+| Kernel I/O | Kernel threads that devices and the filesystem depend on, such as the network's receive and timer threads, the USB threads and the filesystem's flusher | Kernel only |
 | Normal | Ordinary programs and kernel threads (the default) | Anyone |
 | Low | Background work | Anyone |
 | Idle | The CPU's idle loop, which runs when nothing else can | Kernel only |
 
 A program picks Normal or Low when it starts another one through
-[spawn](/docs/architecture/processes#starting-a-new-program-in-one-step-spawn),
-and any other tier is refused. A High task that looped forever would starve
-everything below it, so the kernel grants High per program, through the same
-table that grants special [permissions](/docs/architecture/authority).
-`nice` and `setpriority` succeed, but the scheduler ignores the value.
+[spawn](/docs/architecture/processes#starting-a-new-program-in-one-step-spawn).
+A High task that looped forever would starve everything below it, so asking
+for High takes the `SchedHigh` [capability](/docs/architecture/authority),
+which ordinary programs never hold, and the kernel's own tiers are refused to
+everyone. `nice` and `setpriority` record a value for any task the caller may
+signal, but lowering a value below zero takes `SchedHigh` too, and is refused
+with `EACCES` without it. The scheduler ignores the value either way.
 
 Strict priority on its own would let a busy Normal task keep a Low task from
 ever running. So the scheduler counts how often each tier has been passed over
 while it had work waiting, and gives it one turn once that count reaches a
-small limit. The rule doesn't apply to High or Kernel I/O, because other work
-depends on them: a background job run ahead of the thread that delivers
-network packets would stall the network.
+small limit. A turn owed this way never goes ahead of a ready High or Kernel
+I/O task, because other work depends on them: a background job run ahead of
+the thread that delivers network packets would stall the network.
 
 ## How a task waits without using a CPU
 
@@ -89,9 +104,9 @@ The kernel keeps a *wait queue* for each thing that can be waited for: data
 arriving in a pipe, a child exiting, a lock coming free. A task that needs to
 wait adds itself to the right queue, marks itself blocked and gives up its
 CPU. Whatever makes the thing happen, such as a writer putting data into the
-pipe, then *wakes* the queue, which makes every task on it ready to run
-again. A woken task checks that what it waited for is there, and waits again
-if not.
+pipe, then *wakes* the queue, which makes one task on it, or all of them,
+ready to run again. A woken task checks that what it waited for is there, and
+waits again if not.
 
 ### Why a wakeup can get lost
 
@@ -125,8 +140,10 @@ That last step relies on how the kernel stores a task's state. The status
 memory, which is only ever changed in a single indivisible step (an *atomic*
 compare-and-swap), together with a counter that goes up on every change. So
 a wake never sees half of a change, and a CPU acting on a stale value finds
-the counter has moved and reads it again. All blocking in the kernel goes
-through the same few wait functions, so this order is written once.
+the counter has moved and reads it again. Almost every wait in the kernel goes
+through one wait loop, so this order is written once; futexes and timed
+sleeps block by hand and repeat it, with one more check
+([For contributors](#for-contributors) says what it is).
 
 ### When a wait ends early: kills, signals and timeouts
 
@@ -136,9 +153,13 @@ chooses which of these reasons apply:
 - **The task was killed.** Almost every wait ends at once on a kill, which is
   what lets `kill -9` stop a program blocked in a system call.
 - **A signal arrived.** Waits inside a slow system call, such as reading from
-  an empty pipe, also end when a signal arrives that the program handles. The
-  call fails with `EINTR`, or is restarted if the handler was installed with
-  `SA_RESTART` (see
+  an empty pipe, also end when a signal arrives that the program neither
+  blocks nor ignores. If the program handles it, the call fails with `EINTR`,
+  or is restarted if the handler was installed with `SA_RESTART`. A signal
+  with no handler takes its default action instead, ending or stopping the
+  program, and a call it only stopped starts again when the program
+  continues. Calls that take a timeout (`poll`, `nanosleep`, `futex`, SlopRing's
+  `ring_enter`) are never restarted: they fail with `EINTR` in every case (see
   [Processes and signals](/docs/architecture/processes#how-a-signal-is-delivered)).
 - **Time ran out.** A wait can have a deadline, as `poll` with a timeout
   does.
@@ -148,8 +169,10 @@ for giving up, and the compiler makes every caller handle both.
 
 One kind of wait ignores kills: waiting for a disk request the device is
 still working on. Abandoning it could let that old write reach the disk after
-a newer write to the same place. That wait still has a deadline of a few
-seconds, so it can delay a kill but not prevent it.
+a newer write to the same place. The wait still ends within five seconds:
+past that, a kill sets the request aside where the disk can finish it safely
+([Disks](/docs/architecture/storage#when-a-disk-stops-answering) explains
+how), so a disk can delay a kill but not prevent it.
 
 ### Waiting on many things at once
 
@@ -181,8 +204,10 @@ calls `futex(FUTEX_WAIT)`, meaning "put me to sleep if this word still holds
 this value". The kernel checks the word and queues the thread under one lock,
 so the lost-wakeup gap can't open, and `FUTEX_WAKE` wakes it.
 
-SlopOS supports wait, wake, the bitset variants and requeue, but not the
-priority-inheritance operations. Futexes work in memory shared between
+SlopOS supports `FUTEX_WAIT`, `FUTEX_WAKE`, their bitset variants,
+`FUTEX_REQUEUE` and `FUTEX_CMP_REQUEUE`. Any other operation, `FUTEX_WAKE_OP`
+and the priority-inheritance ones among them, fails with `ENOSYS`. A futex
+in a shared mapping, used without `FUTEX_PRIVATE_FLAG`, works between
 processes even when each maps it at a different address, as
 `PTHREAD_PROCESS_SHARED` mutexes and shared semaphores need.
 
@@ -208,22 +233,29 @@ resort at shutdown.
 - **Don't busy-wait.** A thread blocked in `read`, `poll`, `futex`,
   `waitpid` or `pthread_cond_wait` costs no CPU.
 - **Expect `EINTR`** from slow calls such as `read` on a pipe or terminal if
-  you install signal handlers without `SA_RESTART`.
+  you install signal handlers without `SA_RESTART`, and from `poll`,
+  `nanosleep` and futex waits whenever a signal interrupts them.
 - **Start background jobs at the Low tier** with spawn; `nice` has no effect
   yet.
-- **Killing always works**, even on a program blocked in the kernel or stuck
-  in a loop: within a tick, or a few seconds for a disk request in flight.
+- **Killing works on a program blocked in a system call or spinning in its
+  own code**: within a tick, or at most five seconds for a disk request in
+  flight.
 
 ## How it is tested
 
 Kernel tests in `sched/src/sched_tests.rs` cover waits that time out, waits
-ended by a kill, and the disk wait that must outlast one. Tests in
-`core/src/syscall/tests.rs` check that the `poll` marker refuses a late wake
-from an old generation, and `sched/src/fair.rs` has host tests for the aging
-rule. In userland, `spin_signal_test` kills a program spinning in a loop and
-`ctrlc_flood_test` interrupts a job blocked in a write.
-`just check-sched-spread` boots the system and fails if any online CPU can't
-run tasks.
+ended by a kill, the disk wait that must outlast one, and the aging rule: a
+busy Normal task can't starve a Low one forever, and aging leaves the usual
+order alone. Tests in `core/src/syscall/tests.rs` check that the `poll`
+marker refuses a late wake from an old generation. Another kernel test blocks
+a task while its CPU can't switch tasks and checks that it comes back
+running. In userland, `spin_signal_test` kills a
+program spinning in a loop, `ctrlc_flood_test` interrupts a job blocked in a
+write, and `exit_stress_test` ends processes whose threads are on their way
+into `futex_wait`, hundreds of times on every CPU, and checks that none
+outlives its process. `just check-sched-spread` boots the system and fails if
+any online CPU can't run tasks. The ranking of cores is tested with
+[CPU frequency](/docs/architecture/cpu-frequency#how-it-is-tested).
 
 ## For contributors
 
@@ -243,7 +275,8 @@ one.
 
 **Ready means placed.** A non-idle `Ready` task must be somewhere the
 scheduler will find it: owned by a CPU, in one ready queue, in one remote wake
-inbox, held by a wake publisher, or in a migration handoff. The idle loop's
+inbox, held by a wake publisher or a kernel-I/O hold, or in a migration
+handoff. The idle loop's
 rescue sweep re-enqueues a stranded task and logs it, but that is a
 diagnostic backstop; a stranded task is a bug.
 
@@ -264,14 +297,31 @@ is capped at `UNINTERRUPTIBLE_MAX_MS`; its one caller is the block engine,
 and a new caller needs a reason of the same kind. `Mutex::lock` is killable
 but not interruptible, and must never be taken from an interrupt handler.
 
+**Blocking outside a wait queue.** `futex_wait` and the sleep path
+(`sched/src/sleep.rs`) commit `Running -> Blocked` themselves rather than
+through `wait_core`. A kill or a signal posted while the task was still
+`Running` woke nothing, because a wake only moves a `Blocked` task, so after
+the compare-and-swap they look for one (`abort_raced_block`) and cancel the
+block if it is there. Without that check a thread on its way into
+`futex_wait` when its process exits outlives the process, holding its file
+descriptors. Any new path that blocks a task by hand owes the same check.
+
+**A `schedule` that can't switch hands back `Running`.** Early in boot the
+first CPU turns the scheduler off while the other CPUs already run user
+tasks. A task that blocks in that window and calls `schedule` gets no switch,
+so `schedule` undoes its `Blocked` before returning; its wait loop sees a
+spurious wake and waits again. Left `Blocked`, a task still on its CPU fails
+every later `Running -> Blocked` compare-and-swap and spins forever.
+
 **The kill flag.** `task_kill_and_wake` (`slopos-ostd/src/task/ops.rs`) is the
 only writer of `killed`. The syscall exit and every interrupt exit share one
 delivery point that checks it.
 
 **Wake placement and preemption.** A wake for another CPU goes into that
-CPU's remote wake inbox, followed by a reschedule IPI. A woken task preempts
-the running one if its tier is strictly higher. A wake from an interrupt (a
-device completing, a sleep expiring) also preempts at equal tier, but a
+CPU's remote wake inbox, followed by a reschedule IPI, after which that CPU
+picks again. A wake placed on the waker's own CPU preempts the running task
+only if its tier is strictly higher, unless an interrupt delivered it (a
+device completing, a sleep expiring): that preempts at equal tier too. A
 task-to-task wake doesn't, so a futex handoff doesn't bounce two threads on
 one CPU. CPUs switch straight from task to task without passing through the
 idle task; [Task lifetimes](/docs/architecture/task-ownership#who-owns-the-running-task)
@@ -279,8 +329,10 @@ explains why that is safe.
 
 **Deferred work and RCU.** Work that can't run where it is triggered
 (destroying a dead task, RCU callbacks) runs at the *bottom-half point*
-(`slopos-ostd/src/sync/bh.rs`): with interrupts on, holding no tracked lock,
-pinned to its CPU, and never blocking. RCU read-side sections hold a
+(`slopos-ostd/src/sync/bh.rs`), with interrupts on and no tracked lock held.
+RCU callbacks run there pinned to the CPU and must not block; dead tasks are
+destroyed just after, with the pin dropped again, because a dead task may
+be destroyed only where preemption is on. RCU read-side sections hold a
 preemption guard. A CPU that never reaches a quiescent state gets a stall
 warning and is waited for; nothing declares a stalled grace period complete.
 
@@ -306,8 +358,8 @@ warning and is waited for; nothing declares a stalled grace period complete.
   in the Linux kernel documentation, for the RCU mentioned under For
   contributors.
 - [*EEVDF Scheduler*](https://docs.kernel.org/scheduler/sched-eevdf.html),
-  for comparison. Linux's current scheduler weighs tasks against each other
-  instead of using strict tiers; the comment at the top of `sched/src/fair.rs`
+  for comparison. Linux's current scheduler for ordinary tasks weighs them
+  against each other instead of using strict tiers; the comment at the top of `sched/src/fair.rs`
   says why SlopOS doesn't.
 
 ## In the source
@@ -321,7 +373,8 @@ warning and is waited for; nothing declares a stalled grace period complete.
 | `slopos-ostd/src/task/state.rs` | The task state word |
 | `slopos-ostd/src/sync/wait_queue.rs`, `mutex.rs`, `poll_waiter.rs` | Waiting, sleeping locks, the `poll` marker |
 | `slopos-ostd/src/sync/bh.rs`, `rcu.rs` | Deferred work and RCU |
-| `sched/src/futex.rs` | Futexes |
+| `sched/src/futex.rs`, `sched/src/sleep.rs` | Futexes, and sleeping for a time |
+| `sched/src/cpufreq.rs` | The placement scores of a hybrid processor's CPUs |
 
 [Task lifetimes](/docs/architecture/task-ownership) covers how run queues and
 wait queues own the tasks they hold.

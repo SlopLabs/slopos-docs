@@ -16,7 +16,8 @@ code outside it.
 The idea and the name come from
 [Asterinas](https://asterinas.github.io/book/ostd/index.html), whose trusted
 crate is also called OSTD. [The framekernel](/docs/verification/framekernel)
-explains why the kernel is split this way.
+explains why the kernel is split this way, what the name stands for in each
+project, and what the split does and doesn't guarantee.
 
 ## What OSTD contains
 
@@ -31,7 +32,10 @@ up to the memory manager, a safe crate. Roughly:
 | Memory | Physical pages and who owns them, the page tables that give each program its view of memory, the kernel heap, and memory shared with devices |
 | Synchronisation | Spin locks, wait queues, intrusive linked lists, read-copy-update, per-CPU slots |
 | Tasks | The task object, the reference that owns it, putting tasks on and off queues, the context switch, saving floating-point state |
-| Processes and permissions | The process object, resource accounts, the permission masks described in [Permissions](/docs/architecture/authority) |
+| Processes | The process object, its user and group ids, its resource accounts, the capability mask described in [Capabilities](/docs/architecture/authority), and the identity a socket records for the process at its other end |
+| Screen and input | Which task holds the screen and the keyboard and pointer input (the *seats*), which the kernel grants and takes back; drawing a frame never claims one |
+| Devices and firmware | I/O ports and device registers, PCI configuration space, the firmware's ACPI tables, and the UEFI runtime calls that reset the machine and read and write boot variables |
+| Panics | Unwinding a task that hit a kernel panic so the kernel can carry on, through the vendored unwinder; the lockup watchdog; the diagnostic console's command table |
 | User memory | Pointers into a user program's memory, and copying to and from it |
 | Linking | The macros that declare entry points called from assembly and tables that the linker assembles (see [Unsafe code and FFI](/docs/development/unsafe-ffi-boundaries)) |
 | Testing | Stand-ins for hardware so OSTD's own tests run on a normal computer and under [Miri](/docs/verification/kernmiri) |
@@ -48,10 +52,10 @@ the caller doesn't need `unsafe`, and the rule is written down.
 But if a caller breaks the rule, memory gets corrupted inside OSTD while the
 mistake sits in a safe crate that nobody thought to audit, which defeats the
 point of keeping `unsafe` in one place ([The framekernel](/docs/verification/framekernel)
-calls the property OSTD needs *soundness*). So no safe function in OSTD may
-carry a `# Safety` section in its documentation, and a check fails the build
-if one appears. Every condition a caller has to meet must be something the
-compiler checks.
+calls the property OSTD needs *soundness*). So no safe `pub` or `pub(crate)`
+function in OSTD may carry a `# Safety` section in its documentation, and a
+gate fails if one appears. Every condition a caller has to meet must be
+something the compiler checks.
 
 ## How safety rules become types
 
@@ -66,7 +70,7 @@ holds, and the operation takes the token as an argument. The interrupt token
 can only be obtained inside a helper that turns interrupts off for the
 duration of a closure, and it can't be sent to another CPU, because interrupt
 state is per CPU. A similar token proves that code is running on the first
-CPU during boot, before the others start.
+CPU, inside boot initialisation.
 
 ```rust
 // Safe code, in the real-time clock driver:
@@ -93,8 +97,9 @@ right. [Task lifetimes](/docs/architecture/task-ownership) covers the rules.
 acceptable, OSTD uses a sealed trait: one that outside crates can name but not
 implement, so the list of types is closed.
 
-**A borrow checked at run time.** Per-CPU data is reached through a slot that
-counts its borrows, like a `RefCell`. A second overlapping borrow gets
+**A borrow checked at run time.** Some per-CPU tables are also reached by
+other CPUs, which name a slot by its CPU number. Those go through a slot that
+counts its borrows, like a `RefCell`, so a second overlapping borrow gets
 `None` back instead of an aliasing reference.
 
 **A slice instead of a pointer and a length.** Copying to or from user memory
@@ -102,8 +107,9 @@ takes a slice, so the length and the buffer can't disagree.
 
 What is left is the set of items that keep an obligation the type system
 can't track: `pub unsafe fn` and `pub unsafe trait`. Code outside OSTD can't
-call or implement them, apart from a short named list of traits; their counts
-are on [Safety gates](/docs/verification/tcb-discipline#where-unsafe-may-appear).
+call or implement them, apart from a short named list of traits;
+[Safety gates](/docs/verification/tcb-discipline#where-unsafe-may-appear)
+shows how to list them.
 
 ## What kernel code outside OSTD should use
 
@@ -115,7 +121,9 @@ When you write a safe kernel crate, a few habits follow from the above:
 - **Reach user memory through user pointers and slices** (`UserPtr`,
   `UserSlice`) and the copy helpers, never by casting an address.
 - **Change page tables only through a cursor** on the memory space
-  (`VmSpace`), which keeps the tables consistent.
+  (`VmSpace`), which keeps the tables consistent. The kernel's own tables
+  take a cursor in one module only (`mm/src/kernel_mappings.rs`), which a
+  gate enforces.
 - **Hold tasks by their owning reference** and move them onto queues only
   through OSTD's placement functions.
 - **Declare entry points, linker symbols and registered items** with OSTD's
@@ -124,10 +132,13 @@ When you write a safe kernel crate, a few habits follow from the above:
 
 ## Building large values in place
 
-Kernel stacks are small and fixed in size, and the build fails if any function
-needs more than 2 KiB of stack. That rules out the usual Rust way of building
-a large struct, `KBox::new(Big { .. })`, because the `Big` value is assembled
-on the stack before it is moved to the heap.
+Kernel stacks are small and fixed in size, and the build fails if a function
+needs more than 2 KiB of stack, apart from a short list of measured
+exceptions, none of them as large as the 4 KiB guard page below each stack
+(see [Safety gates](/docs/verification/tcb-discipline#kernel-image-gates)).
+That rules out the usual Rust way of building a large struct,
+`KBox::new(Big { .. })`, because the `Big` value is assembled on the stack
+before it is moved to the heap.
 
 So OSTD lets you describe how to build a value and then builds it directly in
 its heap allocation. The description is an *initialiser*, a value of a type
@@ -170,16 +181,20 @@ For types where all-zero bytes are a valid value, the `Zeroable` trait and the
 
 This is a small in-house version of the in-place construction that
 Rust-for-Linux does with its `pin-init` crate, and OSTD depends on neither
-that crate nor `pinned-init`. It leaves out `Pin` support, because the kernel
-has no self-referential types and no `async`.
+that crate nor `pinned-init`. It leaves out pinned initialisation, because the
+kernel has no self-referential types and no `async`, and it has no
+`pin_init!`-style macros, whose per-field captures would build each field's
+value on the caller's stack first.
 
-## How we know it works
+## How it is tested
 
 The trusted core is the part that has to be right, so it gets three kinds of
 checking on top of ordinary tests:
 
-- Every `unsafe` block carries a `// SAFETY:` comment naming the rule it relies
-  on, and the code is reviewed against those rules.
+- An `unsafe` block carries a `// SAFETY:` comment naming the rule it relies
+  on (a few one-instruction assembly blocks, such as the ones that turn
+  interrupts on and off, go without), and the code is reviewed against those
+  rules. Nothing checks the comments; review does.
 - OSTD's tests run under [Miri](/docs/verification/kernmiri), which reports
   undefined behaviour the moment it happens.
 - The parts where a bug would corrupt memory, such as page reference counts,

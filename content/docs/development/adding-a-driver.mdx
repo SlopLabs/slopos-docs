@@ -6,7 +6,9 @@ description: "Write a device driver for SlopOS, using QEMU's teaching device as 
 By the end of this page you will have a working PCI driver: the kernel will
 find the device at boot, hand it to your code, and your code will map the
 device's registers, check that it answers, and log its version. You'll also
-have tests for it that run without the device.
+have tests for it that run without the device, and you'll know how to hand a
+real device to the rest of the kernel as a disk, a network card or input, and
+how a USB driver differs.
 
 The example device is `edu`, a device QEMU provides for exactly this purpose:
 it has a version register and a register that hands back whatever you write
@@ -47,9 +49,10 @@ pub mod edu;
 ## 2. Say which devices the driver handles
 
 A driver tells the kernel which devices it wants with a *match table*. At
-boot, the kernel walks the PCI bus and offers each device it finds to every
-driver whose table matches. You don't add a boot step or call anything:
-declaring the driver is enough to register it.
+boot, the kernel walks the PCI bus and offers each device it finds to the
+drivers whose table matches it, one at a time in priority order, until one
+takes it. You don't add a boot step or call anything: declaring the driver is
+enough to register it.
 
 ```rust
 //! QEMU's `edu` teaching device: identify it and check that it answers.
@@ -57,7 +60,7 @@ declaring the driver is enough to register it.
 use slopos_ostd::klog_info;
 
 use crate::driver_core::BoundError;
-use crate::pci::{BoundDevice, PciMatch, PciProbeError, ProbeOutcome};
+use crate::pci::{BoundDevice, PciMatch, PciProbeError, ProbeOutcome, enable_memory_space};
 
 const EDU_VENDOR: u16 = 0x1234;
 const EDU_DEVICE: u16 = 0x11e8;
@@ -83,15 +86,16 @@ A rule can name one exact device, as here, or a whole kind of device:
 | `ClassSubclass { class, subclass }` | Every device of one kind, such as every NVMe controller |
 | `ClassOnly { class }` | Every device of a broad class, such as every storage controller |
 
-Two optional fields go before `probe`. `priority` (default 128, lower goes
-first) lets a driver for one specific device win it from a generic driver for
-its class. `fallback` is a function for a test that a table can't express;
-the DesignWare I2C driver uses one because its class also covers a flash
-controller it must not touch. Prefer table rules.
+Two optional fields go before `probe`, in this order. `fallback` is a
+function for a test that a table can't express; the DesignWare I2C driver
+uses one because its class also covers a flash controller it must not touch.
+Prefer table rules. `priority` (default 128, lower goes first) lets a driver
+for one specific device win it from a generic driver for its class.
 
 Platform devices, the ones the firmware describes in its ACPI tables rather
 than on the PCI bus, work the same way with `platform_driver!` and a table of
-ACPI IDs such as `PlatformMatch::HidCid(b"PNP0303")` (a PS/2 keyboard).
+ACPI IDs such as `PlatformMatch::HidCid(b"PNP0303")` (a PS/2 keyboard). USB
+devices have `usb_driver!`, covered [below](#a-usb-driver).
 
 ## 3. Write the probe
 
@@ -114,7 +118,9 @@ pub fn parse_id(id: u32) -> Option<(u8, u8)> {
 }
 
 fn edu_probe(bound: &mut BoundDevice<'_>) -> Result<ProbeOutcome, PciProbeError> {
-    // The device's registers sit in its first memory window (BAR 0).
+    // The device's registers sit in its first memory window (BAR 0), which
+    // answers only once the device decodes memory accesses.
+    enable_memory_space(bound.info());
     let regs = bound.map_bar(0, 0, 4096).map_err(map_bound_err)?;
 
     let Some((major, minor)) = parse_id(regs.read::<u32>(REG_ID)) else {
@@ -142,7 +148,7 @@ fn map_bound_err(e: BoundError) -> PciProbeError {
 
 The `bound` argument is how a probe gets anything from the device. Each
 resource you ask it for (a mapped register window here, but also memory
-the device can read and write, interrupt lines, I/O ports) is recorded
+the device can read and write, interrupt vectors, I/O ports) is recorded
 against the device. If the probe returns early, by declining or with an
 error, everything it took so far is released in reverse order. You write no
 cleanup code. If it returns `Bound`, the resources stay for as long as the
@@ -157,17 +163,111 @@ system runs.
 | `Err(Unsupported)` | Something the driver needs is missing, such as a usable memory window or interrupt |
 | `Err(DeviceFault)`, `Err(OutOfMemory)` | The device misbehaved, or memory ran out |
 
-Decline a device that isn't yours; return an error for one that is yours but
-doesn't work. The kernel logs errors as `PCI: edu declined device …: DeviceFault`,
+`PciProbeError` is another name for the `ProbeError` every bus shares. Decline
+a device that isn't yours; return an error for one that is yours but doesn't
+work. The kernel logs errors as `PCI: edu declined device …: DeviceFault`,
 so the difference shows up in the boot log.
 
-A driver that needs interrupts asks `bound` for them in the probe too.
-`driver_core::msi::setup_interrupts` sets up one per queue where the device
-supports it and falls back to a single shared one; virtio-blk shows the
-pattern. Keep the interrupt handler short and wake a kernel thread to do the
-work, as virtio-net does.
+### Interrupts
 
-## 4. Test the parts that need no device
+A driver that needs interrupts asks for them in the probe too. PCI devices
+use message-based interrupts only (MSI-X, or MSI where the device has no
+MSI-X), and `driver_core::msi::setup_interrupts` sets up the best the device
+offers: one vector per queue with MSI-X, or one shared vector with MSI. Keep
+what it returns with the device, and switch MSI-X on yourself; the xHCI
+driver's `interrupts` function (`drivers/src/usb/xhci/mod.rs`) is the pattern:
+
+```rust
+use crate::driver_core::msi::{self, IrqMechanism};
+
+let info = *bound.info();
+let mut vectors = [0u8; 1];
+let irq = msi::setup_interrupts(bound, 1, &mut vectors, |_queue: u8| {
+    // Runs in interrupt context: note the work and wake whoever does it.
+})
+.ok_or(PciProbeError::Unsupported)?;
+if let IrqMechanism::Msix { cap, .. } = &irq {
+    crate::msix::msix_enable(info.bus, info.device, info.function, cap);
+}
+bound.attach(irq).map_err(map_bound_err)?;
+```
+
+An interrupt message is a write the device makes to memory, so the device
+also needs bus mastering on (`pci::enable_bus_master`) before it can deliver
+one.
+
+Keep the handler short. A disk driver's handler calls its request engine's
+`handle_irq`, and a network driver's calls `slopos_net::napi::wake_napi`; the
+engine and the network stack's own thread do the rest. Don't start a thread
+of your own: kernel I/O threads come from a fixed registry of eight, and on a
+machine with a touchpad the network stack (two), the filesystem flusher, the
+base reaper, the firmware-variable thread, the touchpad and USB (two) take
+all of them.
+
+## 4. Hand the device to the rest of the kernel
+
+A driver that only logs is done at step 3. A real one hands its device to the
+subsystem that serves programs, and each subsystem has one way in:
+
+**A disk** goes through the block layer's request engine
+([Disks](/docs/architecture/storage) explains why). Your driver implements
+`QueueOps` (`drivers/src/block/engine.rs`): submit a staged request and
+return its tag, pop completions, retire a tag, and say what a status means.
+The engine does the rest: slots, retries, timeouts, ordering. virtio-blk is
+the smallest complete example:
+
+```rust
+let engine = KArc::try_init(Engine::init(
+    "mydisk",
+    REQUEST_SLOTS,
+    engine::MAX_XFER,
+    REQUEST_TIMEOUT_MS,
+    engine::SLOT_WAIT_MS,
+))
+.map_err(|_| PciProbeError::OutOfMemory)?;
+// The interrupt handler calls engine.handle_irq().
+if !engine.prime() {
+    return Err(PciProbeError::OutOfMemory);
+}
+engine.start(queue); // a KBox<dyn QueueOps>
+let disk = EngineDisk::new(engine, 0, block_size, capacity, flushes);
+let disk = KArc::try_new(disk).map_err(|_| PciProbeError::OutOfMemory)?;
+if !block::register_disk(name, disk) {
+    return Err(PciProbeError::OutOfMemory);
+}
+```
+
+`name` is a `DiskName` in Linux's style (`DiskName::virtio`, `DiskName::nvme`);
+a new kind of disk adds its constructor in `drivers/src/block/mod.rs`. A disk
+with a write-protect switch is marked with `.protected()`, and one that knows
+its model or serial number builds its `/dev/disk/by-id` name from them
+(`DiskId::nvme`, `DiskId::virtio` or `DiskId::usb`, from `boot-core`) and
+passes it to `.identified()`.
+
+**A network card** implements `NetDevice` (`net/src/netdev.rs`) and is handed
+to `slopos_net::nic::publish`, with no lock held. That one call gives it an
+interface named `ethN`, a place in the network stack's receive loop and
+carrier sampling, and a DHCP client. The interrupt handler only calls
+`wake_napi`; `rx_pending` and `sample_carrier` are how the stack asks the rest.
+`nic::retire` undoes it all for a device that leaves. The RTL8168 driver
+(`drivers/src/rtl8168.rs`) is the smallest complete example.
+
+**A keyboard** claims a slot in the machine's keyboard state with
+`keyboard::claim()`, reports each key with `keyboard::key(source, usage,
+pressed, now_ms)`, where `usage` is the key's HID usage number, and gives the
+slot back with `keyboard::release`. **A pointing device** does the same with
+`input_event::claim_pointer`, `input_event::pointer_report` and
+`input_event::release_pointer`. Neither keeps modifier, lock or layout state
+of its own; [Keyboards and pointers](/docs/architecture/drivers#keyboards-and-pointers)
+explains why.
+
+**A device that must be stopped before power-off** implements
+`DeviceShutdown` and registers it with `driver_core::shutdown::register`, as
+the NVMe and RTL8168 drivers do. The kernel calls it at poweroff and at
+reboot, after the filesystems have been written out and after the kernel's
+I/O threads have stopped, so the hook must talk to the device by polling.
+
+## 5. Test the parts that need no device
 
 Tests for drivers live in `drivers/src/tests/`. Create
 `drivers/src/tests/edu_tests.rs`:
@@ -205,29 +305,27 @@ The run ends with both tests passing. If one fails, the harness prints the
 test's file and line and the `fail!` message; [Write tests](/docs/development/adding-tests#reading-a-failure)
 shows what a failure looks like.
 
-For a driver with real protocol logic (command encodings, status parsing),
-put that logic in its own crate with no hardware access, like `nvme-core`.
-`just test-host` then runs it on your machine in seconds, with no QEMU.
+For a driver with real protocol logic (command encodings, status parsing,
+a bring-up sequence), put that logic in its own crate with no hardware
+access, like `nvme-core`, `rtl8168-core` or `usb-core`, and add it to the
+`test-host` recipe in the `justfile`. `just test-host` then runs it on your
+machine in seconds, with no QEMU. `rtl8168-core` and `usb-core` go further and
+run their register sequences against a simulated device, which is how
+behaviour QEMU can't emulate gets tested.
 
 If your match rules are subtle (a `fallback`, or a `priority` meant to beat a
 generic driver), add a case to `drivers/src/tests/pci_binding.rs`. Those tests
 run the kernel's real matching code over made-up devices and drivers, so you
 can check who wins a device without having one.
 
-## 5. Try it on the device
+## 6. Try it on the device
 
-The test machine doesn't include `edu`, so for a local experiment add it to
-the QEMU command line in `scripts/qemu_run.sh`, next to the other `-device`
-lines (and leave that edit out of your commit):
-
-```bash
-QEMU_ARGS+=(-device edu)
-```
-
-Then boot and look for the driver's line:
+The test machine doesn't include `edu`. `QEMU_PCI_DEVICES` adds arguments to
+the QEMU command line for one run, so boot with the device and look for the
+driver's line:
 
 ```bash
-just boot-log
+QEMU_PCI_DEVICES="-device edu" just boot-log
 grep '^edu:' test_output.log
 ```
 
@@ -236,11 +334,11 @@ edu: version 1.0, liveness check passed
 ```
 
 For devices the test machine does attach (virtio disks, network and GPU,
-several NVMe controllers), write the integration test as a kernel test too.
-If the device might be missing, log that and pass rather than fail, as the
-virtio-gpu tests do.
+several NVMe controllers, a USB controller with a stick), write the
+integration test as a kernel test too. If the device might be missing, log
+that and pass rather than fail, as the virtio-gpu tests do.
 
-## 6. Check the whole change
+## 7. Check the whole change
 
 ```bash
 just test
@@ -248,15 +346,112 @@ just build
 just check-framekernel-gates
 ```
 
-The gates check, among other things, that no driver code uses `unsafe`, that
-no function's stack frame exceeds the kernel's 2 KiB limit, and that the
-driver registry in the compiled kernel is well formed.
+Each finishes without an error. The gates check, among other things, that no
+driver code uses `unsafe`, that no function's stack frame exceeds the
+kernel's 2 KiB limit, and that the driver registries in the compiled kernel
+are well formed.
+
+## A USB driver
+
+A USB device is offered to drivers one *function* at a time: an interface,
+or the interfaces the device declares belong together
+([USB](/docs/architecture/usb#how-a-device-reaches-a-driver) explains). The
+steps above apply with four differences:
+
+- **It registers with `usb_driver!`** and matches with `UsbMatch`:
+  `Class { class, subclass, protocol }`, where `None` in the last two
+  matches anything, or `Device { vendor, product }`. There is no `fallback`.
+- **The probe runs on the `usb-bind` thread**, whenever a device appears, and
+  may wait for the device. Asking to be deferred counts as declining.
+- **The device can leave.** Register a removal with `on_remove`; it runs on
+  the bind thread when the device goes, before the driver's resources are
+  released. Every request to a device that is gone fails at once.
+- **The handle vends endpoints instead of registers.** A hub never reaches a
+  driver; the USB core drives hubs itself.
+
+This sketch binds a device by its vendor and product numbers (placeholders
+here), reads from its first bulk-in endpoint and logs when it is unplugged:
+
+```rust
+use slopos_ostd::klog_info;
+use slopos_usb_core::device::descriptor::TransferType;
+
+use crate::driver_core::bus::{ProbeError, ProbeOutcome, Removal};
+use crate::usb::bus::{BoundUsbDevice, UsbMatch};
+
+crate::usb_driver! {
+    pub static GADGET_DRIVER = {
+        name: "gadget",
+        match_table: &[UsbMatch::Device { vendor: 0x1234, product: 0x5678 }],
+        probe: gadget_probe,
+    };
+}
+
+struct Unplugged;
+
+impl Removal for Unplugged {
+    fn remove(&self) {
+        klog_info!("gadget: unplugged");
+    }
+}
+
+fn gadget_probe(bound: &mut BoundUsbDevice<'_>) -> Result<ProbeOutcome, ProbeError> {
+    let info = *bound.info();
+    let Some(bulk_in) = bound
+        .descriptors(|config| {
+            config
+                .endpoints(info.first_interface, 0)
+                .find(|e| e.transfer_type() == TransferType::Bulk && e.is_in())
+                .map(|e| e.address)
+        })
+        .flatten()
+    else {
+        return Ok(ProbeOutcome::Declined);
+    };
+    let pipe = bound.pipe(bulk_in).map_err(|_| ProbeError::DeviceFault)?;
+    let mut first = [0u8; 64];
+    let read = pipe
+        .read(&mut first, 1000)
+        .map_err(|_| ProbeError::DeviceFault)?;
+    klog_info!("gadget: {}-{} sent {} bytes", info.controller, info.path, read);
+    bound.on_remove(Unplugged).map_err(|_| ProbeError::OutOfMemory)?;
+    Ok(ProbeOutcome::Bound)
+}
+```
+
+The handle (`drivers/src/usb/bus.rs`) has one method per way of talking to
+the device:
+
+| Method | Gives you |
+|--------|-----------|
+| `control()` | Requests on endpoint 0: descriptors, class requests. Waits for the answer |
+| `pipe(address)` | One endpoint, read or written a page at a time, with a timeout |
+| `reports(address, length, sink)` | An interrupt endpoint kept posted; each report is handed to `sink` where the controller's events are drained, so `sink` may not block, allocate or log |
+| `posted()` | Control requests for a thread that may not wait, collected later |
+| `queue(address, buffers, pages)` | A bulk endpoint you keep transfers on without waiting; the USB core recovers it when it stalls |
+| `stream(bulk_in, bulk_out)` | Both bulk endpoints, recovered by the driver itself, as Bulk-Only needs |
+| `select(interface, alternate)` | Moves an interface to another alternate setting |
+| `descriptors(read)`, `device_descriptor()` | The device's configuration and device descriptors |
+
+To try a USB driver under QEMU, put a USB controller and the device on the
+QEMU command line the same way. QEMU emulates keyboards, mice, tablets,
+sticks and network adapters, and can pass a real device on the host through
+to the guest:
+
+```bash
+QEMU_PCI_DEVICES="-device qemu-xhci,id=xhci -device usb-host,bus=xhci.0,vendorid=0x1234,productid=0x5678" \
+  ROULETTE=0 just boot-live
+```
+
+The device's lines in the boot log start with `USB:`, and `kconsole u` lists
+what bound it.
 
 ## What usually goes wrong
 
 - **The driver never runs.** The match table doesn't match. Check the
   vendor and device numbers, and whether a driver with a lower `priority`
-  bound the device first.
+  bound the device first. For USB, `kconsole u` shows each function's class
+  and which driver, if any, bound it.
 - **The stack-size gate fails.** A large structure was built on the stack in
   the probe. Build it in place on the heap with `KBox::try_init` or
   `KArc::try_init`. Allocate through the kernel's `KBox`, `KVec` and `KArc`;
@@ -266,17 +461,20 @@ driver registry in the compiled kernel is well formed.
   driver whose parent is a PCI device (the I2C touchpad on its controller)
   should decline if the parent is missing.
 - **The driver needs a boot option.** Read it in the PCI boot step before
-  probing and store it, as the Xe and touchpad drivers do; don't parse the
-  command line inside a probe. Document the option on
-  [Boot options](/docs/abi/boot-options).
-- **The device must be stopped before power-off.** Implement
-  `DeviceShutdown` and register it with `driver_core::shutdown::register`,
-  as the NVMe driver does. The kernel calls it after the filesystems have
-  been written back, for both power-off and reboot.
-- **You expect the driver to be told the device went away.** It won't be:
-  SlopOS has no unbinding or hot-plug, so a bound driver keeps its device
-  until shutdown.
+  probing and store it, as the Xe, touchpad and USB drivers do
+  (`boot/src/boot_drivers.rs`); don't parse the command line inside a probe.
+  Document the option on [Boot options](/docs/abi/boot-options).
+- **A thread won't start.** The kernel I/O thread registry has no slot
+  left: it holds eight, and the laptop can use all of them. Do the work where
+  the subsystem already does it: the block engine's waiters, the network
+  stack's netpoll, or the USB threads.
+- **The shutdown hook hangs.** It runs after the kernel's I/O threads have
+  stopped, so anything it waits for that a thread would have done never
+  happens. Poll the device, with a time limit, as the NVMe and xHCI hooks do.
+- **You expect a PCI driver to be told the device went away.** It won't be:
+  PCI and platform devices are never unbound, so a bound driver keeps its
+  device until shutdown. Only USB devices leave.
 
 Read next: [Drivers](/docs/architecture/drivers) for how binding works and
-what the trusted core provides, and [Write tests](/docs/development/adding-tests)
-for the test harness.
+what the trusted core provides, [USB](/docs/architecture/usb) for the USB
+side, and [Write tests](/docs/development/adding-tests) for the test harness.

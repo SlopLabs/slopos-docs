@@ -21,7 +21,6 @@ the [differences](#differences-from-linux) are listed further down.
 
 The rest of the page explains why a crash can damage a filesystem at all, how
 the journal prevents that, and what it means for programs that write files.
-You don't need to know how filesystems work to follow it.
 
 ## Why a crash can damage a filesystem
 
@@ -113,16 +112,18 @@ right away.
 ## What happens at the next boot
 
 The filesystem's header has a flag that says whether the disk is in use.
-SlopOS sets it before the first change and clears it again once everything is
-in its final location and the journal is empty, which happens a few seconds
-after the disk last had anything to write. If the flag is clear when the
-disk is mounted, there is nothing to recover.
+SlopOS sets it when it mounts the disk for writing, and again before the
+first change after the disk was last marked clean. It clears the flag once
+everything is in its final location and the journal is empty, which happens a
+second or two after the disk last had anything to write. If the flag is clear
+when the disk is mounted, there is nothing to recover.
 
 If the flag is set, the machine stopped while the disk was in use, and the kernel *replays* the
 journal before anything else reads the filesystem. It looks for journal
 entries that have a commit record, checks every copied block against the
-checksum stored with it, and then writes each copy to its final location,
-oldest entry first. Entries without a commit record are ignored.
+checksum stored with it (every disk SlopOS builds has journal checksums), and
+then writes each copy to its final location, oldest entry first. Entries
+without a commit record are ignored.
 
 <JournalDisk
   state="crash"
@@ -140,17 +141,31 @@ fraction of a second however big the disk is. Then the disk mounts read-write
 as usual, and the boot log records what was done:
 
 ```text
-ext2: journal attached — 8192 blocks at inode 8, replayed 1 transactions (5 blocks)
+ext4: journal attached — 2048 blocks at inode 8, replayed 1 transactions (5 blocks)
+ext4: the journal is recovered, so the mount is writable again
 ```
 
-The log calls each journal entry a *transaction*, and the filesystem driver
-still introduces itself as `ext2` because that is where it started. The disk
-is ext4.
+The log calls each journal entry a *transaction*. The second line is there
+because a disk that went down in use is held read-only until its replay has
+worked, and only then allowed to take writes.
+
+The same happens whenever a disk that went down in use is mounted later, not
+only at boot: a USB stick pulled out while it was mounted gets its journal
+replayed when it is plugged back in and mounted. The one exception is a
+read-only mount. Replaying means writing, so if you ask for `MS_RDONLY` on a
+disk whose journal still needs replaying, or the disk refuses writes, the
+mount fails with `EROFS` rather than show you a disk in an inconsistent
+state.
 
 At the same point the kernel finishes deleting files that were deleted while
 a program still had them open. On Unix, deleting an open file only removes
 its name; the file itself stays until the last program closes it. If the
 machine stops before that happens, nothing else would ever free its space.
+For the root disk the boot log counts them:
+
+```text
+FS: reclaimed 1 inode(s) the previous boot left unlinked-but-open
+```
 
 ### If the journal is damaged
 
@@ -158,20 +173,31 @@ Replay writes nothing until every copied block has passed its checksum. If
 one fails, SlopOS doesn't apply the entries that look fine and skip the rest.
 It mounts the disk read-only and leaves the repair to `e2fsck`, the standard
 checker from e2fsprogs. If that disk is your root filesystem, SlopOS by default
-boots from its built-in RAM filesystem instead, mounts the disk read-only at
-`/mnt`, and logs what to do:
+boots from memory instead (a RAM filesystem with the base mounted over it, as
+[Filesystem](/docs/architecture/filesystem#how-the-root-is-chosen)
+describes), mounts the disk read-only at `/mnt`, and logs what to do:
 
 ```text
-ext2: MOUNTING READ-ONLY — the volume went down in use and its journal could not be replayed. Replay it on the host with `e2fsck -fy <image>`.
+ext4: MOUNTING READ-ONLY — the volume went down in use and its journal could not be replayed. Replay it on the host with `e2fsck -fy <image>`.
 ```
 
 On the [development machine](/docs/self-hosting/development-machine) the disk
-is the image `fs/assets/ext2-persist.img` on the host. Shut the guest down,
-run `e2fsck -fy fs/assets/ext2-persist.img`, and boot again.
+is the image `fs/assets/ext4-persist.img` on the host. Shut the guest down,
+run `e2fsck -fy fs/assets/ext4-persist.img`, and boot again. On an installed
+machine, boot the install medium and run `e2fsck -fy` on the root partition
+from its rescue shell, which holds the raw access to the disk that `e2fsck`
+needs ([Installing SlopOS](/docs/self-hosting/installing) covers the rescue
+shell).
 
 A damaged journal means the disk lost or garbled data after confirming that
 it had stored it. The journal can't protect you from that, but the checksums
 make sure SlopOS notices instead of copying the damage into place.
+
+SlopOS also leaves alone a journal that holds entries while the flag says the
+disk was not in use. SlopOS never writes that combination, and its copies may
+be older than what is already in place, so replaying them could undo newer
+changes. That disk mounts read-only too, with a line saying its journal is
+one the kernel neither replays nor writes, and `e2fsck` decides.
 
 ## What programs can rely on
 
@@ -204,7 +230,8 @@ have the details.
 ## Differences from Linux
 
 The on-disk format is the same, so a disk can move between SlopOS and Linux.
-SlopOS replays a journal that Linux wrote, and `e2fsck` replays a journal
+SlopOS replays a journal that Linux wrote with its default journal features
+(it refuses Linux's optional fast commits), and `e2fsck` replays a journal
 that SlopOS wrote. Behaviour differs in a few places:
 
 | | Linux ext4 (defaults) | SlopOS |
@@ -212,7 +239,7 @@ that SlopOS wrote. Behaviour differs in a few places:
 | Commit interval | 5 seconds | 1 second |
 | Data modes | `ordered`, with `journal` and `writeback` available | `ordered` only |
 | When file blocks are allocated | Delayed until the data is written back, which can take much longer than a commit | When the program writes, so the data goes out with the next commit |
-| Idle disk | Marked in use until it is unmounted | Marked clean a few seconds after the last write |
+| Idle disk | Marked in use until it is unmounted | Marked clean a second or two after the last write |
 
 The shorter commit interval is deliberate. The machine SlopOS most often
 loses power on is a QEMU window that a developer closes without shutting down
@@ -224,8 +251,8 @@ disk that needs no recovery at all.
 
 Crash bugs don't show up in normal testing, because normal testing doesn't
 crash. So one test crashes on purpose. `just test-rude-exit` boots SlopOS,
-creates a file, calls `fsync`, and then kills the virtual machine. The host
-then checks the disk image:
+creates a file, calls `fsync`, and then ends the virtual machine at once,
+without unmounting the disk. The host then checks the disk image:
 
 1. The disk must still be marked in use, with an entry in its journal, so the
    test really did stop in the middle.
@@ -271,8 +298,9 @@ half of its blocks.
 
 | Where | What |
 |---|---|
-| `fs/src/ext2/journal.rs` | Writing journal entries and commit records |
-| `fs/src/ext2/cache.rs` | The block cache, and the order in which contents, journal and metadata reach the disk |
+| `fs/src/ext4/journal.rs` | Writing journal entries and commit records |
+| `fs/src/ext4/cache.rs` | The block cache, and the order in which contents, journal and metadata reach the disk |
+| `fs/src/ext4_vfs.rs` | Mounting: replay, the read-only reasons and their log lines, the flusher |
 | `ext4-core/src/jbd2.rs`, `ext4-core/src/recovery.rs` | The journal's on-disk format and replay, host-tested |
 | `fs/src/tests/journal.rs` | Kernel tests for commits, rollbacks and refused replays |
 | `fs/src/tests/rude_exit.rs`, `scripts/check_fs_replay.sh` | The two halves of the crash test |

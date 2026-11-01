@@ -1,0 +1,457 @@
+---
+title: "Extension images"
+description: "The exact format of an extension image, the files inside it, the declaration grammar and the signed sidecar."
+---
+
+This page lists the format of an extension image and of the files that
+travel with it. The source of truth is the `extension-core` crate
+(`image.rs`, `volume/`, `release.rs`, `declare.rs`, `grant.rs`,
+`sidecar.rs`, `symbols.rs`, `config.rs`, `keys.rs`, `record.rs`) and the hash
+tree in `verity-core`. [Extensions](/docs/architecture/extensions) explains
+how images are installed and run, and
+[Package an extension](/docs/development/packaging-an-extension) builds one.
+
+## Files
+
+| File | Contents | Written by |
+|---|---|---|
+| `<name>.ext` | The image: an ext4 volume followed by its hash tree | `just extension`, `extctl build` |
+| `<name>.meta` | The sidecar: the image's name, version and root | `just extension`, `extctl build` |
+| `<name>.meta.sig` | An SSH signature over the sidecar | `ssh-keygen -Y sign`, which `just extension` runs when `EXTENSION_KEY` is set |
+
+`extctl install-signed <image>` looks for the sidecar and signature beside
+the image, at the image's path with `.ext` replaced by `.meta` and
+`.meta.sig`, unless both are named on its command line.
+
+## Image file
+
+| Property | Value |
+|---|---|
+| Layout | The volume's data blocks, then the hash tree's blocks |
+| Block size | 4096 bytes, for data and hash blocks alike |
+| Hash | SHA-256, with no salt |
+| Tree | Linux dm-verity's layout, format version 1, as `veritysetup format --no-superblock --salt=-` writes it |
+| Levels | After the data, top level first. Each hash block holds the digests of 128 blocks of the level below; the rest of the block is zero |
+| Root | The SHA-256 of the tree's top block. An image of one data block has no levels, and its root is that block's digest |
+| Length | Exactly the data blocks plus the tree blocks the data needs, a multiple of 4096. A length no tree fits is not an image |
+| Data blocks | 1 to 2<sup>32</sup> |
+| Holes | Blocks of zeros may be holes in the file; the tools write them so |
+
+The root names the image: the sidecar, the store's record and
+`ext_activate` all identify an image by it.
+
+## Volume
+
+| Property | Value |
+|---|---|
+| Filesystem | ext4, filling the image's data blocks exactly |
+| Incompatible features | `filetype`, `extent`, `64bit`, `flex_bg` |
+| Read-only compatible features | `sparse_super`, `large_file`, `huge_file`, `dir_nlink`, `extra_isize`, `metadata_csum`, `read-only` |
+| Compatible features | None (no journal) |
+| Inodes | 256 bytes; root is inode 2, an empty `lost+found` is inode 11, and every other entry takes the next number from 12, breadth first, each directory's children in name order |
+| Files and directories | Mapped by extent trees, each laid out contiguously but for a backup superblock in the way |
+| Symlinks | The target in the inode when it is at most 59 bytes, otherwise in one block |
+| Owner | uid 0 for every inode |
+| Times | None recorded |
+| UUID | The first 16 bytes of the SHA-256 of `/.extension/manifest` |
+
+The writer is deterministic: the same tree packs to the same bytes and the
+same root wherever it is packed.
+
+A reader (`extctl` and `tools/extension`) also takes a volume `mke2fs` made,
+with the compatible features `has_journal`, `ext_attr`, `resize_inode` or
+`dir_index`, and refuses anything that could be served differently from
+what it read: any other feature, an inode flag that changes what a block
+means, an inode type, generation or hard link the writer does not make, a
+block outside the volume, a checksum that fails, a directory that holds a
+name twice or whose `.` or `..` is wrong, and an inode at two names.
+
+The kernel's `ext_activate` refuses, with `EINVAL`, a volume that has no ext4
+superblock, has blocks other than 4 KiB, does not fill the image's data, is
+not marked `read-only`, has no metadata checksums, has a first inode other
+than 11, or has a journal that needs recovery. It answers `EINVAL` too for a
+tree that holds more than 65536 entries, an inode at two names, a name twice in a
+directory, a `.` or `..` that names the wrong directory, an entry naming a
+reserved inode, an entry whose type is not its inode's, anything but
+directories, regular files and symlinks, or directories larger together than
+the volume. A first block that fails the tree under the root given is `EIO`.
+
+## Paths
+
+Paths are given from the volume's root, which appears at `/opt/<name>`.
+
+| Rule | Value |
+|---|---|
+| Top-level directories | `/bin`, `/libexec`, `/lib`, `/share` and `/.extension`; nothing else at the top but an empty `/lost+found` |
+| `/.extension` | Holds `manifest`, `release` and `declare`, and nothing else |
+| Entry types | Directories, regular files and symlinks |
+| Names | Not empty, not `.` or `..`, no `/` or NUL, at most 255 bytes, once per directory |
+| Symlink targets | Relative, not empty, no NUL, and no `..` component |
+| Entries | At most 65536 beneath the root |
+| Modes | The packers write 0755 for a directory or a file with any execute bit, 0644 for any other file, and 0777 for a symlink |
+
+## /.extension/manifest
+
+One line per entry beneath the root, except `lost+found` and the manifest
+itself, each entry exactly once, in increasing byte order of path:
+
+```text
+<sha256> <mode> <path>
+```
+
+| Field | Value |
+|---|---|
+| `sha256` | 64 lowercase hexadecimal digits: the SHA-256 of a file's contents, of a symlink's target, or of nothing for a directory |
+| `mode` | Six octal digits: the file type bits and the permission bits, as the volume records them |
+| `path` | Absolute from the volume's root |
+
+```text
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 040755 /bin
+```
+
+The manifest is at most 16 MiB. Every file's bytes and every symlink's target
+must hash to the digest its line records, and every mode must match.
+
+## /.extension/release
+
+`key value` lines, none indented. Blank lines and lines starting with `#` are
+ignored. Each key appears at most once, and any other key is refused.
+
+| Key | Value | Required |
+|---|---|---|
+| `name` | The extension's name (see [Names](#names)) | Yes |
+| `version` | A decimal number without leading zeros. Updates are ordered by it | Yes |
+| `display` | One word of printable ASCII, no `"`, at most 32 bytes, shown as the version | No; defaults to `version` |
+| `summary` | A line of printable ASCII, no `"`, at most 120 bytes | No |
+
+```text
+name     hello
+version  3
+display  1.2-beta
+summary  Says hello to whoever connects
+```
+
+The file is at most 64 KiB.
+
+## /.extension/declare
+
+What the extension asks for. The file is at most 64 KiB.
+
+- A line at the margin is a declaration: a keyword, then its value.
+- A line indented with spaces or a tab is a setting of the `service` or
+  `action` declared before it.
+- Blank lines and lines starting with `#` are ignored.
+- Any other keyword or setting is refused, and the refusal names its line.
+- Programs are named by the path they have once the image is shown, under
+  `/opt/<name>`.
+- Capabilities are named as [Capabilities](/docs/architecture/authority)
+  names them, separated by spaces.
+
+### Declarations
+
+| Line | Meaning | Repeats |
+|---|---|---|
+| `user` | Declares the user `<name>` | Each user once |
+| `user <suffix>` | Declares the user `<name>-<suffix>` | Each user once |
+| `state` | The extension has `/var/lib/<name>`, owned by its first user, the home the user database gives each of its users | No |
+| `config` | The extension has `/etc/<name>` for settings | No |
+| `runtime` | The extension has `/run/<name>`, where its unix sockets go | No |
+| `command <command>` | Links `/opt/<name>/bin/<command>` into `/opt/bin` | Each command once |
+| `app <id>` | Shows the app entry `/opt/<name>/share/slopos/apps/<id>.app` in the dock, unless an extension earlier in name order, the base, `/usr/local` or the person's `~/.local` has an entry of that id | Each app once |
+| `service <service>` | Starts a service block | Each service once |
+| `action <action>` | Starts an action block, the privd action `ext.<name>.<action>` | Each action once |
+
+The first `user` line declares the extension's *first user*, who owns its
+log, state and runtime directories and runs its actions.
+
+### Service settings
+
+| Setting | Value | Required | Default |
+|---|---|---|---|
+| `program <path>` | A file of the image outside its `lib/`, as `/opt/<name>/...`. Once | Yes | |
+| `args <word>...` | The arguments after the program. Each word printable, without `"` or `*`, at most 64 bytes. Once | No | None |
+| `user` or `user <suffix>` | Which declared user it runs as. Once | No | The first user |
+| `caps <capability>...` | The capabilities it asks for. Once | No | None |
+| `after <service>` | Starts once that declared service is ready, has run 30 seconds or will not start. Repeats | No | |
+| `reads <path>` | A file it reads, or with a trailing `/` a directory: under `/opt/<name>`, where it must exist in the image, or under `/etc/<name>`, which needs `config`. At most 255 bytes. Repeats | No | |
+| `listen tcp <port>` | A TCP port, 1 to 65535, that init binds on every address and keeps. Repeats | No | |
+| `listen udp <port>` | A UDP port that init binds and keeps. Repeats | No | |
+| `listen unix <socket>` | A socket at `/run/<name>/<socket>`, mode 0666; needs `runtime`. Repeats | No | |
+| `restart always` / `on-failure` / `never` | When init starts it again after it exits; `on-failure` starts it unless it exited with status 0. Once | No | `on-failure` |
+| `session` | Runs as the first person while their desktop session runs, instead of as a user of the extension; takes no `user` and no `listen` | No | |
+
+### Action settings
+
+| Setting | Value | Required | Default |
+|---|---|---|---|
+| `program <path>` | A file of the image outside its `lib/`, as `/opt/<name>/...`. Once | Yes | |
+| `args <word>... [*]` | One argument shape: fixed leading words, then `*` for any further ones. Words as for a service's `args`. Repeats, each shape once | At least one | |
+| `caps <capability>...` | What the mechanism holds, among those privd can hand out. May list none. Once | Yes | |
+| `cwd` | The mechanism runs in the requester's directory instead of `/` | No | |
+| `exclusive` or `exclusive <group>` | One mechanism of the group runs at a time. The group is the action's own name, or `ext.<name>.<group>` | No | |
+| `keep <seconds>` | An answer is kept for 1 to 900 seconds, as privd keeps one | No | |
+| `allow admin` / `admin confirm` / `admin password` | Who may ask, and at what level; see below. Repeats, each principal once | At least one | |
+| `allow user` / `user alone` / `user confirm` / `user password` | | | |
+| `allow paired` | | | |
+| `allow program <path>` | | | |
+| `describe "<text>"` | Completes "*App* wants to ...": a lower-case verb phrase, at most 72 bytes, without closing punctuation | Yes | |
+| `detail "<text>"` | One sentence of what follows from allowing it: a capital first, a full stop last, at most 160 bytes | No | |
+| `verb "<text>"` | The allowing button's word, one of privd's list (`Allow`, `Install`, `Run`, `Send`, `Start`, `Trust`, `Turn on`...) | No | `Allow` |
+| `destructive` | Fills the allowing button with the danger colour | No | |
+
+`describe` and `detail` follow the desktop's words, and may not name a
+capability or the policy's own words (requester, mechanism, principal,
+privd, slot, base, sealed, uid). The
+principals and levels are privd's ([privd actions](/docs/abi/privd-actions)
+has the exact rules), with these differences for an extension:
+
+- `root` and `greeter` are refused.
+- `program <path>` names one of the extension's own programs outside its
+  `lib/`, which matches only a requester running that file of the image the
+  record installed, or a base program under `/bin`, `/sbin` or `/usr/bin`,
+  which must be statically linked or privd leaves the action out.
+- `paired` is accepted, but no request of the paired agent reaches an
+  extension's action: its connection goes only to the base's mechanisms.
+- An action is *unasked* when it allows `user` with no level or `alone`,
+  `admin` with no level, `paired`, or any `program`. Unasked actions are
+  listed in the grant line, and for an image a key signed their capabilities
+  together are held to that key's `user` ceiling.
+
+### Rules for the whole file
+
+- A declaration with a service, `state` or `runtime` must declare a user, and
+  so must one with an action.
+- A service runs as a user the extension declares.
+- `after` names another declared service, and services may not wait on each
+  other in a circle.
+- No two services listen on the same socket.
+- At most 16 services.
+- Every program a service, an action, a `program` principal of the
+  extension's own or a command names must be an executable regular file of
+  the image; every app must have its `.app` entry; every `reads` path under
+  `/opt/<name>` must exist.
+
+### Example
+
+```text
+user
+user worker
+state
+config
+runtime
+command hello
+app hello
+
+service hellod
+  program /opt/hello/bin/hellod
+  args    --quiet
+  user    worker
+  caps    NetAdmin
+  reads   /etc/hello/
+  listen  tcp 7000
+  listen  unix ctl
+  restart on-failure
+
+action greet
+  program  /opt/hello/libexec/greet
+  args     greet *
+  caps     NetAdmin
+  allow    admin confirm
+  allow    program /opt/hello/bin/hello
+  describe "greet everyone on the network"
+  detail   "Everyone on the network sees the greeting."
+  verb     "Send"
+```
+
+This declares the users `hello` and `hello-worker`; `greet` is unasked
+because of its `program` line. Its grant line is
+`grant NetAdmin unasked greet users hello,hello-worker commands hello`.
+
+## Names
+
+| Name | Rule |
+|---|---|
+| Extension | Lowercase letters, digits and `-`, 1 to 32 bytes. Not `slopos`, `base`, `bin`, `sbin`, `lib`, `usr`, `share`, `etc`, `ssl`, `root` or `user`. `extctl` also installs none named `crash`, `init`, `privd`, `sessions`, `passwd`, `group`, `shadow`, `keymap`, `motd`, `slopos-auth` or `slopos-local`, and none named as a person is |
+| User | `<name>` or `<name>-<suffix>`, at most 32 bytes; the suffix a lowercase letter, then lowercase letters, digits and `-`. Not a person's name, and not one another installed extension declares |
+| Service, action, exclusive group | A lowercase letter, then lowercase letters, digits and `-`, at most 32 bytes |
+| Action, as privd names it | `ext.<name>.<action>`, at most 64 bytes, no part starting with a digit |
+| Command, app, unix socket | A lowercase letter or digit, then lowercase letters, digits, `-`, `_` and `.`, at most 32 bytes. A command another installed extension declares is refused |
+| Settings file in `/etc/<name>` | Letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 64 bytes |
+
+## Programs and libraries
+
+Every file that starts with the ELF magic is checked when the image is
+installed and at every activation:
+
+| Rule | Applies to |
+|---|---|
+| Dynamically linked | Every executable and shared object |
+| Interpreter `/lib/ld-slopos.so.1` | Every program (every executable, and every ELF file outside `/lib`), and a shared object in `/lib` that names an interpreter |
+| Needs `libc.so` | The same files |
+| Each library it needs is `libc.so`, or a shared object found in the image at `/lib/` followed by the name it needs, directly or through at most 7 relative symlinks | Every executable and shared object |
+| Every undefined symbol that is not weak is exported by `libc.so` or a library it needs, directly or not | Every executable and shared object |
+| At most 64 needed libraries, and a closure of at most 256 | Every executable and shared object |
+| At most 1 GiB | Every ELF file |
+
+Relocatable objects and core files are not checked. `just extension` also
+runs `scripts/check_loose_programs.sh` over every ELF file outside `lib/`,
+which refuses one containing a `syscall` instruction.
+
+## What a service runs with
+
+| | A service | A session service |
+|---|---|---|
+| uid and gid | The user it declares | The first person's |
+| Supplementary groups | None | None |
+| Capabilities | Its `caps`, cut to the grant and the base's ceiling | The same |
+| Working directory | `/var/lib/<name>` with `state`, otherwise `/` | The first person's home |
+| Environment | `HOME` (as the working directory), `USER`, `LOGNAME`, `PATH`, `LANG`, and `LISTEN_FDS` and `LISTEN_FDNAMES` when it listens | The first person's session environment, `PATH` and `LANG` |
+| `PATH` | `/bin:/sbin:/opt/<name>/bin` | The same |
+| `LANG` | `C.UTF-8` | The same |
+| fd 0 | `/dev/null` | The same |
+| fd 1 and 2 | A pipe to its log, `/var/log/<name>/<service>.log`, which becomes `<service>.log.1` at 256 KiB | The same |
+| fd 3 | The readiness pipe: write to it or close it once ready | The same |
+| fd 4 on | Its sockets, in `listen` order | None |
+| `LISTEN_FDNAMES` | Colon-separated: `tcp-<port>`, `udp-<port>` or the unix socket's name | |
+
+## What an action's mechanism runs with
+
+| | Value |
+|---|---|
+| uid and gid | The extension's first user's, with no supplementary groups |
+| Login tag | The extension's own, shared by all its mechanisms, not privd's |
+| Capabilities | The action's `caps`, cut to the grant, the base's ceiling and what privd can hand out |
+| Working directory | `/`, or the requester's directory with `cwd` |
+| `argv` | The program's file name, then the requester's arguments |
+| Environment | `PATH=/bin:/sbin:/opt/<name>/bin`, `LANG=C.UTF-8`, `PRIV_ACTION` (the action's name) and `PRIV_UID` (the requester's uid) |
+| fd 0, 1 and 2 | The three descriptors the requester sent: its own, or the pipes or terminal it relays its terminal through |
+
+## Grant line
+
+What a first install's command line carries and the person approves, and what
+the store records for each image:
+
+```text
+grant <capabilities> unasked <actions> users <users> commands <commands>
+```
+
+Each list is names joined by commas, or `-` for none; order does not matter.
+`<capabilities>` is every capability the services and actions declare
+together, `<actions>` the unasked actions by their short names, `<users>` the
+full user names and `<commands>` the commands.
+
+```text
+grant NetAdmin unasked greet users hello,hello-worker commands hello
+```
+
+No extension is granted a capability outside the base's ceiling,
+`/usr/share/slopos/privd/extensions`, whose shipped value is:
+
+```text
+ceiling Power Mount RawBlock NetAdmin ConsoleConfig SysInspect Clock DacOverride SchedHigh
+```
+
+`BaseUpdate`, `ExtensionUpdate`, `Seal`, `BootEntry`, `SetId`, `ProcSignal`,
+`TestHarness`, `DisplaySeat`, `InputSeat` and `SeatSwitch` are never granted,
+nor is a capability every program holds: a ceiling file that names one is
+refused, and so is an image that asks for one.
+An action's capabilities are further limited to those privd can hand out,
+which leaves out `SchedHigh`.
+
+## Sidecar
+
+Exactly three lines, in this order, each ending in a line feed:
+
+```text
+name hello
+version 3
+sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+```
+
+`sha256` is the image's root, in lowercase hexadecimal. Any other spelling
+(extra spaces, leading zeros, uppercase digits, carriage returns, a missing or
+extra line feed) is refused, so one sidecar has one signature. The sidecar
+and its signature are each at most 4096 bytes.
+
+## Signature
+
+| Property | Value |
+|---|---|
+| Format | SSHSIG, armored, as `ssh-keygen -Y sign` writes it |
+| Namespace | `extension@slopos` |
+| Key | Ed25519 only |
+| Hash | `sha512` (what `just extension` asks for) or `sha256` |
+| Verification | Strict Ed25519: a canonical public key outside the small-order subgroup, `S` below the group order, `R` the canonical encoding of `[S]B - [k]A` |
+| Signed bytes | The sidecar file, exactly |
+
+```sh
+ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n extension@slopos -O hashalg=sha512 hello.meta
+```
+
+## Settings files
+
+A settings file goes into `/etc/<name>` (an extension that declares `config`)
+by a person's approval or under a signed sidecar. `/etc/<name>` holds at most
+64 files, one level deep, each at most 256 KiB.
+
+The sidecar of a signed settings file, `<file>.meta`, is four lines:
+
+```text
+name hello
+file hello.conf
+serial 4
+sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+```
+
+`sha256` is the file's SHA-256, and `serial` a number above 0 that must be
+above the last serial applied for the extension. It is signed as an image's
+sidecar is, under the namespace `extension-config@slopos`, into
+`<file>.meta.sig`, by the key that installed the extension, which the owner
+must still trust.
+
+## Store files
+
+The store, `/var/lib/slopos/extensions`, keeps each file as numbered
+generations (`keys.<n>`, `<name>/record.<n>`); the newest sealed one is
+believed.
+
+A line of `keys.<n>`, one per trusted key, at most 64 keys:
+
+```text
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... ceiling=Power,NetAdmin user=- laptop key
+```
+
+`ceiling` is what the key's extensions may hold, `user` what their unasked
+actions may hold together, which must sit inside `ceiling`. The comment is
+optional printable ASCII, at most 120 bytes.
+
+`<name>/record.<n>`, one per extension:
+
+```text
+name hello
+enabled yes
+signer SHA256:bbXpuKG6zhzdmnxq256TlqzFBzRl2f6OOg722cYNbU8
+floor 3 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+refused 4
+uids hello=100,hello-worker=101
+config 2
+image current
+  version 3
+  sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+  signer SHA256:bbXpuKG6zhzdmnxq256TlqzFBzRl2f6OOg722cYNbU8
+  grant NetAdmin unasked - users hello commands hello
+```
+
+| Line | Meaning |
+|---|---|
+| `enabled` | `yes` or `no` |
+| `signer` | The fingerprint of the key whose updates go in unasked, or `-` |
+| `floor` | The version floor and its image's root: the highest version installed, or after a rollback the version it made current. An older version is refused, and so is this version with other bytes |
+| `refused` | Versions a rollback left, refused to signed installs; `-` for none |
+| `uids` | Every uid ever given the extension, kept after removal; the uid of its own name is its number |
+| `config` | The last serial of a signed settings file, when there has been one |
+| `why` | Why a check stopped it, when one did |
+| `image current`, `image previous` | Each image kept: its version, root, signer and grant |
+
+`<root>.ext`, `<root>.meta` and `<root>.meta.sig` beside the record are the
+images and sidecars it names.

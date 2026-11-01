@@ -1,0 +1,264 @@
+---
+title: "CPU frequency"
+description: "How SlopOS asks each processor to pick its own speed, measures how fast it really ran, and puts work on the right kind of core."
+---
+
+import { CorePlacement } from '@/components/diagrams/core-placement';
+
+On an Intel processor that supports it, SlopOS hands the choice of clock
+speed to the processor itself: at boot every CPU is told to pick its own
+speed, anywhere between its slowest and fastest setting, leaning towards
+performance. SlopOS also keeps a record of the settings the firmware left,
+measures the clock each CPU actually ran at and how hot it got, and on a
+processor whose cores are not all alike it puts a task that wakes up on the
+best idle core. `/bin/cpufreq` shows all of it, changes the settings while
+the system runs, and measures what a command did. What you don't get is
+speed control on a processor without this feature (an AMD processor, or an
+older Intel one): there SlopOS leaves the firmware's settings alone. Inside
+QEMU there is nothing to control, and SlopOS behaves exactly as it would
+without any of this.
+
+The feature is Intel's *Hardware-controlled Performance States* (HWP),
+described in Intel's Software Developer's Manual, and enabling it at boot is
+also what Linux's `intel_pstate` driver does by default. How SlopOS ranks the
+cores of a hybrid processor is the order Linux's scheduler settled on for
+Intel's Alder Lake parts, and the arithmetic that turns two counters into a
+clock speed is the one Linux's `turbostat` uses. The rest of the page explains
+why the operating system has to get involved, how each part works, and what
+you can do with `/bin/cpufreq`.
+
+## Why the operating system has a say
+
+A processor can run at many speeds. Faster costs power and heat, and a
+laptop has limits on both, so something has to choose. On older processors
+the operating system chose: it watched how busy each CPU was and asked for a
+speed, over and over. With HWP the processor chooses by itself, many times a
+second, from what it sees, and the operating system only sets the bounds and
+a *preference* between saving energy and going fast. But HWP has to be
+switched on, and firmware doesn't always do it. Our development laptop's
+firmware left it off, and the same build ran measurably faster once SlopOS
+switched it on.
+
+Two more things make the choice of CPU matter on a modern laptop:
+
+- **Not every core is the same.** A *hybrid* processor has fast
+  *performance cores* (P-cores) and smaller, slower *efficiency cores*
+  (E-cores). A thread does noticeably less work per second on an E-core.
+- **Some CPUs share a core.** With *simultaneous multithreading* (Intel calls
+  it Hyper-Threading), one core runs two hardware threads, which the operating
+  system sees as two CPUs. Two busy threads on one core each run slower than
+  they would on two cores.
+
+So a scheduler that treats every idle CPU alike, as SlopOS's did, will put a
+task on an E-core, or beside a busy thread, while a P-core sits idle. Finally,
+you can't tell any of this from outside: the clock a CPU ran at isn't
+something you can read off a register, because it changes all the time.
+
+## How the speed is set
+
+The settings live in registers that each CPU has its own copy of, and that
+only that CPU can read or write (Intel calls them *model-specific registers*,
+MSRs). So no CPU sets another's: the first CPU programs itself in the
+`cpufreq` boot step, before the others start, and every other CPU programs
+itself as it comes up. Each one logs a `CPUFREQ:` line with its core type and
+its HWP levels.
+
+Before writing anything, the first CPU records what the firmware left: whether
+it had enabled HWP, whether it had disabled turbo (the speeds above the
+processor's sustained rating), and the processor's highest speed without
+turbo. Each CPU records its own speed request the same way as it comes up.
+That record never changes, so you can always see what the machine would have
+run at without SlopOS.
+
+Then, under `cpufreq=hwp` (the default), each CPU with HWP:
+
+1. switches HWP on, which the processor won't let anyone switch off again
+   until the next reset;
+2. reads its four performance *levels*: highest, guaranteed (what it can
+   sustain), most efficient, and lowest;
+3. asks to choose for itself anywhere between its lowest and highest level,
+   or up to the guaranteed level if the firmware disabled turbo, with the
+   energy-performance preference `cpufreq.epp=` names, `balance_performance`
+   by default (128 on a scale where 0 is all performance and 255 all energy
+   saving).
+
+`cpufreq=firmware` writes nothing at all. A CPU without HWP keeps the
+firmware's settings either way, and SlopOS has no speed governor of its own
+for it.
+
+Changing a setting later, with `cpufreq set`, doesn't reach into the other
+CPUs either. The kernel records the new settings under a new *generation*
+number, applies them on the calling CPU, and wakes the others, each of which
+applies them at its next timer tick or just before it next goes idle. So
+nothing ever waits for another CPU with interrupts off. `cpufreq set` waits
+up to a second for every CPU to report the new generation, and fails naming
+any CPU that hasn't.
+
+## How the real speed is measured
+
+Each CPU has two counters that only run while it executes instructions:
+*MPERF* counts at a fixed rate (the same rate as the *TSC*, the processor's
+steady timestamp counter), and *APERF* counts at the speed the core actually
+ran. Their ratio is the clock: if, over one second, MPERF advanced half as far
+as the TSC and APERF twice as far as MPERF, then on a processor whose TSC runs
+at 2 GHz the CPU was busy half of that second and ran at 4 GHz while busy.
+
+Every CPU samples APERF, MPERF and the TSC together at every timer tick and
+just before it halts, which keeps the sample current while it sleeps, since
+the counters stop when the CPU does. It also samples its thermal status, and
+the first CPU samples the whole package's: the temperature, and whether
+anything is holding the clock down right now (heat, a power limit, a current
+limit, or another chip on the board asserting *PROCHOT*). Any program may read
+the samples, the HWP settings, each CPU's core type and its position on its
+core through the `cpu_perf` system call; tools take the differences between
+two reads.
+
+On a processor whose TSC runs at a constant rate, the TSC is also the
+kernel's clock (otherwise the slower HPET timer is), which only works if
+every CPU's TSC reads the same. Firmware can leave them apart (on our laptop
+the other CPUs read most of a second ahead of the first, so the clock jumped
+whenever a task changed CPU), so every CPU clears the register that offsets
+its TSC, and each one that comes up is checked against the first. If one
+still disagrees, the kernel logs it as a `CLOCK:` line and takes its clock
+from the HPET from then on.
+
+## How the scheduler places work
+
+<CorePlacement />
+
+Each CPU learns its core type from the processor (`CPUID` leaf `0x1A`) and
+which core it shares with whom (leaf `0xB`). On a processor whose CPUs differ,
+in type or because some share a core, the scheduler ranks idle CPUs when it
+picks one for a task that wakes up or a new process or thread:
+
+1. a P-core whose other threads are idle;
+2. an E-core;
+3. a CPU whose sibling on the same core is busy.
+
+Within one rank the CPU with the higher top HWP level wins, which is how a
+processor marks its favoured cores, and a waking task stays on the CPU it last
+ran on when that CPU is as good as the best, because its caches still hold
+the task's data. When a CPU with queued work sends an idle CPU to steal some,
+it picks the idle CPU the same way.
+
+A task that is already running is never moved to a better CPU; it moves the
+next time it wakes up. On a processor whose CPUs are all alike and don't share
+cores, which is what QEMU gives you, ranking changes nothing and is skipped.
+`sched.hybrid=off` turns ranking off on any machine.
+
+## What QEMU shows
+
+QEMU's virtual CPUs normally have no HWP, no APERF/MPERF pair and no thermal
+sensors, and SlopOS reads no thermal or platform registers under a hypervisor
+in any case. So under QEMU `cpufreq status` shows the `hypervisor` flag, a
+dash where each speed would be, busy time computed from the scheduler's own
+tick counts instead, and the placement policy `ranked` with nothing to rank.
+The code paths that program real hardware are graded only on the laptop.
+
+## Using `/bin/cpufreq`
+
+| Command | What it does |
+|---|---|
+| `cpufreq` or `cpufreq status` | Samples for a second, then prints the processor, its flags, the current settings, what the firmware left, the package temperature, and a table with each CPU's type, core and thread, HWP levels and request, clock, busy share, temperature and throttling |
+| `cpufreq watch [-i MS] [-n COUNT]` | Prints each CPU's clock and busy share, the package temperature and what limits the clock, every second or every `MS` |
+| `cpufreq run -- CMD [ARGS...]` | Runs `CMD`, then prints on standard error each CPU's busy time and clock over the run, totals per core type, the hottest the package got and what limited it, and one machine-readable `CPUFREQ[run]:` line |
+| `cpufreq set hwp` | Switches HWP on, on a boot that started with `cpufreq=firmware` |
+| `cpufreq set epp NAME\|0-255` | Sets the preference: `performance`, `balance_performance`, `balance_power`, `power`, or a number |
+| `cpufreq set limits MIN MAX` | Narrows the HWP levels the processor may choose between; 0 means the processor's own bound |
+| `cpufreq set placement flat\|ranked` | Turns core ranking off or on |
+| `cpufreq bench [-t MS] [-n RUNS]` | Times one fixed workload pinned to each CPU, on two threads of one core and on two cores, then unpinned to see where the scheduler puts it; ends with a `CPUFREQ[bench]:` line |
+
+Reading is open to everyone. Changing a setting takes the `Power`
+[capability](/docs/architecture/authority), so `cpufreq set` asks the
+[privilege broker](/docs/architecture/privd) to run it as the action
+`org.slopos.cpufreq.set`, which root, an administrator and the
+[paired agent](/docs/self-hosting/remote-control) may do unasked. After a
+change it says when every CPU took it and prints the settings they now run
+under, here after `cpufreq set epp performance`:
+
+```text
+epp 0: applied by 12 CPUs in 3 ms (generation 2)
+policy:     hwp
+epp:        0 (performance)
+limits:     min lowest, max highest
+placement:  ranked
+generation: 2
+```
+
+`cpufreq run` is the one to reach for when you want to know whether a change
+made something faster: it says how busy each kind of core was and at what
+clock, so a slower run caused by a hot laptop shows up as such. It follows
+`turbostat`'s habit of running a command and reporting on standard error, so
+the command's own output is left alone.
+
+Since HWP can't be switched off once on, comparing it with the firmware's
+settings takes a boot under `cpufreq=firmware` and then `cpufreq set hwp`
+within that boot. On a machine whose boot entries are fixed, a kernel built
+with `SLOPOS_BUILTIN_CMDLINE='cpufreq=firmware'` carries the option itself
+(see [Boot options](/docs/abi/boot-options)). The System Monitor graphs each
+CPU's load, names its core type on a hybrid processor and shows the clock the
+processor ran at, and the profiler's report includes each CPU's busy share
+and clock over the span it covers (see
+[Diagnostics](/docs/development/diagnostics)).
+
+## How it is tested
+
+The register layouts, the request SlopOS writes, the command-line options,
+the clock arithmetic and the placement ranking are a separate crate
+(`cpufreq-core`) tested on the host. Kernel tests check that every online CPU
+recorded itself, that a settings change reaches every CPU (idle ones
+included), and that an operation the machine lacks is refused without
+changing anything. A userland test runs `/bin/cpufreq` and the profiler the
+way a person would, on a machine that reports no frequency at all, and checks
+every report is still complete. The hardware half was measured on the
+laptop: with HWP on, with the firmware's settings, and with placement flat
+and ranked.
+
+## For contributors
+
+- **Each CPU touches only its own registers,** at bring-up, at its timer tick
+  and at idle entry. A change is a generation the CPUs converge on, woken by a
+  reschedule interrupt, never a cross-CPU call.
+- **Every register read is gated on CPUID.** Reading an MSR a CPU doesn't
+  enumerate faults. The Intel-only registers are read only on Intel, and the
+  thermal and platform ones only on bare metal, because a hypervisor may
+  advertise a sensor without emulating its registers.
+- **The firmware's state is recorded before the first write,** on the first
+  CPU, and never updated.
+- **HWP's change notifications stay off.** Nothing services them.
+- **Ranking applies only where it can change a choice:** placement reads the
+  scores only once two online CPUs differ in type or share a core, so QEMU's
+  placement is exactly what it was before ranking existed.
+- **Placement never migrates a running task.** It ranks idle CPUs at wake,
+  at fork and when choosing a CPU to steal work.
+
+## Further reading
+
+- [`intel_pstate`](https://docs.kernel.org/admin-guide/pm/intel_pstate.html)
+  in the Linux kernel documentation. Start here. Linux's driver for the same
+  hardware: HWP, the energy-performance preference, and why hybrid processors
+  need HWP. It is the closest design to SlopOS's default.
+- [`turbostat(8)`](https://manpages.debian.org/testing/linux-cpupower/turbostat.8.en.html).
+  The APERF/MPERF arithmetic (its `Busy%` and `Bzy_MHz` columns) and the
+  run-a-command mode that `cpufreq run` mirrors.
+- [*sched/fair: Fix load balancing of SMT siblings with ASYM_PACKING*](https://lwn.net/Articles/865894/)
+  on LWN (2021). The patch series that set Linux's order for Alder Lake:
+  P-cores first, then E-cores, then SMT siblings.
+- [Intel's Software Developer's Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+  Volume 3, *Power and Thermal Management*, defines HWP, APERF and MPERF and
+  the thermal status registers. The reference, not a tutorial.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `sched/src/cpufreq.rs` | Programming and sampling each CPU, settings changes, placement scores |
+| `cpufreq-core/` | Register layouts, the HWP request, options, clock arithmetic and ranking, host-tested |
+| `sched/src/per_cpu.rs` | Choosing a CPU for a waking or new task |
+| `drivers/src/tsc_clock.rs` | Keeping every CPU's TSC in step for the kernel's clock |
+| `userland/src/apps/cpufreq/` | `/bin/cpufreq` |
+| `sched/src/cpufreq_tests.rs`, `userland/src/bin/tests/cpufreq_test.rs` | Kernel and userland tests |
+
+[Scheduling and waiting](/docs/architecture/scheduler-wait-protocol) covers
+the rest of how the scheduler shares CPUs, and the
+[System call ABI](/docs/abi/syscalls) lists `cpu_perf` and `cpu_perf_ctl`.

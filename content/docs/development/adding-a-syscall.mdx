@@ -1,13 +1,14 @@
 ---
 title: "Add a syscall"
-description: "Add a new system call to SlopOS, from its number to the C library function that programs call."
+description: "Add a new system call to SlopOS, from its number to the function programs call and the gates that hold its interface."
 ---
 
 By the end of this page you will have added a system call: given it a number,
 written the kernel code that runs when a program makes it, registered it,
-given programs a C function that makes it, and tested both sides. We'll
-reconstruct a real, small one that landed recently, `rt_sigpending`, so every
-snippet below is code that is in the tree today.
+given programs a way to make it, tested both sides and passed the gates that
+hold the interface. We reconstruct a real, small call, `rt_sigpending`, so
+every snippet is code that is in the tree today. Where a SlopOS-only call
+differs, the page shows another real one, `caps_get`.
 
 A system call is a program asking the kernel to do something on its behalf.
 [System calls](/docs/architecture/syscalls) explains how one travels from a
@@ -23,10 +24,14 @@ program into the kernel and back; this guide only covers what you change.
   [`rt_sigpending(2)`](https://man7.org/linux/man-pages/man2/rt_sigpending.2.html):
   it tells the caller which signals are waiting to be delivered but are
   currently blocked.
+- If Linux has no such call, a reason it needs one in SlopOS. A SlopOS-only
+  (private) call is made only by the base, the read-only userland the system
+  ships (see [Base system](/docs/architecture/base)); programs outside the
+  base reach SlopOS through `libc.so` alone.
 
-A call's number and the layout of anything it passes are permanent once they
-are merged, because compiled programs depend on them. Settle them before you
-write the handler.
+A call's number and the layout of anything it passes are fixed once merged,
+because compiled programs depend on them. Settle them before you write the
+handler.
 
 ## 1. Choose the number
 
@@ -41,16 +46,16 @@ grep -w rt_sigpending scripts/gates/syscall/linux-x86_64.tbl
 127 rt_sigpending
 ```
 
-If Linux has no such call, the call goes in SlopOS's private range instead,
-at the next free slot after `SYSCALL_PRIVATE_BASE`. Don't put a SlopOS
-variant on a Linux number because the real thing is hard: a call SlopOS
-can't match yet stays unimplemented at its Linux number.
+If Linux has no such call, it goes in the private range, at the next free
+`SYSCALL_PRIVATE_BASE + k`. Don't put a SlopOS variant on a Linux number
+because the real thing is hard: a call SlopOS can't match yet stays
+unimplemented at its Linux number.
 
 ## 2. Add the constant
 
 Numbers live in `abi/src/syscall/numbers.rs`, the crate that both the kernel
-and programs build against. Add the constant with a comment that gives its C
-signature and anything that differs from Linux:
+and programs build against. Add the constant with a doc comment that gives
+its signature and anything that differs from Linux:
 
 ```rust
 /// `rt_sigpending(set: *mut SigSet, sigsetsize)` — the caller's blocked
@@ -70,9 +75,25 @@ check_syscall_abi: own allocation, and the private range is contiguous
 ```
 
 A typo in either the name or the number fails here and names both sides:
-`number 127 belongs to Linux syscall rt_sigpending, but … puts … there`. If
-your call is private and its name is also a Linux call's name, the gate asks
-you to explain why in `scripts/gates/syscall/private-allowlist.txt`.
+`number 127 belongs to Linux syscall rt_sigpending, but … puts … there`.
+
+**For a SlopOS-only call**, the constant takes the next private slot, and
+`SYSCALL_PRIVATE_TABLE_SIZE` in the same file grows by one to hold it. Move
+the assert at the bottom of the file that keeps the range from overflowing
+(`... < SYSCALL_PRIVATE_END`) to your constant. The doc comment's backticked
+signature is not optional here: it is part of the base interface (step 6),
+and the gate that digests that interface fails a private call whose doc
+carries no `name(...)` span. This is `caps_get`:
+
+```rust
+/// `caps_get(pid) -> mask`: the capability mask ([`crate::caps`] bits) task
+/// `pid` holds, which any caller may read, as Linux's `capget` reads any
+/// process's sets. `ESRCH` for no such task and for a kernel task.
+pub const SYSCALL_CAPS_GET: u64 = SYSCALL_PRIVATE_BASE + 50;
+```
+
+If its name is also the name of a Linux call, `check_syscall_abi.sh` asks you
+to say why in `scripts/gates/syscall/private-allowlist.txt`.
 
 If the call passes a structure between the program and the kernel, define it
 in the same `abi` crate with `#[repr(C)]` and compile-time checks on its size
@@ -109,17 +130,47 @@ directly; it copies through functions like `copy_to_user`, which return an
 error instead of crashing when the program passed a bad address. The handler
 turns that error into `EFAULT`, which is what Linux returns.
 
-**`cap(...)` says who may make the call.** It is required. `NoneSelf` means
-the call only affects the caller, so any program may make it. Choose the
-narrowest class that is true: `NoneFd` for a call on a file the caller
-already has open, `NoneRelation` when the handler itself checks that the
-caller may act on another process. Anything else (`Power`, `Mount`,
-`SysInspect` and so on) is a permission a program has to be given.
-[Permissions](/docs/architecture/authority) lists them.
+**`cap(...)` says who may make the call.** It is required: a handler without
+it does not compile. The dispatcher compares it with the caller's capability
+mask and answers `EPERM` before the handler runs. Choose the narrowest class
+that is true:
+
+| Class | Use it when |
+|---|---|
+| `NoneSelf` | The call acts only on the caller, or reports what any process may know |
+| `NoneFd` | The call acts on something the caller names by descriptor or path |
+| `NoneRelation` | The handler itself checks the caller's relation to another process |
+| A capability (`Power`, `Mount`, `SysInspect` and so on) | The call is a power a program must be given |
+
+[Capabilities](/docs/architecture/authority) lists the capabilities and who
+holds each. A call that needs a capability for only some of what it does
+keeps a `None*` class and asks inside the handler with
+`ctx.holds(Capability::...)`, as `setuid` does for `SetId`. A call that
+resolves a path passes `ctx.subject()` to the filesystem, so the caller's file
+permissions apply ([Users and file permissions](/docs/architecture/users)).
 
 **Errors are Linux's.** Linux answers a wrong `sigsetsize` with `EINVAL`, so
 SlopOS does too. If your call needs an error number that doesn't exist yet,
 add it to `abi/src/errno.rs` with Linux's value.
+
+`caps_get` is as short. It reads another task, but only what any process may
+know, so it is `NoneSelf`:
+
+```rust
+// A kernel task is `ESRCH`, as `kill` answers.
+define_syscall!(syscall_caps_get (ctx, pid: u64) cap(NoneSelf)
+    -> Result<u64, Errno> {
+    let id = u32::try_from(pid).map_err(|_| Errno::ESRCH)?;
+    if id == 0 || id == INVALID_TASK_ID {
+        return Err(Errno::ESRCH);
+    }
+    let task = slopos_sched::task::task_find_by_id(id).ok_or(Errno::ESRCH)?;
+    if !crate::syscall::signal::signal_may_name(task.flags) {
+        return Err(Errno::ESRCH);
+    }
+    Ok(slopos_ostd::task::ops::task_caps(&task))
+});
+```
 
 If your call takes something (opens a file, maps memory, holds a buffer), it
 must give it back on every error path. If it waits, it must wait through the
@@ -129,9 +180,11 @@ how.
 
 ## 4. Register it
 
-The kernel finds handlers through a table in `core/src/syscall/handlers.rs`.
-Import the handler, then add a row giving the number, the handler and the
-name programs know it by:
+The kernel finds handlers through two tables in
+`core/src/syscall/handlers.rs`, one for Linux numbers (`SYSCALL_TABLE`) and
+one for private ones (`SYSCALL_PRIVATE_TABLE`). Import the handler, then add a
+row to the right table giving the number, the handler and the name programs
+know it by:
 
 ```rust
 [SYSCALL_RT_SIGPENDING]     => syscall_rt_sigpending,     "rt_sigpending";
@@ -139,8 +192,8 @@ name programs know it by:
 
 The same file keeps two counts that you must update by hand: the total number
 of registered calls (`SYSCALL_ENTRY_COUNT`), and how many calls use each
-permission class (`CAP_COUNTS`). Our example adds one call in the `NoneSelf`
-class, so both go up by one.
+class (`CAP_COUNTS`). Our example adds one call in the `NoneSelf` class, so
+both go up by one.
 
 Build the kernel:
 
@@ -154,12 +207,14 @@ messages tell you which:
 - `a capability's entry-point count moved; re-record it in CAP_COUNTS and justify the growth in the commit message`
 - `the classification must cover every registered entry point` (the total is wrong)
 
-The counts are deliberately manual. Adding a call that needs a permission
-widens what privileged programs can do, and the edit to `CAP_COUNTS` puts
-that in front of a reviewer. Say in your commit message why the call needs
-the class you gave it.
+The counts are deliberately manual. Adding a call that needs a capability
+widens what its holders can do, and the edit to `CAP_COUNTS` puts that in
+front of a reviewer. Say in your commit message why the call needs the class
+you gave it.
 
-## 5. Give programs a C function
+## 5. Give programs a way to make it
+
+### A Linux-numbered call: a C function
 
 Programs reach the kernel through slibc, SlopOS's C library, which is also
 what Rust's standard library uses on SlopOS. Four edits:
@@ -201,17 +256,114 @@ what Rust's standard library uses on SlopOS. Four edits:
    ```
 
 4. Tell the header generator which header declares it: add `"sigpending"` to
-   the `signal.h` list in `slibc/build/decls.rs`. The files in
-   `slibc/include/` are generated from that list, so don't edit them by hand.
-   The build fails if a function has no header, or a header names something
-   the library doesn't define.
+   the `functions` list of the `signal.h` entry in `slibc/build/decls.rs`.
+   The files in `slibc/include/` are generated from that table, so don't edit
+   them by hand. That list names functions the `libc` crate declares for
+   SlopOS (the fork in `toolchain/libc/0001-slopos-libc.patch`, which slibc's
+   build reads as its contract), and the build fails if one has no header or
+   a header names one the crate does not declare. A C function the `libc`
+   crate does not declare goes in the header's `extra` list instead, written
+   as a Rust signature; the build checks either kind against what slibc
+   exports.
 
 `just build` rebuilds slibc and the programs, and the new prototype appears
 in `slibc/include/signal.h`.
 
-## 6. Test it
+`libc.so` is the interface programs outside the base link against, so its
+exported symbols and the layout of every structure its headers define only
+ever grow. Check the library you just built against the recorded list:
 
-Test the handler inside the kernel, and the C function from a real program.
+```bash
+scripts/check_libc_exports.sh
+```
+
+A new function is reported until you record it:
+
+```
+check_libc_exports: exports are not recorded yet (run with --record):
+    sigpending: not recorded
+```
+
+```bash
+scripts/check_libc_exports.sh --record
+```
+
+`--record` adds `sigpending func` to `scripts/gates/libc/exports.txt` (and a
+new header structure to `scripts/gates/libc/layouts.txt`); commit that change
+with the function. It only adds lines: it refuses while anything recorded
+was removed or changed, because that breaks programs already built. It needs
+the host clang the C++ runtime build uses (`scripts/cxx_host_tools.sh`) to
+measure the header layouts.
+
+### A SlopOS-only call: a wrapper for base programs
+
+A base program makes a private call through a wrapper in
+`userland/src/syscall/`. This is `caps_get`'s, in `core.rs`:
+
+```rust
+/// The capability mask task `pid` holds.
+pub fn caps_get(pid: u32) -> super::error::SyscallResult<u64> {
+    let raw = unsafe { syscall1(SYSCALL_CAPS_GET, u64::from(pid)) } as i64;
+    if raw < 0 {
+        Err(super::error::SyscallError::from_errno((-raw) as i32))
+    } else {
+        Ok(raw as u64)
+    }
+}
+```
+
+slibc makes a private call only to implement a C function; `getlogin` reads
+`login_tag` that way. The apps outside the base never make one:
+`scripts/check_loose_programs.sh` fails any of them that holds a `syscall`
+instruction, so a function they need goes into `libc.so` as above.
+
+## 6. Take the next base interface number
+
+Skip this step for a Linux-numbered call that changes no SlopOS structure.
+
+A base is built against one interface number and a kernel serves a range of
+them, so a private call's number, signature and structures may not change
+while the number stays. Adding `caps_get` changed that surface, and the gate
+says so, naming the number the tree is at:
+
+```bash
+scripts/check_base_interface.sh
+```
+
+```
+check_base_interface: the private call surface changed under an issued number:
+    interface <n> is recorded as …, but the surface now digests to …
+```
+
+1. Raise `BASE_INTERFACE` in `abi/src/base_interface.rs` by one.
+2. Decide `BASE_INTERFACE_MIN`. It rises only when the change reshapes
+   something an older base calls. An addition like `caps_get` leaves it, and
+   so does a call taken away, whose slot then answers `ENOSYS`.
+3. Record the new number:
+
+   ```bash
+   scripts/check_base_interface.sh --record
+   ```
+
+   This appends `interface <n> <sha256>` to the ledger at the end of
+   `scripts/gates/base-interface.txt`. A recorded row is never rewritten, so
+   a surface that changes again later takes another number.
+
+Run the gate again and it passes:
+
+```
+check_base_interface: OK — <calls> private calls, <lines> surface lines, digest <first 16 hex digits>…
+check_base_interface: matches the ledger's row for BASE_INTERFACE
+```
+
+To see exactly what moved, compare `scripts/check_base_interface.sh --print`
+before and after your change. If your call reads or writes a record behind a
+byte buffer, or takes an op word from a family of constants, add a `root`
+line for it to `scripts/gates/base-interface.txt` so the gate covers it.
+
+## 7. Test it
+
+Test the handler inside the kernel, and the call from a real program.
 
 **In the kernel.** The example's test sits beside the other signal tests in
 `core/src/syscall/tests_build_floor_signal.rs`. It sets up two threads with
@@ -236,13 +388,18 @@ slopos_testing::stest!(
 ```
 
 Cover success, every error the man page lists, and a bad pointer. A test
-that calls the handler function directly skips the permission check, so if
-your call needs a permission, also test it through the dispatcher.
+that calls the handler function directly skips the capability check, so if
+your call needs a capability, also test it through `dispatch_entry` in
+`core/src/syscall/dispatch.rs`, which makes the dispatcher's decision first.
+`caps_get`'s test, `test_caps_get_reads_any_user_task` in
+`core/src/syscall/tests.rs`, reads a plain task, a task holding a capability
+and a kernel task.
 
 **From a program.** `userland/libctest/probe.c` is a C program that checks
-slibc's functions as a C program sees them, and the `libc_abi_test` binary
-runs it. The example added a case that blocks `SIGUSR2`, raises it, and
-expects `sigpending` to report it:
+slibc's functions as a C program sees them; it is built as
+`/bin/libc_probe` against `libc.so` and as `/bin/libc_probe_static` against
+`libc.a`, and the `libc_abi_test` program runs both. The example added a case
+that blocks `SIGUSR2`, raises it, and expects `sigpending` to report it:
 
 ```c
 if (sigprocmask(SIG_BLOCK, &set, &old) != 0 || raise(SIGUSR2) != 0) {
@@ -259,40 +416,51 @@ Run only these tests:
 
 ```bash
 just test 'slopos_core::syscall::tests_build_floor_signal::*'
-just test '*ext2_aaa*,*libc_abi*'
+just test '*libc_abi*'
 ```
 
-The second filter includes `*ext2_aaa*` because the test that sets up the
-test filesystem must run before any test that writes files. When they pass,
-the raw log has a line like this for the kernel test:
+Neither filter needs another test run beside it: the kernel test creates no
+files, and a userland test runs on the booted system, after its disk is
+mounted. To see the kernel test's own result line, run the first filter with
+the runner's `--raw` flag:
+
+```bash
+builddir/run_tests --raw --filter 'slopos_core::syscall::tests_build_floor_signal::*'
+```
 
 ```
-ok 392 - slopos_core::syscall::tests_build_floor_signal::test_sigpending_reports_the_blocked_pending_signals # time_ms=11
+KTAP	ok 47 - slopos_core::syscall::tests_build_floor_signal::test_sigpending_reports_the_blocked_pending_signals # time_ms=11
 ```
 
 [Write tests](/docs/development/adding-tests) covers filters, failures and
 the test harness.
 
-## 7. Check the whole change
+## 8. Check the whole change
 
 Run the full suite and the gates CI will run:
 
 ```bash
+cargo fmt --all
 just test
 just build
 just check-framekernel-gates
 ```
 
-`check-framekernel-gates` includes the number check from step 2 and one more
-that matters for a new call: it reads the compiled kernel and follows every
-function call from every handler. If yours can reach a function that powers
-off or reboots the machine, the gate fails unless the call is in the `Power`
-class or the reachability list in `scripts/gates/authority/` records why. To
-run only that check:
+`check-framekernel-gates` runs the number check from step 2, the base
+interface gate from step 6 and the `libc.so` gate from step 5 (on
+`builddir/libc.so`), and one more that matters for a new call: it reads the
+compiled kernel and follows every function call from every handler. If yours
+can reach a function that powers off or restarts the machine, the gate fails
+unless the call is in the `Power` class or the list in
+`scripts/gates/authority/` records why. To run only that check:
 
 ```bash
 scripts/check_authority_reachability.sh --variant dev builddir/kernel-dev.elf
 ```
+
+The repository's own instructions (`AGENTS.md`, "Pre-commit") list the rest of
+what CI runs, including `scripts/check_libc_exports.sh --require
+builddir/libc.so` after a test build.
 
 Finally, add the call to [System call ABI](/docs/abi/syscalls).
 
@@ -300,6 +468,14 @@ Finally, add the call to [System call ABI](/docs/abi/syscalls).
 
 - **The build fails on `CAP_COUNTS`.** You added a row but didn't update the
   counts, or gave the call a different class than you counted. See step 4.
+- **`check_base_interface` reports a changed surface.** You added or changed
+  a private call, or a structure one reaches, without a new number. See
+  step 6. A private call whose doc comment has no backticked signature fails
+  the same gate with `its docs carry no ... code span`.
+- **`check_libc_exports` reports an export not recorded.** Record it with
+  `--record`. If it reports one removed or changed, a function was renamed or
+  a structure moved, which breaks programs built outside the base; put it
+  back.
 - **A test passes but a program gets `EFAULT`.** The handler read program
   memory without the typed wrappers, or the program passed a structure whose
   layout differs from the one in `abi`.
@@ -309,11 +485,13 @@ Finally, add the call to [System call ABI](/docs/abi/syscalls).
   through the kernel's wait functions. The architecture page on
   [scheduling and waiting](/docs/architecture/scheduler-wait-protocol) shows
   the pattern.
-- **A blocking call returns the wrong error after a signal.** A call with a
-  timeout that it doesn't write back returns `EINTR` when a signal interrupts
-  it, as on Linux.
+- **A call with a timeout starts its whole wait again after a signal.** A
+  call whose timeout it does not write back must return `EINTR`, not
+  `ERESTARTSYS`, when a signal interrupts it, as on Linux. Add its number to
+  `TIMEOUT_BEARING` in `core/src/syscall/dispatch.rs`, where a debug build
+  asserts that.
 
 Read next: [System calls](/docs/architecture/syscalls) for how a call is
-dispatched and why permissions are attached to the table, and Linux's
+dispatched and why capabilities are attached to the table, and Linux's
 [*Adding a new system call*](https://docs.kernel.org/process/adding-syscalls.html),
 which covers the same decisions from the Linux side.

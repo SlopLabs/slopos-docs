@@ -1,4 +1,4 @@
 {
   "title": "Self-hosting",
-  "pages": ["development-machine", "toolchain", "installing-a-system"]
+  "pages": ["development-machine", "toolchain", "updating", "installing", "remote-control"]
 }

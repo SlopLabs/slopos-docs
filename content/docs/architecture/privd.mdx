@@ -1,0 +1,576 @@
+---
+title: "Privileged actions"
+description: "How a program that holds no special power gets a privileged job done by asking privd, which checks who is asking and, where the policy says so, asks the person at the screen first."
+---
+
+import { PrivdRequest } from '@/components/diagrams/privd-request';
+
+Nothing a person starts on SlopOS can, by itself, restart the computer, write a boot
+slot, install an extension or change another account. When a program
+needs one of those jobs done, it asks `privd`, the privilege broker. privd
+runs the job, which it calls an *action*, as a fresh program of its own, after
+checking who asked and, where the policy says so, asking the person at the
+screen. Typing `halt` or `bootctl install …` at a shell works as you would
+expect: the program notices that it lacks the power and sends privd the
+request itself.
+
+You can rely on four things:
+
+- **The list of actions is fixed.** The base's is a file in the base, which no
+  running program can change, and an extension adds actions of its own only
+  once the computer's owner has installed it. privd runs only the programs
+  they name, with only the arguments they allow.
+- **privd decides from what the kernel says about the requester**, never from
+  anything the requester claims about itself.
+- **The job runs fresh.** The program privd starts (the action's *mechanism*)
+  holds exactly the action's capabilities and inherits nothing of the caller's
+  but the descriptors it sent.
+- **Only the person answers.** On a desktop, a question appears in a dialog
+  the compositor draws, and no program can type into it, click it or read
+  what is typed there. At a console login, where there is no dialog, only
+  the person's own password answers.
+
+This page walks through the policy, one request from start to finish, how
+privd identifies the requester, who may ask for what, the dialog, `priv` and
+what happens while the system updates itself. The exact list of actions is on
+[privd actions](/docs/abi/privd-actions).
+
+## Where it comes from
+
+The shape is polkit's. In [polkit](https://polkit.pages.freedesktop.org/polkit/polkit.8.html),
+privileged programs it calls *mechanisms* serve unprivileged ones for named
+actions, and an *authentication agent* in the person's session asks them to
+prove who they are. Its results `yes`, `auth_self` and `auth_admin`
+correspond to SlopOS's levels: a line with no level runs unasked, `password`
+has the person prove it is them, and an administrator's password answers for
+a person no line lets in. polkit's `_keep` variants, which remember an answer
+for a short while, correspond to an action's `keep` setting.
+The split between a click for an administrator and an administrator's password
+for anyone else is how Windows'
+[User Account Control](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works)
+asks: a consent prompt for an administrator, a credential prompt for a
+standard user, both on a desktop ordinary programs cannot reach. `priv`
+follows [run0](https://www.freedesktop.org/software/systemd/man/latest/run0.html),
+which runs a command from a fresh service with nothing inherited from the
+caller, on a terminal of its own.
+
+Two things are SlopOS's own. privd judges the requester's *program* as well
+as its user, because the kernel attests which program a process runs. And
+every error on the way is a refusal: polkit once treated a requester that
+vanished in the middle of a check as root
+([CVE-2021-3560](https://github.blog/security/vulnerability-research/privilege-escalation-polkit-root-on-linux-with-bug/)),
+and privd has no path on which a failed lookup lets a request through.
+
+## Why a broker is needed
+
+On SlopOS a process holds a power only if its capability mask holds it, and
+`exec` drops every capability but the universal ones (see
+[Capabilities](/docs/architecture/authority)). Init holds all of them and
+hands each service what it needs; the shell, the terminal and every program a
+person starts hold only the universal ones. That is the point, but it leaves a question: how does
+the person at the keyboard restart the computer?
+
+Making the shell powerful would make everything the shell starts powerful. A
+setuid-style rule (this program always runs with that power) lets anyone who
+can start the program use the power, with whatever environment, arguments and
+open files they choose. What is needed is something that already holds the
+powers, decides one request at a time against a fixed policy, knows for
+certain who is asking, and can ask the person when a request is not routine.
+That is privd. Init starts it at boot as uid 0, holding every capability an
+action may name plus `SetId` (to start a mechanism as another user), and
+starts it again if it exits. It listens on `/run/privd`, which anyone may
+connect to; the policy decides what they get.
+
+## Actions and the policy
+
+Each action names one program in the base, the argument shapes it accepts, the
+capabilities it runs with, whom it runs as, who may ask and what the dialog
+says. This is the action behind `bootctl install`:
+
+```text
+action org.slopos.boot.install
+  program  /bin/bootctl
+  args     install *
+  caps     RawBlock Power
+  uid      0
+  cwd
+  exclusive boot-slots
+  allow    root
+  allow    admin confirm
+  allow    paired
+  describe "install a new kernel beside the one that starts by default"
+  detail   "The kernel that starts by default stays, so you can go back to it."
+  verb     "Install"
+```
+
+`args install *` means the first argument must be `install` and anything may
+follow. `cwd` means the mechanism runs in the requester's directory, so a
+relative path such as `kernel.elf` names the file the person meant.
+`exclusive boot-slots` lets one mechanism of that group run at a time, so two
+writers never touch the boot partition at once: a request that comes while one
+runs is refused, not queued. The `allow` lines say who may
+ask: uid 0 running a base program, an administrator who confirms, and the
+paired agent of [Remote control](/docs/self-hosting/remote-control).
+
+The policy lives at `/usr/share/slopos/privd/actions`, inside the sealed base,
+so no process can edit it. privd reads it when it starts, and a new base that
+changes it starts a new privd
+([below](#when-a-new-base-replaces-privd)). An enabled extension may add actions of its own, named
+`ext.<extension>.<action>`. Their mechanisms are programs of the extension's
+image and run as the extension's first user, never as uid 0, holding no more
+than the extension was granted; they never allow `root`, and the dialog says
+which extension's action it is (see [Extensions](/docs/architecture/extensions)).
+
+## A request from start to finish
+
+Say the first person, who administers the computer, types this in a terminal
+on their desktop:
+
+```sh
+bootctl install b kernel.elf
+```
+
+<PrivdRequest />
+
+`bootctl` parses its arguments and finds that `install` belongs to
+`org.slopos.boot.install`, whose capabilities it does not hold. So instead of
+failing, it connects to `/run/privd` and sends the action's name, its
+arguments, descriptors for its input and output and its working directory.
+privd matches the arguments against `install *`, finds the requester's uid in
+the accounts record as an administrator, and reaches the line `allow admin
+confirm`. The person's desktop is in front and unlocked, so privd asks the
+compositor to show the question, and the terminal prints:
+
+```text
+bootctl: waiting for you to allow this on the screen
+```
+
+The person clicks **Install**. privd checks once more that the requester is
+still running `bootctl` and that the people still allow the request, claims
+the `boot-slots` group, and starts `/bin/bootctl install b kernel.elf` as uid
+0 holding `RawBlock` and `Power`, in the person's directory. What it prints
+reaches the terminal, and the `bootctl` the person started exits with the
+mechanism's status. Had the person pressed Cancel, it would have printed
+`bootctl: You didn't allow this.` and exited with status 126.
+
+## How privd knows who is asking
+
+A process id is a poor name for a requester. On Linux its number can be
+handed to another process between the check and the action; SlopOS never
+reuses one, but the process can still `exec` another program under the same
+id. A uid is too coarse: everything a person runs has the same one. So the
+kernel records who connected when a Unix-domain socket connects, and privd
+reads that record rather than looking the requester up later.
+
+The record is the connecting process's id, its effective uid and gid, and the
+*program* it runs. privd reads it through three socket options:
+
+- `SO_PEERCRED` gives the pid, uid and gid as they were at `connect`, as on
+  Linux. Changing ids later, running another program or passing the
+  descriptor to another process does not change them.
+- `SO_PEERPIDFD` gives a process handle (a *pidfd*) for that same process. Task
+  ids are never reused on SlopOS, so the handle cannot come to name a
+  stranger, and it turns readable when the process's first thread exits,
+  normally when the process does.
+- `SO_PEERPROGRAM` (at the SlopOS-only level `SOL_SLOPOS`) gives the program,
+  and `SO_PEEREXTENSION` the extension it belongs to, if any. These answer
+  only while the process still runs the program it ran at `connect`.
+
+The kernel attests a program when `exec` or `spawn` loads it: a base program
+when the file, every script of its `#!` chain and its ELF interpreter all come
+from the base, and an extension's program when the file comes from one
+extension's image and everything else from the base or that image. Anything
+else is *other*, and so is a program `exec`'d while another thread of the
+process was running, since that thread could change the new image before it
+starts. A process stops counting as that program the moment it could
+run code the attestation does not cover: when it maps code from anywhere else
+executable, makes memory executable with `mprotect`, `exec`s or exits. The
+socket's record then never answers for it again, so privd reads the program
+once more before it judges, before it asks and before it starts the
+mechanism, and refuses a requester whose program no longer stands:
+
+```text
+bootctl: Nothing ran, because the app that asked changed after it asked.
+```
+
+Because a program from the base can be trusted to be what it says, a policy
+may name one: `allow program /bin/compositor` means "any process running the
+base's compositor". The program must be statically linked, since the dynamic
+loader could map a library from outside the base into it: privd refuses the
+base's whole policy if one of its lines names a program that is not, and
+leaves out an extension's action whose line names one. An extension's action
+may name one of the extension's own programs the same way; that line matches
+only a process
+running that file of the extension's activation, whose label names the
+extension and the image its record installed.
+
+## Who may ask, and what they must do
+
+Each `allow` line names a *principal* and, for a person, a *level*:
+
+| Principal | Who |
+|---|---|
+| `root` | uid 0 running a base program. uid 0 alone is no principal. |
+| `user` | Any person the accounts record names, running any program. |
+| `admin` | A person the record names an administrator. |
+| `greeter` | The login screen's own user, running a base program. |
+| `paired` | `remoted`, the paired agent, on a base that carries a pairing. Although `remoted` runs as a person, it matches no other principal. |
+| `program <path>` | Whoever runs that base program. |
+
+| Level | What it takes |
+|---|---|
+| none | Nothing: the request runs unasked. |
+| `confirm` | The person who asked agrees: a click at their own desktop, their password anywhere else. |
+| `password` | The person who asked types their own password (at their own desktop, a person without one clicks). |
+| `alone` | For `user`: nothing while nobody else is logged in, or for an administrator; otherwise an administrator's password. For the login screen's `greeter alone`: nothing while nobody is logged in; otherwise refused. |
+
+privd tries the lines in order and the first that matches decides. When a
+standard user asks for an action that allows `admin` but not `user`, no line
+matches them, but an administrator may still answer: the dialog lists the
+administrators who have a password, and one of them types their own. A
+standard user who wants to restart the computer while someone else is logged
+in meets the same question, through `user alone`. If no administrator has a
+password, the request is refused with
+`This needs an administrator's password, and no administrator has one.`
+
+On a computer whose only person is an administrator without a password (the
+developer images, and an install made from the installer's window), every
+action an administrator may run either runs unasked at their desktop or takes
+one click. The levels matter once there are several people. The full rules, including
+what happens with no password, are on
+[privd actions](/docs/abi/privd-actions#how-a-request-is-judged).
+
+## Where the person is asked
+
+privd asks only the session the requester belongs to, identified by the login
+tag its process carries (see [Sessions and login](/docs/architecture/sessions)):
+
+- **Their desktop, while it is in front and unlocked.** The question appears
+  there. A click answers for the person whose desktop it is; anyone else
+  types a password.
+- **Their own text-console session.** There is no dialog, so privd asks the
+  requester to prompt at its terminal, which turns echo off and sends back
+  what is typed. Whatever the level, the answer is the person's password, and
+  an administrator's password is never typed there, since the requester's own
+  processes could read that terminal:
+
+  ```text
+  bootctl wants to install a new kernel beside the one that starts by default.
+  Password for alice:
+  ```
+
+  So a person without a password can allow nothing from a console login,
+  not even a `confirm` action: a first person who has none gets
+  `This needs your password, and you haven't set one.` from
+  `bootctl install` there, and from `users passwd` too. Actions that run
+  unasked still run. Running `users passwd` in a terminal on the desktop,
+  where a click answers, sets one.
+
+- **Nowhere else.** A request from a desktop behind another, or from a locked
+  one, or from a process in no session is refused with
+  `This needs your permission. Unlock your desktop or use a terminal, then try again.`
+  A desktop that goes behind or locks while its question is up has the
+  question refused.
+
+With no compositor running, as on a test boot before a session starts, an
+action that needs a question is refused, and one that runs unasked still runs.
+
+## What the dialog shows
+
+The compositor draws the question over everything, one at a time. It reads
+*App* wants to *describe*., where *describe* is the action's line from the
+policy and *App* names the requester from what no process can write:
+
+- a base program with an app entry in the base is named by it, so the System
+  Monitor asks as *System Monitor*, with its icon;
+- any other base program by its file name, such as *bootctl*;
+- an extension's program by its extension, as *The hello extension* for one
+  named `hello`, with no icon, so nothing an extension ships can pass for
+  another app;
+- anything else, a program from `/usr/local` or a home directory included, as
+  *An unidentified app*.
+
+Under it come the action's detail sentence, the list of administrators when
+one of several must answer, the password field when one is needed, and the
+details (shown at first, and hidden by *Show less*): who
+asked, as the kernel attested them (program, person and pid), the whole
+command line privd will run and the directory it runs in. Nothing in the
+question but the arguments and the directory came from the requester, and
+those are shown whole, with any byte outside printable ASCII escaped; privd
+refuses to ask about a command line or directory longer than 320 bytes rather
+than show part of one. [Desktop](/docs/architecture/desktop) shows what the
+dialog looks like.
+
+The dialog is built so that nothing but a deliberate answer allows a request:
+
+- Focus starts on Cancel, or on the password field, so a stray Enter refuses
+  or does nothing. The allowing button takes a click, or Tab or Right and
+  then Enter. In a destructive action's password field, Enter moves to the
+  button rather than pressing it.
+- Input is ignored for 750 ms after the dialog appears, after focus moves,
+  after the details are shown or hidden and after the screen changes size,
+  since a key or click in that window was meant for what was there before. A
+  click counts only if the press itself came after that.
+- While a question is up, no key, press or pointer motion reaches any app.
+  When a password question is taken off the screen before it is answered (it
+  expired, or its request was withdrawn), keys keep going nowhere until 1.5
+  seconds pass without one, so the rest of a password being typed never lands
+  in a window.
+- A question unanswered for 120 seconds is refused. Refusing one also refuses
+  everything else that person's uid has waiting, and anything it asks in the
+  next five seconds, so a refusal is not answered by another question.
+- At most eight questions wait, four of them one uid's.
+
+The channel between privd and the compositor is a pair of sockets init makes
+at boot, four of them, one for each desktop or login screen that may run at
+once, and each end checks that init made it. No other process can open it, so a question can only come from privd and
+an answer only from the compositor.
+
+## Passwords
+
+privd never reads a password hash itself. It hands the person's name and what
+was typed to `/sbin/authcheck` on a pipe, never on a command line, and reads
+the verdict from its exit status; checks run one at a time. Each wrong
+password makes that person's next check wait, two seconds after the first and
+doubling with each one after, up to a minute, until they type the right one
+or privd starts again.
+[Users and file permissions](/docs/architecture/users) covers the accounts
+record and the hashes.
+
+## Kept answers
+
+An action with `keep <seconds>` remembers an answer: the same request again
+within that time runs unasked. The only such action in the base is
+`org.slopos.priv`, with five minutes. "The same request" is narrow: same uid,
+same session, started by the same live process (so an answer given to a
+command one shell started covers the next commands that shell starts, and
+nothing else in the session), same action, same command line and same
+directory. An answer an
+administrator's password gave stands only while that administrator could
+still give it. sudo, by comparison, keeps an answer per terminal by default,
+and polkit per action and requester whatever the other details.
+
+## How a mechanism runs
+
+privd starts the mechanism as a new process of its own, not as a child of the
+requester:
+
+- It holds the action's capabilities and runs as uid 0, as the requester for
+  an action that says `uid requester`, or as the extension's first user for
+  an extension's action.
+- Its environment is `PATH=/bin:/sbin` (with `/opt/<name>/bin` after them for
+  an extension's action), `LANG=C.UTF-8`, `PRIV_ACTION` (the action's name)
+  and `PRIV_UID` (the requester's uid), and nothing else.
+- It runs in `/`, or for a `cwd` action in the requester's directory, which
+  privd checks still has the path it had when the question was asked.
+- Its standard input, output and error are the descriptors the requester
+  sent. A terminal never crosses over, since the mechanism runs outside the
+  requester's terminal session, where the terminal would refuse it: the
+  requester relays output meant for a terminal through pipes, and gives a
+  mechanism that reads from a terminal (the installer, `users`, `priv`, the
+  rescue shell) a terminal of its own, relayed byte for byte.
+
+A mechanism checks `PRIV_ACTION` when it starts and acts only for that
+action. The requester relays `SIGHUP`, `SIGINT`, `SIGQUIT` and `SIGTERM` to it,
+so Ctrl+C at the terminal reaches it. A signal before the mechanism has
+started withdraws the request instead, and a second signal makes the
+requester stop waiting. A mechanism whose requester goes away is not stopped
+for that: it runs to its end.
+
+The requester exits with the mechanism's status, with 126 when the person
+refused, did not answer or typed a wrong password, as `pkexec` does, and with
+127 when privd refused
+for any other reason. It prints privd's reason, a sentence meant for the
+person, after its own name; privd writes the detail a developer needs to its
+own log.
+
+## Running a command with `priv`
+
+`priv` is the way to run an ordinary command with power over the computer's
+settings, as `sudo` or `run0` would, but without becoming uid 0:
+
+```sh
+priv mount -r LABEL=photos /media
+priv -s
+```
+
+`priv <command>` asks for `org.slopos.priv` and `priv -s` for a shell,
+`org.slopos.priv.shell`. Both allow uid 0 and an administrator who confirms,
+and both run *as the requester*: privd starts `/bin/priv` again as the person
+who asked, in their own groups and session, on a terminal of its own when
+started from one, holding the requester ceiling: `Mount`, `NetAdmin`,
+`ConsoleConfig`, `SysInspect`, `Clock` and `DacOverride`. That copy runs the command holding the same, with
+an environment of its own (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
+`LANG`, `SLOPOS_PRIV` and, on a terminal, `TERM`), and exits as it exits. A
+shell started this way names the power in its banner and starts its prompt
+with `priv`, and hands the power on to every program it runs.
+
+The ceiling is stated once in the source (`REQUESTER_CEILING`), and the policy
+parser refuses any `uid requester` action that asks for more. It leaves out
+everything that writes a raw disk, the base, an extension, a sealed file, the
+firmware's or the boot loader's variables or another identity. So the boot
+partition, the base, extensions and the user database refuse what `priv`
+runs, and `bootctl` or `halt` run under `priv` still ask privd, as the person.
+
+`priv` runs only a program nobody but uid 0 could have put or changed: one in
+a directory of the default search path that only uid 0 can write, as is every
+directory above it, reached through links that each sit in such a directory,
+and so is the interpreter a script names. `/usr/local/bin` counts only on a
+boot that began with `/usr/local` belonging to uid 0 (see
+[Installed software](/docs/architecture/software)). `priv` refuses to run
+itself. `priv shell` with nothing after it is `priv -s`, and a shell given
+arguments must be given a command string or a script, not told to read its
+input. The command line privd shows and keeps an answer for is the path
+`priv` found, so `priv mount …` appears as `/bin/priv /bin/mount …`. The
+first form keeps its answer for five minutes; `priv -s` asks every time, since
+a shell runs whatever it is given.
+
+Some of what `priv` gives is not narrow. `DacOverride` passes every file
+permission check, so an administrator who allows a standard user's `priv`
+lets them read every person's files and `/etc/shadow`'s hashes. What it
+creates belongs to the person, even in a directory of uid 0's, and the base
+has no `chown` command to hand it to uid 0 afterwards. And like run0's
+`--empower`, which runs a command
+as the caller with added power, the command runs as the person: their other
+processes cannot signal it, since it holds capabilities they lack, but they
+can still rename the directory it runs in, and a kept answer repeats a
+command with whatever input the person's shell gives it.
+
+## Ending another person's task
+
+The kernel lets a person signal only their own processes, and only those that
+hold nothing they lack. To end a task of someone else's,
+`/bin/endtask PID NAME USER` runs as `org.slopos.task.end` (uid 0, or an
+administrator who confirms) holding `ProcSignal`, which waives the kernel's
+rule. It keeps the half of the rule that protects the system: it ends only a
+task in a person's session, running as a person, holding no more than every
+program holds, and still running under the name and user the person was shown.
+Everything the system runs (init, privd, the compositors, mechanisms,
+`remoted`, extensions' services) is refused. A task's capabilities only
+shrink, its login tag never changes and its id is never reused, so what
+`endtask` checked is what its `SIGKILL` reaches.
+
+The System Monitor uses it. When you end a task the kernel refuses to let you
+end, it asks privd only if `endtask` would allow it, and otherwise says why
+not: the task belongs to the system, or holds powers.
+
+## When a new base replaces privd
+
+A new base can change privd's program, its policy or the pairing. When it
+does, init sends privd `SIGTERM`, and privd *drains*: it stops listening,
+refuses every request it reads from then on with
+`The system is being updated. Try again in a moment.`, refuses any request
+still waiting for the person's answer, and exits once every request it took
+has finished, so a mechanism in the middle of writing a boot slot is never
+cut off. Init starts the new base's privd when the old one exits, or beside
+it after five seconds. The new privd refuses requests for `exclusive` actions
+while a mechanism its predecessor started still runs, since it cannot know
+which groups that one holds. A requester that finds nothing listening on
+`/run/privd` waits up to two seconds for a privd that init is starting again,
+and programs whose requests may span a base switch (the paired agent's
+commands, and the tests that run the self-hosting script) wait up to a
+minute. A request privd refused while draining is not sent again.
+
+When the extensions change, init sends privd `SIGHUP`, and privd reads their
+actions again and forgets every kept answer.
+
+## Asking through someone else's connection
+
+A connection speaks as whoever made it, for as long as that process runs the
+program it ran then. So a process can make a connection and hand it to a
+program it starts, which then asks as the maker: the program finds it through
+the `PRIVD_FD` variable, and uses it only if the other end is uid 0 running
+the base's `/sbin/privd`. The paired agent works this way: `remoted` hands
+each program it runs that the base's policy names as a mechanism, and the
+shell, a connection it made, so their requests are judged as `paired`. The
+shell passes such a connection only to a mechanism its own process starts,
+never from a subshell or a pipeline, and to one at a time, and a mechanism
+keeps it from everything it starts, so no code from outside the base asks as
+the paired agent. That is also why an extension's action that allows `paired`
+is never reached in practice: the base's mechanisms ask only for the base's
+actions, and no program of an extension is handed the connection.
+
+## What it means in practice
+
+- **At a shell, run the command.** `halt`, `bootctl`, `extctl`, `users`,
+  `cpufreq set`, `ip`, `keymap`, `kconsole`, `prof`, `tree-install` and
+  `installer` ask privd by themselves when they need to.
+- **For anything else that needs power, use `priv`.** It runs a command from
+  `/bin`, `/sbin` or another directory of the default search path that only
+  uid 0 can change.
+- **Read the reason.** A refusal is a sentence on standard error; the status
+  is 126 if the person did not allow it and 127 otherwise. privd's own log says what it
+  saw.
+- **A new privileged job is a new action.** Add it to `assets/privd/actions`
+  with the narrowest argument shapes and capabilities that work, and have the
+  program call `slopos_userland::privd::elevate` with the action's name before
+  it does the privileged part. An extension declares its own actions instead.
+
+## How it is tested
+
+`privd_test` drives privd end to end between real processes: who may ask for
+what, argument shapes, descriptors and directories, connection limits,
+requesters that exit or change program, the rescue action existing only on
+the install medium, `alone`, an administrator answering for a standard user,
+and ending another user's task. It answers the dialog as a person would,
+through `test_key`, a system call that types into the compositor and exists
+only on a test boot. `priv_test` covers `priv`: the ceiling, kept answers, a
+shell that is asked every time, and what the ceiling leaves out.
+`extension_action_test` covers extensions' actions, and `peer_test` the
+kernel's peer options. On the host, `priv-core`'s tests check the policy
+parser and the decision rules, the dialog's arming and focus, the question
+queue and the wire formats, with mutation loops over the codecs.
+
+## For contributors
+
+- **Every failure refuses.** A lookup that fails, a frame that does not parse,
+  a requester that has gone: each ends in a refusal, never in a default.
+- **Read identity from the socket, as late as possible.** The program is read
+  again before the verdict, after the question and before the start. Do not
+  look a requester up by pid or path.
+- **The mechanism inherits nothing.** Its environment, directory and
+  descriptors are listed above; adding to them is a change to review.
+- **The words are checked.** `describe`, `detail` and `verb` are held to
+  `priv-core/src/words.rs` as the policy parses: no capability names, none of
+  the policy's own terms, no flags. The consent channel has a version
+  (`consent::VERSION`); a change to what a question may carry needs a new one,
+  and privd asks a compositor of another version nothing.
+- **The requester ceiling and the delegable set are stated once,** in
+  `priv-core/src/lib.rs`. Widening either is a security decision.
+
+## Further reading
+
+- [Trusted path](https://en.wikipedia.org/wiki/Trusted_path) (Wikipedia). A
+  short definition of why the screen that asks for a password must belong to
+  the system.
+- [How User Account Control works](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works)
+  (Microsoft). Consent prompts, credential prompts and the secure desktop:
+  the nearest model for SlopOS's dialog.
+- [Privilege escalation with polkit](https://github.blog/security/vulnerability-research/privilege-escalation-polkit-root-on-linux-with-bug/)
+  (GitHub Blog). A readable account of a broker that failed open, and why
+  every error path here refuses.
+- [polkit(8)](https://polkit.pages.freedesktop.org/polkit/polkit.8.html) and
+  [run0(1)](https://www.freedesktop.org/software/systemd/man/latest/run0.html).
+  The authorization levels and the fresh-service model privd and `priv` adapt.
+- [unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html) and
+  [pidfd_open(2)](https://man7.org/linux/man-pages/man2/pidfd_open.2.html).
+  Linux's `SO_PEERCRED` and process handles, which SlopOS's peer options
+  extend.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `assets/privd/actions` | The base's policy |
+| `priv-core/src/policy.rs` | The policy's grammar and the decision rules |
+| `priv-core/src/consent.rs`, `priv-core/src/consent/` | The consent channel, the dialog's model and the question queue |
+| `priv-core/src/words.rs` | The rules for the words, and most of the refusals privd sends |
+| `userland/src/apps/privd/` | privd |
+| `userland/src/privd.rs` | The requester's side: `elevate`, the relays, exit statuses |
+| `userland/src/apps/compositor/consent.rs` | The dialog on screen |
+| `userland/src/apps/priv.rs`, `userland/src/held.rs` | `priv`, and running a program with a whole mask |
+| `userland/src/apps/endtask.rs` | Ending another person's task |
+| `slopos-ostd/src/process/identity.rs` | What the kernel records about a peer |
+
+Every action, the policy's grammar and every refusal are listed on
+[privd actions](/docs/abi/privd-actions).

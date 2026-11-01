@@ -125,8 +125,10 @@ to the memory allocator, and the allocator may need to tell every other CPU
 to forget cached addresses and wait for them all to answer. The last
 reference is often given back somewhere that work can't be done:
 
-- **With interrupts switched off.** The other CPUs answer with interrupts, so
-  a CPU that waits for them with interrupts off waits forever.
+- **With interrupts switched off.** The other CPUs are asked and answer by
+  interrupt, so a CPU waiting with its own interrupts off can't answer a
+  request another CPU sends it meanwhile, and two CPUs doing that at once
+  wait for each other forever.
 - **While holding a lock.** If another CPU needs the same lock before it can
   answer, each waits for the other forever (a *deadlock*).
 - **On the dying task's own stack**, as above.
@@ -141,8 +143,10 @@ spot. Otherwise it goes on a list of dead tasks, which SlopOS calls the
 *graveyard*, and the CPU frees everything on that list at its next safe
 moment: when it releases its last lock, returns from a system call, or goes
 idle. Whether the moment is safe depends only on what the CPU is doing, never
-on the count. Linux's real-time configuration defers the last release of a
-task in the same way.
+on the count. Linux defers the last release of a task too
+(`put_task_struct`): its real-time configuration began postponing the free
+when the release came where the free couldn't run, and current kernels
+always postpone it.
 
 ## How Rust's ownership rules help
 
@@ -168,7 +172,7 @@ check:
   *witness*) that can be created only in those situations and can't be
   passed to another CPU.
 
-## How we know it works
+## How it is tested
 
 The logic is proved with Verus, a tool that checks a mathematical proof
 against a model of the code. The proof covers seven properties, among them
@@ -212,8 +216,9 @@ container's release can be final, which is why those releases may be a bare
 decrement under a lock with interrupts off.
 
 **A container owns what it links.** The ready queue, the remote-wake inbox,
-the deferred previous-task slot and the wait maps each hold a member by an
-intrusive link plus one strong reference parked as a raw pointer, and the
+the futex wait table and the deferred previous-task slot each hold a member
+by an intrusive link (or the slot itself) plus one strong reference parked as
+a raw pointer, and the
 placement state machine (`slopos-ostd/src/task/placement.rs`) is the only way
 in or out:
 

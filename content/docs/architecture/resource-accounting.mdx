@@ -3,20 +3,26 @@ title: "Resource limits"
 description: "What the kernel limits for each program, why it refuses memory up front, and what happens when memory runs out anyway."
 ---
 
-SlopOS stops any one program from taking the whole machine. Each program has
-a budget for memory, open files, threads, child processes, disk space and
-some kinds of kernel memory. A call that would go over budget fails with the
-error it already uses when that resource runs out (`ENOMEM`, `EMFILE`,
-`EAGAIN`, `ENOSPC`), so programs written for Linux need no changes. Memory is
-handled more strictly than on Linux: SlopOS refuses memory when a program asks
-for it, so a program that runs out almost always gets an error it can handle
-and is not killed. The main exception is `fork`, and when a forked child does
-run the machine out of memory, the kernel ends one process, chosen by a rule
-described below.
+SlopOS keeps any one program from filling the tables every program shares.
+Each program has a budget for open files, threads, child processes, address
+space, disk space and some kinds of kernel memory, and everything a person
+runs shares one ceiling on processes and threads, so one person's runaway
+program can't stop anyone else from starting programs. A call that would go
+over budget fails with the error it already uses when that resource runs out
+(`ENOMEM`, `EMFILE`, `ENFILE`, `EAGAIN`, `ENOSPC`), so programs written for
+Linux need no changes. RAM is not divided up between programs or people: it
+has one ceiling for the whole machine, and one program can use as much of it
+as its address-space budget covers. But it is handled
+more strictly than on Linux: SlopOS refuses memory when a program asks for it,
+so a program that runs out almost always gets an error it can handle and is
+not killed. The main exception is `fork`, and when a forked child (or the
+kernel's own use of RAM) does run the machine out of memory, the kernel ends
+one process, chosen by a rule described below.
 
-The per-process budgets are Unix resource limits, read with `getrlimit` as on
-Linux. Refusing memory at the time it is promised is what Linux calls *strict
-overcommit accounting*, an option there and the default here.
+The budgets for open files, processes, address space and pinned memory are
+Unix resource limits, read with `getrlimit` as on Linux. Refusing memory at
+the time it is promised is what Linux calls *strict overcommit accounting*,
+an option there and the default here.
 
 ## What is limited
 
@@ -24,25 +30,66 @@ overcommit accounting*, an option there and the default here.
 |---|---|---|
 | Open files | Descriptors in the program's table | `EMFILE` |
 | Kernel objects | Pipes, sockets and other kernel objects the program created | `ENFILE` |
+| Descriptors in flight | Descriptors the program sent over a Unix socket that nobody has received yet | `ENFILE` |
 | Threads | Threads in the program | `EAGAIN` |
-| Processes | Processes started by the program and all their descendants | `EAGAIN` |
+| Processes | Processes the program forks, their own forks, and so on down | `EAGAIN` |
 | Address space | Memory the program has mapped or reserved | `ENOMEM` |
 | Pinned memory | Memory that must stay in RAM, such as buffers registered for direct I/O and mapped files | `ENOMEM` |
-| Kernel memory | Kernel memory used on the program's behalf: thread stacks, page tables | `ENOMEM` |
+| Kernel memory | The kernel stacks of the program's threads (page tables and the kernel heap are charged to the system as a whole) | `ENOMEM` |
 | Disk blocks | Blocks the program has allocated on a mounted disk | `ENOSPC` |
 
 The process limit counts grandchildren too. If it counted only direct
 children, each child of a fork bomb would start its own children against a
-fresh budget.
+fresh budget. A program started with spawn begins a budget of its own instead,
+but it still counts against its person's share, described next.
 
 The disk limit applies to blocks a program allocates while it runs. A file it
 wrote stays on disk after it exits and is charged to nobody, so this is not a
-disk quota.
+disk quota. A program holding the capability to write raw disks, or the one
+to install extensions, has no disk limit at all: the installer fills a whole
+root in one process, and an extension's installer stores whole images
+([Capabilities](/docs/architecture/authority)).
+
+The pinned-memory limit is set at boot to an eighth of the machine's usable
+RAM, and at least 16 MiB. That is the share of the file-mapping cache one
+program may hold, and it is that large because a compiler's shared libraries
+already go past a smaller fixed default before it starts, and a linker maps
+every input at once.
 
 The kernel also counts each process's *resident* memory (the RAM it holds
 now) and *committed* memory (the private memory the kernel has promised to
 back) without capping them per process. Committed memory has a ceiling for
-the whole machine, described next.
+the whole machine, [described below](#why-slopos-refuses-memory-up-front).
+
+## Each person's share
+
+On a machine several people use, a per-program budget isn't enough: one
+person running many programs, or a program that spawns rather than forks, can
+still fill the process and thread tables everyone shares. So the kernel keeps
+an account for each person (each uid in the people's range, 1000 to 59999; see
+[Users and file permissions](/docs/architecture/users)). Every process started
+to run as that person is counted against it, and so is everything those
+processes fork, each new thread included. The account allows a quarter of the
+machine's processes and a quarter of its threads, for all of that person's
+programs together. When one person's programs reach it, their next `fork`,
+spawn or thread fails with `EAGAIN`, while the other three quarters stay free
+for everyone else and for the system.
+
+A zombie keeps its thread charged to its person until its parent reaps it,
+rather than to the parent's own budget, so a person who leaves thousands of
+children unreaped spends only their own share. Ending their session signals
+every process that carries its login tag and gives back what they held,
+though a program that forks faster than init can signal may outlive it
+([Init and services](/docs/architecture/init#ending-a-session)).
+The accounts are made as each person first runs something, for the first
+sixteen people in a boot; anyone after that shares the system's account.
+Memory isn't divided this way: it stays the machine's, under the one commit
+ceiling below.
+
+Linux reaches for the same goal with `RLIMIT_NPROC`, which it counts for each
+real user id rather than for each process tree. SlopOS keeps both: the
+per-program limit that `getrlimit` reports, counted over the program's forks,
+and the per-person share above it, which no program can raise or lower.
 
 ## Why SlopOS refuses memory up front
 
@@ -56,11 +103,11 @@ memory than the machine has, no call is left to fail, so Linux kills a
 process, which may not be the one that asked for too much.
 
 SlopOS keeps a running total of the private memory it has promised. Each
-request (by `mmap`, `brk`, `exec`, or an `mprotect` that makes a reserved
-range usable) is added to it and refused with `ENOMEM` if the total would pass
-the ceiling, which by default is all of the machine's usable RAM. Memory
-already accounted for elsewhere, such as a shared file mapping or a memfd,
-isn't counted twice.
+request (by `mmap`, `brk`, `exec`, an `mprotect` that makes a reserved range
+usable, or the `ftruncate` that sizes a memfd) is added to it and refused with
+`ENOMEM` if the total would pass the ceiling, which by default is all of the
+machine's usable RAM. Mapping memory that is accounted for elsewhere, a file's
+pages or a memfd already sized, adds nothing.
 
 So a `malloc` that can't be backed fails in `malloc`, with an error the
 program can report. `exec` is checked before the old program is thrown away,
@@ -77,8 +124,8 @@ brings back the risk described next.
 writes to a page (see [Memory](/docs/architecture/memory)). If `fork` had to
 promise that memory again, a 2 GiB build tool running a one-line shell command
 would need another 2 GiB promised for the moment between `fork` and `exec`.
-Unix software assumes `fork` is cheap, so SlopOS never refuses it for lack of
-memory.
+Unix software assumes `fork` is cheap, so SlopOS never refuses it for want of
+promised memory: the commit ceiling doesn't see a fork at all.
 
 Instead the child is charged a page at a time, as it writes a page and gets
 its own copy, so a child that calls `exec` straight away costs almost
@@ -89,50 +136,67 @@ program can use more memory than it was promised.
 
 ## What the out-of-memory killer does
 
-When one of those writes finds no memory, because the commit ceiling is
-reached or RAM is full and nothing can be reclaimed, the kernel ends a process
-to make room and retries the write. This is the *out-of-memory killer* (OOM
-killer). It chooses a victim like this:
+When a program touches a page and no memory can be had for it, the kernel
+ends a process to make room and tries the access again. That happens in two
+cases: a page of one of those three kinds finds the commit ceiling reached,
+or RAM itself is full and nothing can be reclaimed. The second can meet any
+page, a promised one included, because memory the ceiling doesn't count (the
+kernel's own page tables, thread stacks and buffers, and the file pages
+programs have mapped) comes out of the same RAM the ceiling is measured
+against: at the default ceiling, the promises and everything else together
+can ask for more than there is. This is the *out-of-memory killer* (OOM
+killer). It chooses a victim for the program whose access found no memory
+like this:
 
-1. It considers only processes the writer could `kill` itself. A program
-   can't kill a process holding privileges it lacks (see
-   [Permissions](/docs/architecture/authority)), so an ordinary program's
-   memory use never takes down the compositor or another system service.
-   Init and kernel threads are never chosen.
+1. It considers only processes that hold no capability that program lacks,
+   the capability half of the test `kill` applies (see
+   [Capabilities](/docs/architecture/authority#who-may-signal-whom)),
+   so an ordinary program's memory use never takes down the compositor, privd
+   or any other service holding a power the program lacks. Unlike `kill`,
+   it doesn't look at user ids: the process it picks may belong to another
+   person. Init, kernel threads and processes already dying are never chosen.
 2. Of those, it picks the one holding the most of what ran out: promised
-   memory if the ceiling was reached, RAM if RAM was. Shared memory counts
-   against its owner, so mapping someone else's doesn't make you look bigger.
+   memory if the ceiling was reached, RAM if RAM was. A memfd counts against
+   the process that sized it, so mapping someone else's doesn't make you look
+   bigger. A process holding none of what ran out is passed over, since its
+   death would free nothing the access needs.
 3. It ends that process with `SIGKILL`, waits for its memory to be freed, and
-   retries the write. Nobody picks another victim while one is dying, and if
-   the victim still holds its memory a few seconds later, the kernel stops
-   waiting for it.
+   tries the access again. Nobody picks another victim while one is dying, and
+   if the victim still holds its memory five seconds after the kill, it stops
+   holding back the choice of the next one.
 
-If nobody is eligible, the writer itself dies with `SIGKILL`, and the kernel
-records the reason as running out of memory, so its parent can tell this from
-a crash. Only init may take any process, because the machine can't run
-without it.
+If nobody is eligible, the program dies with `SIGKILL` (not the `SIGSEGV` of
+a crash), and the kernel log says it ran out of memory with nothing left for
+the OOM killer to take. When the access was the kernel's, copying to or from
+the program's memory for a system call, the call fails with `EFAULT` instead.
+The one exception to the first rule is init: when init itself needs the page,
+any process may be taken, because the machine can't run without init.
 
 ## How a program sees its limits
 
-Programs read their limits with `getrlimit`, `prlimit` or the shell's
-`ulimit`, which all use the `prlimit64` system call. Four of the standard
-limits are supported:
+Programs read their limits with `getrlimit` and lower them with `setrlimit`,
+which both use the `prlimit64` system call, as does `ulimit` in bash (which
+comes with the toolchain; the base's own shell has no `ulimit`). The C
+library has no `prlimit` function. These standard limits are supported:
 
 | Limit | What it controls |
 |---|---|
 | `RLIMIT_NOFILE` | Open files |
 | `RLIMIT_NPROC` | Processes |
-| `RLIMIT_AS`, `RLIMIT_DATA` | Address space |
+| `RLIMIT_AS`, `RLIMIT_DATA` | Address space (one limit under two names) |
 | `RLIMIT_MEMLOCK` | Pinned memory |
 
 Any other limit fails with `EINVAL`, so a program can tell "not supported"
 from "unlimited". The soft and hard limits are always equal. A program may
-lower its own limits but can't raise them or change another process's
-(`EPERM`).
+lower its own limits, naming itself as pid 0 the way `getrlimit` and
+`setrlimit` do, but can't raise them, and can't read or change another
+process's (`EPERM`).
 
 A build driver deciding how many jobs to run can call `sys_info` for the
 commit ceiling, how much of it is promised, and the OOM killer's count of
-victims since boot and its last one.
+victims since boot and its last one. Any program can call `process_memory`
+for every process's resident memory now and at its peak, which is what the
+System Monitor's process list shows ([Desktop](/docs/architecture/desktop)).
 
 We set the default limits by measuring real workloads. Two settings on
 [Boot options](/docs/abi/boot-options) change the policy: `quota=` turns
@@ -141,22 +205,31 @@ enforcement off or into warnings, for measuring what a workload needs, and
 
 ## What programs can rely on
 
-- **A successful `mmap`, `brk` or `exec` is backed.** Touching the memory
-  won't get the program killed, unless it was mapped with `MAP_NORESERVE`.
-- **`fork` doesn't fail for lack of memory**, but a child that writes much of
-  its parent's memory can trigger the OOM killer.
+- **A successful `mmap`, `brk` or `exec` is promised.** Touching that memory
+  never meets the commit ceiling. It can still meet a full RAM, since the
+  kernel's own memory and mapped file pages come out of the same RAM, and then
+  the OOM killer runs as it does for a fork. Memory mapped with `MAP_NORESERVE` has no promise
+  behind it, and stack the program grows into past what `exec` gave it is
+  charged as it grows.
+- **`fork` is never refused at the commit ceiling**, but a child that writes
+  much of its parent's memory can trigger the OOM killer.
 - **Limits fail with the errors programs already handle.**
-- **The OOM killer only takes a process the writer could have killed anyway.**
+- **The OOM killer never takes a process holding a capability the program
+  that ran out lacks**, unless that program is init.
+- **One person's programs can't use up the processes or threads of another.**
 
 ## How it is tested
 
 Kernel tests charge and refund every kind of resource and check each refusal's
-error, and the OOM killer's tests cover each rule in its choice of victim. An
-in-kernel audit cross-checks the running totals against the memory they
-describe. The ledger's arithmetic has a machine-checked proof (see
-[Proofs](/docs/verification/verus-status)) as a sequential state machine; the
-per-row atomics and account release are covered by the audit, KernMiri and
-tests.
+error, and the OOM killer's tests cover each rule in its choice of victim. A
+userland test starts a fork bomb as one person and checks that it stops at
+their share, with their unreaped children counted against it, while another
+person's session keeps starting programs. An in-kernel audit cross-checks
+the running totals against each other and against the mappings they
+describe. The ledger's arithmetic
+has a machine-checked proof, as a sequential state machine (see
+[Proofs](/docs/verification/verus-status)); the per-row atomics and account
+release are covered by the audit, KernMiri and tests.
 
 ## For contributors
 
@@ -173,11 +246,25 @@ during a dying task's unwind. Tokens are unique by type, but only
 errno. `Process` and `CommitPages` count the whole subtree, the rest one
 process.
 
-**The account tree** has its own parent edge, so an orphan reparented to init
-keeps spending its original budget. The edge carries the parent's generation
-so a reused row is never credited by mistake. Chains stop at
-`MAX_ACCOUNT_DEPTH`; deeper processes debit through their nearest ancestor
-with room, which keeps every walk bounded.
+**The account tree** has its own parent edge, separate from the wait parent.
+When a parent's account is released, its children's edges move up to the
+grandparent's, so an orphan stays counted against the same ancestors instead
+of moving to init's. A fork's
+edge is its parent's account; a spawned process's edge is its person's row
+(`quota::person_account`, keyed on the real uid) or the root. A person's row
+bounds everything charged through it, as the root does, and only for
+`Process` and `Task`. The edge carries the parent's generation so a reused row
+is never credited by mistake. Chains stop at `MAX_ACCOUNT_DEPTH`; deeper
+processes debit through their nearest ancestor with room, which keeps every
+walk bounded.
+
+**Tasks are charged where they are made.** A spawn, a fork and a thread
+(`charge_clone`) each charge one task to the account of the process the new
+task belongs to. When the last task of a person's process exits, its charge
+moves onto the zombie leader, held by the person's row
+(`ChargeSlot::bequeath_into`), and is refunded at the reap. A memfd's charges
+move too when its sizer dies (`ChargeSlot::bequeath`), to the root, which is
+never released.
 
 **Commit classes** decide how each memory region is charged. A class never
 moves back; only `Unreserved` changes, the first time a protection lets its
@@ -185,7 +272,7 @@ pages be populated.
 
 | Class | Regions | Charged |
 |---|---|---|
-| `Unreserved` | Shared memfd, SlopRing share, shared file mappings, `PROT_NONE` reservations | Nothing |
+| `Unreserved` | Shared memfd, SlopRing share, shared file mappings, read-only private file mappings, `PROT_NONE` reservations | Nothing |
 | `Extent` | Lazy anonymous memory, writable private file mappings | Whole span at creation |
 | `Frames` | The loader's eager segments, the stack and its growth range, `MAP_NORESERVE` | A page at a time as each is placed |
 | `Forked` | A fork's copy of a region its parent had charged | A page from the moment the child owns it |
@@ -195,8 +282,11 @@ page and `ResidentPages` when the frame allocator was empty after reclaim.
 The victim unwinds through the kill flag in its own context (see
 [Scheduling and waiting](/docs/architecture/scheduler-wait-protocol)); a
 writer with nothing to take dies with `TaskFaultReason::UserOom`. Kernel
-writes for a task take the same path where they may block; where they can't,
-a user copy returns `EFAULT` and a failed signal frame push ends in `SIGSEGV`.
+writes for a task (a system call's user copy, the signal frame) take the same
+path where they may block. A copy that cannot block (under a spinlock, in an
+interrupt handler, with interrupts masked) answers `EFAULT` at once; one the
+killer found nothing to free for answers `EFAULT` too, and a signal frame that
+cannot be pushed ends the task with `SIGSEGV`.
 
 ## Further reading
 
@@ -206,12 +296,12 @@ a user copy returns `EFAULT` and a failed signal frame push ends in `SIGSEGV`.
   but the chapter covers the page faults and memory pressure behind this page.
 - [*Overcommit accounting*](https://docs.kernel.org/mm/overcommit-accounting.html)
   in the Linux kernel documentation. Linux's three overcommit modes on one
-  page. SlopOS's default is close to strict mode, with `fork` handled
-  differently.
+  page. SlopOS's default is close to the "don't overcommit" mode, but `fork`
+  is not charged, and `MAP_NORESERVE` is honoured where that mode ignores it.
 - [*Taming the OOM killer*](https://lwn.net/Articles/317814/), LWN (2009). Why
   choosing a victim is hard.
 - The man page for [`getrlimit(2)`](https://man7.org/linux/man-pages/man2/getrlimit.2.html),
-  the limits interface programs use, including `prlimit`.
+  the limits interface programs use.
 
 ## In the source
 
@@ -220,5 +310,6 @@ a user copy returns `EFAULT` and a failed signal frame push ends in `SIGSEGV`.
 | `abi/src/quota.rs` | The kinds of resource, their defaults and the `RLIMIT_` mapping |
 | `slopos-ostd/src/process/quota/` | The ledger |
 | `mm/src/commit.rs` | The commit ceiling |
-| `mm/src/oom.rs` | The OOM killer |
+| `slopos-ostd/src/process/quota/persons.rs` | The people's accounts |
+| `mm/src/oom.rs`, `core/src/oom.rs` | The OOM killer: the choice of victim, and who is shielded from it |
 | `mm/src/tests/tests_oom_killer.rs` | OOM killer tests |

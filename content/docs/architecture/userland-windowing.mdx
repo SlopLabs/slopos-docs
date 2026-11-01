@@ -1,246 +1,320 @@
 ---
-title: "Desktop and windowing"
-description: "How apps get a window on the SlopOS desktop, how their pixels reach the screen, and how keyboard and touchpad input finds them."
+title: "Windowing"
+description: "How a program gets a window on a SlopOS desktop, how its pixels reach the screen, and how keyboard and pointer input finds it."
 ---
 
 import { WindowBuffers } from '@/components/diagrams/window-buffers';
 
-As an app author on SlopOS you get a window on the desktop, a stream of the
-keyboard and pointer events meant for that window, and a widget toolkit
-(appkit) if you don't want to draw everything yourself. You don't get direct
-access to the screen, and you never see input meant for other windows. That
-is because the desktop is a set of ordinary programs, and one of them, the
-*compositor*, owns the screen, the keyboard and the touchpad. Every other app
-draws its window into memory it shares with the compositor, tells the
-compositor which parts changed, and receives the events the compositor
-sends it.
+As an app author on SlopOS you get a window, the keyboard and pointer events
+meant for that window, and nothing else. You can't draw on the screen
+directly, you can't read another window's pixels, and you never see a key
+that was typed into another app, a password field or a question the system is
+asking. That is because the desktop is a set of ordinary programs, and one of
+them, the *compositor*, owns the screen and the input devices. Every other
+program draws its window into memory it shares with the compositor, says
+which parts changed, and receives the events the compositor sends it.
+
+Each person's desktop has a compositor of its own, running as that person.
+This page explains how a program finds it, hands it pixels and receives
+input, and how the compositor itself comes to own the screen. What the
+desktop looks like, and the apps that ship with it, are on the
+[Desktop](/docs/architecture/desktop) page.
+
+## Where it comes from
 
 The design is Wayland's, the display system most Linux desktops now use.
-SlopOS doesn't speak the Wayland protocol, but it uses the same split
-between compositor and apps, and the same way of handing over pixels: shared
-memory passed over a Unix socket. That trick comes from libwayland.
+SlopOS doesn't speak the Wayland protocol, but it makes the same split
+between one compositor and its clients, and hands over pixels the same way:
+shared memory whose file descriptor travels over a Unix socket, as Wayland's
+`wl_shm` does. A window's role, its size limits and the way the compositor
+proposes a new size follow xdg-shell, Wayland's protocol for desktop windows,
+with two differences described below.
 
-## How an app gets a window
+## Why the compositor owns the screen
 
-An app connects to the compositor over a Unix socket at `/run/compositor`
-and asks for a *surface*, a rectangle it can draw into, then marks it as a
-normal window with a title. Then it needs somewhere to put pixels.
+If every program could write to the screen and read the keyboard, nothing
+would stop two programs drawing over each other, a program from reading what
+you type into another, or a program from drawing a fake password prompt over
+the real one. Someone has to decide which window is on top, which one the
+keys go to, and what the pointer is over, and that decision is only safe if
+the same program draws the result. So the compositor is the only program that
+holds the screen and the raw input, and it hands each client only what belongs
+to that client's windows.
 
-Sending every frame's pixels down the socket would mean copying a whole
-window's worth of memory on every frame. Instead the app creates a block of
-shared memory (a `memfd`, an anonymous file that lives only in memory) and
-draws into it. The first time the app uses that buffer, it sends the buffer
-itself to the compositor: a Unix socket can carry an open file from one
-program to another (`SCM_RIGHTS`), and the compositor maps the same memory
-into its own address space. From then on both programs see the same pixels,
-and nothing is copied between them.
+## How a program gets a window
+
+A program finds its compositor through a Unix socket named `compositor` in its
+*runtime directory*, `/run/user/<uid>`, which init creates for each person
+with mode 0700 and names in `XDG_RUNTIME_DIR`. So a program reaches its own
+person's desktop and no one else's. (The login screen is a compositor too,
+but it opens no socket and serves no programs.)
+
+The first exchange is a version check. The compositor says which protocol
+version it speaks and the program answers with its own; if they differ,
+whichever side notices first ends the connection, so a program built against
+another version must be rebuilt. Then the program asks for a *surface* (a
+rectangle it can draw into), gives it the *toplevel* role that makes it a
+window, and names it with a title and an *app id* such as
+`org.slopos.editor`, which is how the dock and the menu bar know which app
+the window belongs to. It can also state the smallest and largest size it
+can be laid out at.
+
+The window appears the first time the program commits a frame for it. That
+is when the compositor places it: an app's first window opens centred in the
+space between the menu bar and the dock, and each later window of the same
+app opens one title bar's height down and to the right of the previous one,
+wrapping back to the top before it would cross the dock. A window larger than
+that space is shrunk to fit it, though never below the smallest size the
+program stated, and the program is told its new size.
+
+## How pixels reach the screen
+
+Sending every frame's pixels down the socket would copy a whole window's worth
+of memory every time. Instead the program creates a block of shared memory (a
+*memfd*, an anonymous file that exists only in memory), draws into it, and
+the first time it uses that block it sends the file descriptor itself over
+the socket. A Unix socket can carry an open file from one program to another
+(`SCM_RIGHTS`), so the compositor maps the same memory, and from then on both
+programs see the same pixels without copying anything between them.
 
 <WindowBuffers />
 
-1. **The app creates two buffers**, each big enough for the window.
-2. **It draws a frame into one** and *commits* it, which means "show this
-   now". The first commit of each buffer sends the buffer itself; later
-   commits only send its number.
-3. **The compositor maps the buffer** the first time and remembers it.
-4. **It paints the parts that changed** onto the screen at its next frame.
-5. **It releases the buffer** when it has finished reading it, with a
-   message to the app.
-6. **Meanwhile the app draws the next frame into the other buffer**, so it
-   never writes into memory the compositor is still reading.
-
-An app that ignores the release messages still works: it falls back to one
-buffer and updates it in place, at the risk of the compositor occasionally
-seeing a half-drawn frame.
+A window has two such buffers, so the program can draw the next frame while
+the compositor reads the last one. It draws a frame into one and *commits* it
+("show this now"); it draws the next frame into the other. When the second is
+committed, the compositor hands the first one back. If the program draws
+again before that hand-back reaches it, the library reuses the buffer it
+committed last, so a program that redraws faster than the compositor answers
+can show a half-drawn frame. The windowing library also tracks how old each
+buffer's contents are, so a program that redraws only what changed knows
+what a recycled buffer has missed (its *age*: how many frames ago it was
+last shown).
 
 ### Redrawing only what changed
 
-Repainting the whole screen for every blinking cursor would waste most of
-the work, so every commit carries *damage*: the rectangles the app changed.
-The compositor collects the damage from all windows, works out what
-is visible (a window hidden behind another one doesn't need painting), and
-redraws only those areas. Moving a window or changing which one is on top
-counts as damage too, because it uncovers whatever was underneath.
+Every commit carries *damage*: the rectangles the program changed. The
+compositor gathers the damage from every window, works out from the topmost
+window down which parts of each are visible (a window hidden behind another
+needs no painting), and repaints only those. Moving, raising or closing a
+window counts as damage too, because it uncovers what was underneath.
 
-The compositor draws at a steady pace rather than whenever something
-changes. An app that animates can ask to be told when its last frame was
-shown (a *frame callback*) and draw the next one then, instead of drawing
-frames nobody sees. On the Intel graphics driver, the kernel switches the
-display to the new frame only between screen refreshes, so you never see
-half of one frame and half of another.
+The compositor runs a pass about every 16 ms and paints only when something
+changed. It draws into a buffer of its own and hands the kernel the damaged
+rectangles, which the display driver copies to the screen. On Intel graphics,
+when the driver can set aside a second buffer for the screen (the boot log
+says `XE-PRESENT: tear-free double-buffered scanout (pipe A)`), it switches
+to the new frame only between screen refreshes, so you never see half of one
+frame and half of another. Where the display offers a *cursor plane*, a
+small image the hardware lays over the frame, the pointer is drawn there
+rather than painted into every frame: virtio-gpu in QEMU has one, and Intel
+graphics does when the boot log says
+`XE-CURSOR: hardware cursor plane bound (pipe A)`.
 
-## How input reaches an app
+A program that animates can ask to be told when its last frame reached the
+screen and draw the next one then, instead of drawing frames nobody sees.
 
-<Callout type="info">
-The keyboard layout is applied in the kernel rather than in each app, so a
-Swiss German keyboard types the same characters in a console, in the
-terminal and in the editor, and dead keys work everywhere.
-</Callout>
+### Resizing
 
-When you press a key, the keyboard driver turns the hardware's code for it
-into a standard key number, then looks it up in the active layout to get
-the character and the state of Shift, Ctrl, AltGr and the rest. The touchpad
-driver turns finger contacts into pointer motion, taps into clicks and
-two-finger movement into scrolling. Both go into one queue that only the
-compositor can read.
+When you drag a window's edge or press its zoom button, the compositor tells
+the program the new size (a *configure*, in xdg-shell's words) and the program
+draws at that size and commits. Unlike xdg-shell there is no acknowledgement
+step: until the new frame arrives, the compositor draws the frame at the new
+size and fills whatever the old buffer doesn't cover with the theme's surface
+colour. During a drag it sends a new size at most every 100 ms while the
+pointer moves, and once more when you let go, so the content keeps up with
+the edge.
 
-The compositor decides who gets each event. Pointer events go to the window
-under the pointer. Key events go to the window that has *focus*, the one you
-last clicked or switched to. An app receives the key number, the character
-and the modifier state, so a text field uses the character and a game can
-use the key.
+The size limits a program states are enforced, where xdg-shell leaves them
+as hints. A drag stops at them; zoom fills the space between the menu bar and
+the dock or, when the limits don't allow that, gives the window the nearest
+size they do allow, centred. A window whose largest size equals its smallest
+can't be resized at all, and its zoom button does nothing. The compositor
+also keeps every window at least 200 × 150 unless the window's own maximum is
+smaller.
 
-The compositor also checks requests that only make sense in response to
-input. A program that has only connected can't read the clipboard: a paste
-request has to carry a token from a key event the compositor sent to that
-app's focused window. Changing the pointer shape works the same way, tied to
-the pointer being over the app's window.
+## How input reaches a program
 
-One combination never reaches an app. SysRq followed by a key runs a kernel
-console command, for when the desktop is stuck; see
-[Diagnosing the kernel](/docs/development/diagnostics).
+The keyboard and pointer drivers in the kernel turn every keyboard into one
+keyboard state and every mouse, touchpad and tablet into one pointer
+([Drivers](/docs/architecture/drivers) explains how). Each key event carries
+the key's position on a USB keyboard (its *HID usage*, the same whatever the
+layout), the character the layout makes of it, and the state of Shift, Ctrl,
+Alt and the rest. All of it goes into one queue that only the holder of the
+input *seat* (below) can read: the compositor in front.
 
-### Changing the keyboard layout
+The compositor then decides who gets each event, in this order:
 
-```bash
-keymap            # show the active layout
-keymap list       # list layouts
-keymap de_CH      # switch now, and remember it for the next boot
-```
+1. **The lock and login screens.** Ctrl+Alt+Delete always reaches the
+   compositor and locks the desktop (on the login screen, it starts the login
+   screen over, unless a password is being checked or a desktop is starting),
+   and while the lock or login screen is up it takes every key and the
+   pointer. This is a *secure attention key*: no program can intercept it,
+   so the password prompt you get after pressing it is really the system's.
+   [Sessions and login](/docs/architecture/sessions) explains locking.
+2. **A question.** While privd's consent dialog, or a question such as
+   *Power off the computer?*, is on screen, it takes the keyboard and the
+   pointer, and keys pressed into it stay away from every program, their
+   releases and repeats included. [Privileged actions](/docs/architecture/privd)
+   describes how the dialog guards what you type.
+3. **The compositor's own menus.** The system menu and the network and clock
+   panels take the keys while they are open. When the system menu opens by
+   itself, to offer a restart after an update, the keys stay with the window
+   you were typing into until the pointer reaches the menu.
+4. **Windows.** Key events go to the window that has *focus*. Pointer events
+   go to the window whose content is under the pointer, in coordinates
+   relative to that window, with an enter event when the pointer arrives and
+   a leave event when it goes. A press on a window's content holds the
+   pointer to that window until every button is up, so a drag that strays
+   outside still ends where it started.
 
-Layouts are text files in `/usr/share/keymaps`. The change takes effect at
-once for every console and every window, and `keymap` saves the choice in
-`/etc/keymap` for the next boot.
+Focus follows simple rules. A new window takes focus when it first appears.
+A click on a window's content, title bar or edge raises it and focuses it (a
+click on its close, minimise or zoom button does neither); a click on the
+empty desktop leaves focus where it was, so the next key still lands. When
+the focused window closes or is minimised, the topmost remaining window gets
+focus. The compositor moves a window when you drag its title bar, or its
+content while holding Super unless zoom has maximised it.
+
+The compositor also checks requests that only make sense after the person did
+something. A program that has merely connected can't read the clipboard or
+replace it: a copy or paste must quote the serial number of the latest key
+event the compositor sent to that program's focused window. Changing the
+pointer's shape needs the serial of the pointer's latest entry into the
+window, while the pointer is still over it. The clipboard the
+apps and the terminal copy to and paste from is the compositor's, so each
+person's desktop has its own and two people's desktops never share one. (The
+kernel also keeps a clipboard per session, which
+[Sessions and login](/docs/architecture/sessions) describes; the apps don't
+use it.)
+
+The keyboard layout is applied in the kernel rather than in each program, so
+a Swiss German keyboard types the same characters in a console, in the
+terminal and in every app, and dead keys work everywhere. `keymap` shows the
+layout and `keymap de_CH` switches it for everyone;
+[Drivers](/docs/architecture/drivers) explains layouts.
 
 ## Who may own the screen
 
-The kernel hands out the screen and the raw input queue as *seats*: an app
-must hold the display seat to put a frame on the screen and the input seat
-to read input. Holding a seat takes a permission the kernel grants to
-specific programs, the compositor among them;
-[Permissions](/docs/architecture/authority) explains how. A seat can't be
-copied or passed to another process, and it is taken back when its holder
-exits, so a crashed compositor doesn't leave the screen locked.
+The kernel hands out the screen and the raw input queue as two *seats*.
+Asking for either needs a capability (`DisplaySeat`, `InputSeat`) that init
+delegates to the compositors it starts, and the display one also to
+`/bin/roulette` ([Capabilities](/docs/architecture/authority)). The kernel
+records the thread that got a seat as its holder, and the calls that put a
+frame on the screen, move the pointer or read input work only for that
+holder. The program also receives a descriptor that stands for the grant and
+stops working once the seat moves on; it can't be duplicated or passed to
+another process. The kernel takes a seat back when its holder exits, so a
+crashed compositor doesn't leave the screen locked.
 
-There are two seat levels. The compositor holds the lower one. The higher
-one belongs to the kernel's own log and to `roulette` (a full-screen program
-that runs at boot), so they can always take the screen back, even from a
-stuck compositor. A program that asks for a seat already held at the same
-or a higher level is
-refused with `EBUSY`. Below the seats, the kernel picks which display driver
-shows the frame: Intel graphics, virtio-gpu in QEMU, or the plain
-framebuffer the firmware left behind ([Drivers](/docs/architecture/drivers)).
+A program asks for a seat at one of two ranks: a compositor's, or the
+console's, which outranks every compositor and which in the base only
+`/bin/roulette`, the Wheel of Fate that runs at boot, asks for. Asking for a
+seat that another program holds at the same or a higher rank fails with
+`EBUSY`, so two compositors can't trade the screen back and forth. The
+kernel's own log takes no seat: while it is on screen, the kernel holds back
+every compositor's frames, so it shows even over a stuck compositor. Below
+the seats, the kernel picks which display driver shows the frame: Intel
+graphics, virtio-gpu in QEMU, or the plain framebuffer the firmware left
+behind ([Drivers](/docs/architecture/drivers)).
 
-## Writing an app
+Several people can be logged in at once, each with a desktop, but only one
+desktop is *in front*, and all their compositors share one rank. So a
+compositor init starts never asks for a seat itself: init hands both to it,
+and later moves them to another compositor, with a call only init may make
+(`seat_switch`). That call hands both seats over without a descriptor,
+routes all input to the new holder, and refuses with `EBUSY` while the
+console's rank holds either seat; the desktop that goes behind stops drawing
+and locks.
+[Sessions and login](/docs/architecture/sessions) explains switching.
 
-Most apps should use **appkit**, SlopOS's widget toolkit. You describe the
-interface as a function of your app's state (`view`), and handle messages
-from widgets by updating that state (`update`). After each message appkit
-rebuilds the tree and redraws what changed. If you have used Elm, this is
-the same model. Widgets cover the usual needs: labels, buttons, text
-inputs, checkboxes, lists, tables, trees, tabs, menus, dialogs, scroll views,
-images, a canvas and a code view, arranged with stacks, padding and
-splitters. Interface text is set in Inter; code uses the same fixed-width
-font as the terminal.
+## What it means for an app
 
-An app that wants to draw every pixel itself, such as an image viewer or a
-game, can skip appkit and use the windowing library (`slopos-windowing`)
-directly: it connects to the compositor, manages the two buffers, and runs
-the event loop. It also tells you how old a recycled buffer's contents are,
-so you can redraw only what that buffer missed.
+Most apps should use **appkit**, SlopOS's toolkit: it connects, picks the
+buffers, lays out and draws its components in the theme, routes keys to the
+focused control, and rebuilds and redraws the window when the app's state
+changes. [Write an app](/docs/development/writing-an-app)
+walks through one, and the [Desktop](/docs/architecture/desktop) page
+describes what the toolkit gives every app.
 
-Either way, follow the rules the compositor enforces. A malformed message
-ends the connection, as in Wayland: the compositor sends an error event and
-disconnects the app. Window moves are done by the compositor when you drag
-the title bar; the protocol has requests for an app to start a move or
-resize itself, but the compositor currently ignores them.
+A program that draws every pixel itself, as the terminal does, uses the
+windowing library (`slopos-windowing`) directly: it connects, makes the
+window and its two buffers, and hands over the events. Either way:
 
-The message format is in [Window protocol](/docs/abi/window-protocol).
+- **Rebuild when the protocol changes.** The apps outside the base are built
+  against one protocol version; against a compositor of another, the
+  windowing library gives up at the version check with "the compositor speaks
+  another protocol version: rebuild this program".
+- **Expect to be told your size.** Draw at whatever size the last configure
+  named. The compositor may shrink a window that doesn't fit when it first
+  appears.
+- **A malformed message ends the connection**, as in Wayland: the compositor
+  sends an error naming why and disconnects the program.
+- **The compositor moves and resizes windows itself.** There is no request
+  for a program to start a move or a resize.
+- **Shared memory is scarce.** The kernel holds at most 64 memfds at once,
+  across every process, each sized once and at most 64 MiB, and every window
+  holds two of them. So no buffer can be larger than a 4096 × 4096 window at
+  four bytes a pixel, and a program that leaks memfds starves every other
+  program's windows.
 
-## The apps that ship
-
-- **Terminal** (`terminal`). Runs the shell on a *pseudo-terminal*, a pair of
-  connected endpoints that look like a serial terminal to the shell. It
-  emulates an xterm closely enough for full-screen programs, including mouse
-  reporting. Resizing the window re-wraps long lines in the scrollback
-  instead of cutting them, and only the cells that changed are redrawn.
-  Ctrl+Shift+PgUp and PgDn scroll the terminal's own history; plain PgUp and
-  PgDn go to the program.
-- **Sloped** (`editor`), the text editor. Tabs, a file tree, search, undo,
-  and syntax highlighting. It saves by writing a new file, syncing it and
-  renaming it over the old one, so a failed save never destroys the
-  original, and it asks before overwriting a file that changed on disk since
-  you opened it.
-- **File manager** (`file_manager`), **image viewer** (`image_viewer`, PNG),
-  and **system monitor** (`sysmon`), which can end a process from its menu.
-
-The compositor itself draws the bar at the top of the screen, with the
-network indicator described in [Networking](/docs/architecture/networking),
-and the launcher dock.
+The messages are listed in [Window protocol](/docs/abi/window-protocol).
 
 ## How it is tested
 
-The parts that don't need a screen are libraries with no system calls in
-them: keyboard handling (`keymap-core`), the terminal's grid and escape-code
-parser (`terminal-core`, `vt`), the editor (`editor-core`) and the top bar's
-state (`chrome-core`). They are tested on the host with `just test-host`.
-The kernel test suite covers seat ownership and keyboard and touchpad input,
-and a test program (`seat_test`) checks seat rules from user space.
+`protocol_test` starts a compositor and holds it to the handshake: a client of
+its version is served and draws a frame, any other version is refused with
+the reason, and so are a request before the handshake, a reused surface id and
+an unknown message. `seat_test` checks seat ownership through the real system
+calls. `apps_test` starts each app against a stand-in compositor and checks
+that it names its window as its dock entry does. The parts that need no screen
+are host-tested with `just test-host`: window placement and the menu bar's
+state (`chrome-core`), keyboard handling (`keymap-core`) and the terminal's
+grid and key encoding (`terminal-core`).
 
 ## For contributors
 
-- **Buffer mappings are keyed by task, surface generation and buffer id.**
-  A recycled surface slot or a reused file descriptor can't alias an old
-  mapping. Pending damage is cleared only for surfaces that were presented; a
-  commit that lands after the frame snapshot carries into the next frame.
-- **Occlusion is computed front to back,** subtracting each opaque window,
-  so every pixel is painted once and a lower window's shadow can't paint
-  over a window above it.
-- **Input-driven requests are checked against serials.** Clipboard access
-  needs the serial of the focused surface's last key event; cursor shape
-  changes need a matching pointer-enter serial. Drag grabs are keyed to the
-  surface generation, because task ids are reused.
-- **Clipboard contents travel as memfds**, so there is no size cap in the
-  protocol.
-- **The kernel never parses layout text.** `keymap` parses a layout and
-  uploads a binary table; the kernel only validates it. Loading a layout
-  changes the console for everyone, so it needs a permission the kernel
-  grants to `/bin/keymap`.
-- **Layout owns geometry in appkit.** A parent measures and places each
-  child; widgets don't invent rectangles. The unbounded constraint is a
-  finite maximum, so size arithmetic can't overflow. Focus is a position in
-  the tab order, which survives the rebuild after each message.
-- **Logic stays out of the drawing code.** New behaviour in the terminal,
-  editor, keyboard or top bar goes in the matching `*-core` crate where the
-  host tests can reach it.
+- **The protocol has one version at a time.** A change to any message, field
+  or tag is a new `PROTOCOL_VERSION`, and `protocol_test` pins the current
+  version's tags and handshake encoding, so an unannounced change fails.
+- **Buffer mappings are keyed by window, surface generation and buffer
+  slot,** never by descriptor number: a recycled surface slot or a reused
+  descriptor can't alias an old mapping. Damage is cleared only for surfaces
+  whose frame reached the screen; a commit that lands after the frame's
+  snapshot carries into the next frame.
+- **Visibility is computed from the top down,** subtracting each opaque
+  frame, so a lower window's shadow never paints over a window above it.
+- **Input-driven requests are checked against serials,** and a pointer grab is
+  keyed to the surface's generation, because surface slots are reused.
+- **Keep logic out of the compositor's crate.** It builds no host tests, so
+  placement, the menu bar, the lock screen's and the system menu's models
+  live in `chrome-core`, where `just test-host` reaches them.
 
 ## Further reading
 
 - [*The Wayland Protocol*](https://wayland-book.com/) by Drew DeVault. The
-  best introduction to the compositor model and shared-memory buffers. The
-  chapters on surfaces and buffers explain the design this page follows.
+  best introduction to the compositor model; its chapter on
+  [shared memory buffers](https://wayland-book.com/surfaces/shared-memory.html)
+  explains the same handover.
 - [*Wayland architecture*](https://wayland.freedesktop.org/architecture.html)
   on wayland.freedesktop.org. A short comparison with X11 showing why the
   compositor owns both the screen and input.
+- [xdg-shell](https://wayland.app/protocols/xdg-shell). Wayland's desktop
+  window protocol: configure, window states and size limits, which SlopOS
+  follows without the acknowledgement and with the limits enforced.
 - [`memfd_create(2)`](https://man7.org/linux/man-pages/man2/memfd_create.2.html)
   and [`unix(7)`](https://man7.org/linux/man-pages/man7/unix.7.html). The
-  Linux manual pages for anonymous shared memory and for passing files over
-  a socket.
-- [*The Elm Architecture*](https://guide.elm-lang.org/architecture/). The
-  view and update model appkit uses.
-- [XTerm control sequences](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html)
-  by Thomas Dickey. The reference the terminal emulates.
+  Linux manual pages for anonymous shared memory and for passing descriptors
+  over a socket.
 
 ## In the source
 
 | Path | What is there |
 |---|---|
-| `userland/src/apps/compositor/` | The compositor |
-| `slop-protocol/` | The message format, client and server halves |
-| `windowing/` | Connection, surfaces and buffers for apps |
-| `appkit/` | The widget toolkit |
+| `userland/src/apps/compositor/` | The compositor: `protocol.rs` serves clients, `mod.rs` routes input (with focus, moves and resizes in `input.rs`), `renderer.rs` paints |
+| `slop-protocol/` | The messages, their encoding and both ends of the connection |
+| `windowing/` | Connection, window and double buffers for programs |
+| `chrome-core/src/placement.rs` | Where a new window opens, host-tested |
+| `slopos-ostd/src/seat/`, `core/src/syscall/ui_handlers.rs`, `core/src/seat_file_ops.rs` | Seat arbitration, the seat system calls and the seat's descriptor |
 | `keymap-core/` | Key decoding and layouts, host-tested |
-| `terminal-core/`, `vt/`, `editor-core/` | Terminal and editor logic, host-tested |
-| `chrome-core/` | State of the top bar and its indicators |
 
-The [Window protocol](/docs/abi/window-protocol) reference lists every
-message.
+[Window protocol](/docs/abi/window-protocol) lists every message.

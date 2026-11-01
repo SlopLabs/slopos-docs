@@ -1,14 +1,16 @@
 ---
 title: "Proofs"
-description: "Which rules in the trusted core are proven by a machine, what that proof covers, and how to run it."
+description: "Which rules in the kernel are proven by a machine, what that proof covers, and how to run it."
 ---
 
-For the parts of SlopOS's trusted core where a bug would corrupt memory, you
-can rely on more than tests. A tool has checked, for every possible sequence
-of operations, that rules such as "a page of memory is never freed twice"
-can't be broken, and every change to the trusted core has to keep those
-checks passing. The proofs cover the logic of each mechanism, written out as a
-small model next to the kernel. They don't cover the kernel's actual code line
+For the parts of the SlopOS kernel where a bug would corrupt memory or let a
+program take more than it is allowed, you can rely on more than tests. Most
+of them are in the trusted core; SlopRing and zero-copy TCP sends are the
+exceptions. A tool has checked, for every possible sequence of
+operations, that rules such as "a page of memory is never freed twice" can't
+be broken, and every change has to keep those checks passing. The proofs
+cover the logic of each mechanism, written out as a small model next to the
+kernel. They don't cover the kernel's actual code line
 by line, and they say nothing about how CPUs see each other's memory writes.
 This page explains what that means, lists what is proven, and shows how to
 run the proofs.
@@ -42,15 +44,15 @@ proof covers all of them, including the ones nobody thought to write.
 
 ## How SlopOS uses it
 
-Each proof is a single file that restates one part of the trusted core in the
+Each proof is a single file that restates one part of the kernel in the
 form Verus understands: the data it keeps, the steps that change it, and the
 rules those steps must preserve. Verus then proves that every step keeps every
 rule.
 
 Many proofs also contain a deliberately broken version of a step, such as a
-release that frees a page before resetting it, and show that Verus rejects it.
-That checks the rules are strong enough to catch a real mistake, because a
-rule that even the broken version satisfies says nothing.
+release that frees a page before resetting it, and prove that it breaks one of
+the rules. That checks the rules are strong enough to catch a real mistake,
+because a rule that even the broken version satisfies says nothing.
 
 The proofs are models, so they can drift from the code, and this has happened.
 The page-table proof passed while the kernel had a bug in it: when mapping a
@@ -69,7 +71,7 @@ the model describes, and the model is reviewed by people.
 | Page tables | Mapping and unmapping keep the page tables well formed and the page counts balanced, a program can only be given pages that are safe for it to see, and a mapping that fails gives the page back |
 | Copying between pages | Reading or writing memory through the kernel's copy helpers never runs past the end of a page or touches a page that doesn't exist |
 | Task lifetimes | A task is freed exactly once, never while it is running or queued, and only after it has been removed from everything that referred to it ([Task lifetimes](/docs/architecture/task-ownership)) |
-| Permissions | Only starting a program can raise a task's permissions, only to what that program is granted, and only if the task starting it may launch programs; dropping permissions always works ([Permissions](/docs/architecture/authority)) |
+| Capabilities | No step ever widens a task's capability mask. An exec keeps only the universal capabilities the task held (init re-executing itself keeps its mask and gains nothing); a spawn is refused unless what it hands the child is within the spawner's own mask, and gives the child nothing because of which program it runs; dropping capabilities always works and reaches every thread of the process, including one being created at that moment ([Capabilities](/docs/architecture/authority)) |
 | Resource accounting | Every account's usage equals the sum of what is charged to it, a charge never takes an account over its limit, and nothing is refunded twice ([Resource limits](/docs/architecture/resource-accounting)) |
 | SlopRing queues | The kernel never overwrites a completion a program hasn't read, never runs ahead of what the program submitted, and never has more requests in flight than allowed ([SlopRing](/docs/abi/slopring)) |
 | SlopRing layout | Entries in the shared queues are always read and written inside the queue's memory |
@@ -94,19 +96,23 @@ path. [Safety gates](/docs/verification/tcb-discipline) lists those checks.
 **The rest of the trusted core.** Interrupt handling, locks, device access,
 copying to and from user programs, the boot code and most of the memory code
 outside the parts above are reviewed and tested under Miri, but not proved.
-Proving the whole trusted core isn't a goal. The proofs cover the places where
-a bug would corrupt memory rather than return an error, which is where they
+The capability proof covers the masks alone: the user and group ids a
+process carries, and the rules for changing them, are held by the kernel's
+own tests. Proving the whole trusted core isn't a goal. The proofs cover the
+places where a bug would corrupt memory, widen a capability mask or let an
+account overrun its limit, rather than return an error, which is where they
 buy the most.
 
 ## Running the proofs
 
 ```bash
 just verify                   # check every proof
-just verify task_ownership    # check one proof, by file name
+just verify task_ownership    # check one proof, by file name without .rs
 ```
 
 The first run downloads the pinned version of Verus into
-`third_party/verus` (`just ensure-verus` does only that step). Any statement
+`third_party/verus` and installs, through `rustup`, the Rust release Verus is
+built against (`just ensure-verus` does only that step). Any statement
 Verus can't prove fails the run, and the failing proof file is named. CI runs
 every proof on each change, in the same job as Miri.
 
@@ -116,16 +122,17 @@ build Verus from the pinned commit and point `VERUS_BIN` at it.
 ## For contributors
 
 - **The pin.** `verification/verus.toml` names the Verus release, its commit,
-  the release file's SHA-256 and the Rust toolchain Verus itself uses
-  (1.95.0, separate from the kernel's nightly). It tracks a release on Verus's
+  the release file's SHA-256 and the Rust toolchain Verus itself uses (a
+  stable release, separate from the kernel's nightly). It tracks a release on Verus's
   main branch, not its experimental `async` branch, because the kernel has no
   `async`.
 - **Bumping it.** At most once a quarter, and only when a needed feature
-  lands. A bump has to pass `just verify` unchanged: a proof that breaks is
-  fixed or the bump is reverted, never weakened. If Verus stops being
+  lands. A bump has to pass `just verify`: a proof that breaks on the new
+  Verus is fixed or the bump is reverted, and no rule is weakened to make it
+  pass. If Verus stops being
   maintained, the fallback is bounded model checking with Kani, which checks
   inputs up to a size limit and is a weaker guarantee.
-- **Adding a proof.** One file per trusted-core module, named after it, in
+- **Adding a proof.** One file per module it models, named after it, in
   `verification/proofs/`. Files whose names start with `_` are shared helpers
   and aren't run on their own. When a proof lands, record it in
   `verification/STATUS.md`, including what the model leaves out.

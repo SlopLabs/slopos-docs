@@ -8,7 +8,7 @@ SlopOS kernel, how to add a new `unsafe` operation to the trusted core and use
 it from safe code, and how to handle the three kinds of foreign interface the
 kernel has: symbols defined by the linker, tables assembled by the linker, and
 functions called from assembly. [The framekernel](/docs/verification/framekernel)
-explains why the rules are what they are; this page is about following them.
+explains why the rules are what they are.
 
 ## Before you start
 
@@ -22,15 +22,21 @@ just check-framekernel-gates
 
 ## Where `unsafe` may live
 
-Only in `slopos-ostd` (OSTD). Every other crate the kernel links starts with
-`#![forbid(unsafe_code)]`, and the build also checks the macro expansion of
-each crate, so `unsafe` arriving through a macro is rejected too. The table
-shows where each kind of low-level code goes:
+Only in `slopos-ostd` (OSTD). Every other SlopOS crate the kernel links
+starts with `#![forbid(unsafe_code)]`, and `just check-framekernel-gates` also
+checks the macro expansion of each crate, so `unsafe` arriving through a
+macro is rejected too. Two third-party crates OSTD uses for panics are the
+exception: the stack unwinder (`vendor/unwinding`) and the DWARF reader under
+it (`vendor/gimli`), which `check_vendor_pin.sh` holds to their pinned
+upstream commits. Other crates.io dependencies keep whatever `unsafe` they
+have inside themselves; the gates only stop it reaching SlopOS crates
+through a macro or a linker section. The table shows where each kind of
+low-level code goes:
 
 | You need to | Put it in |
 |---|---|
 | Read or write a CPU register, run a special instruction | OSTD's `arch` and `cpu` modules |
-| Write assembly that enters or leaves the kernel | OSTD's naked functions (context switch, task entry, CPU start-up, user-mode entry) |
+| Write assembly that enters or leaves the kernel | OSTD's naked functions and assembly files (context switch, task entry, CPU start-up, interrupt stubs, user-mode entry) |
 | Refer to a symbol defined by the linker or by assembly | `extern_block!` inside OSTD |
 | Add an entry to a table the linker assembles | `registry_entry!`, from any crate |
 | Define a function that assembly calls | `extern_c_entry!`, only for the three allowed names |
@@ -38,6 +44,16 @@ shows where each kind of low-level code goes:
 | Read or write user memory | OSTD's user pointers and copy helpers |
 | Access device registers, I/O ports, DMA buffers, PCI configuration | OSTD's device and memory APIs |
 | Build a large struct without putting it on the stack | `Init<T, E>` and `#[derive(SlotFields)]` ([The trusted core](/docs/verification/ostd-trusted-core#building-large-values-in-place)) |
+
+Outside OSTD, one file holds anything of the kind: the kernel binary's own
+`kernel/src/main.rs`. It declares the global allocator and the
+allocation-error handler, which need the `extern crate alloc;` no other
+kernel crate may write, and it places the base-interface note, the record
+that says which [base interfaces](/docs/architecture/base) the kernel serves,
+in a linker section of its own with a hand-written
+`#[unsafe(link_section)]`, because the note describes the kernel file. It
+also assembles the boot entry, `boot/limine_entry.s`, which calls
+`kernel_main` (below). Nothing else is exempt.
 
 If the API you need already exists in OSTD, use it and stop here.
 
@@ -72,8 +88,8 @@ If the API you need already exists in OSTD, use it and stop here.
    used once, a sealed trait, a slice instead of a pointer and length. They
    are described on [The trusted core](/docs/verification/ostd-trusted-core#how-safety-rules-become-types).
 
-   Don't write a `# Safety` section on a safe function. The build rejects
-   it:
+   Don't write a `# Safety` section on a safe `pub` or `pub(crate)` function.
+   `just check-framekernel-gates` rejects it:
 
    ```text
    check_safe_contract_surface: 1 safe fns carry a '# Safety' section (baseline 0)
@@ -81,6 +97,7 @@ If the API you need already exists in OSTD, use it and stop here.
      uphold something the compiler will not check. Express it — a guard, a
      capability token, a closure-scoped borrow, a witness type — or mark the
      function 'unsafe fn' so the obligation is visible where it is taken on.
+     Re-run with SAFE_CONTRACT_BASELINE=0 to list them.
    ```
 
    Marking the function `unsafe fn` is only an option if its callers are all
@@ -99,7 +116,10 @@ If the API you need already exists in OSTD, use it and stop here.
    just check-miri
    ```
 
-   Both should pass with your test listed. If Miri reports undefined
+   `just test-host` lists your test as it passes. `just check-miri` runs
+   OSTD's tests four times (two aliasing models, library and integration
+   tests), prints `── KernMiri <model>-<shard>: ok ──` for each, and keeps
+   the full output in `builddir/kernmiri-*.log`. If Miri reports undefined
    behaviour, fix the primitive, not the test.
 
 6. **Use it from safe code.** Call the new API from the kernel crate that
@@ -123,10 +143,10 @@ depends on the function. Wrap it in a safe OSTD function with its own
 ## Add an entry to a linker table
 
 The kernel keeps several tables that the linker assembles from entries spread
-across many crates: boot steps (one table per boot phase), PCI and platform
-drivers, tests, saved test state, kernel console commands and resource-charge
-audits. At run time OSTD reads each one back as a slice. These are called
-*registries*.
+across many crates: boot steps (one table per boot phase), PCI, platform
+and USB drivers, tests, saved test state, kernel console commands and
+resource-charge audits. At run time OSTD reads each one back as a slice.
+These are called *registries*.
 
 To add an entry, use `registry_entry!` with the registry's name. You never
 write a section name yourself:
@@ -139,8 +159,9 @@ slopos_ostd::registry_entry! {
 ```
 
 In practice you'll rarely call it directly. Most registries have their own
-macro that wraps it, such as `pci_driver!` for drivers (see
-[Add a driver](/docs/development/adding-a-driver)) and the test macros (see
+macro that wraps it, such as `pci_driver!` and `usb_driver!` for drivers
+(see [Add a driver](/docs/development/adding-a-driver)), `kcommand!` for the
+diagnostic console and the test macros (see
 [Write tests](/docs/development/adding-tests)). The entry's type has to
 declare, through the `RegistryEntry` trait, which registries it belongs to,
 and the macro refuses a static whose type doesn't.
@@ -149,8 +170,9 @@ Adding a whole new registry touches several files, because the linker script,
 OSTD and two gates all have to agree on it:
 
 1. Declare the output section and its start and stop symbols in `link.ld`.
-2. Add a variant to `RegistryId`, its bounds to `bounds()` and an arm to
-   `registry_entry!`, all in `slopos-ostd/src/ffi/registry.rs`.
+2. In `slopos-ostd/src/ffi/registry.rs`, add a variant to `RegistryId` and
+   its section name to `section()`, declare the start and stop symbols and
+   return them from `bounds()`, and add an arm to `registry_entry!`.
 3. Add the section and its entry size to `ENTRY_SIZE` in
    `scripts/check_registry_sections.sh`.
 4. Add the section to `SECTION_ALLOWLIST` in `scripts/check_unsafe_expansion.sh`.
@@ -204,9 +226,9 @@ Each command should finish without an error. CI runs all four.
 |---|---|
 | `unsafe` in a kernel crate outside OSTD, or `#[allow(unsafe_code)]` | `check_unsafe_outside_ostd.sh` |
 | A new kernel crate without `#![forbid(unsafe_code)]` | `check_unsafe_outside_ostd.sh` |
-| A macro from another crate that expands to `unsafe` in a kernel crate | `check_unsafe_expansion.sh` |
-| `#[unsafe(link_section = "...")]` or `#[unsafe(no_mangle)]` by hand outside OSTD | `check_unsafe_expansion.sh` |
-| A safe OSTD function with a `# Safety` section | `check_safe_contract_surface.sh` |
+| `#[unsafe(link_section = "...")]` or `#[unsafe(no_mangle)]` by hand outside OSTD | The compiler, through `#![forbid(unsafe_code)]` |
+| A macro from another crate that expands to `unsafe` in a kernel crate, to a `link_section` that isn't a registry's, or to `no_mangle` on any name but the three above | `check_unsafe_expansion.sh` |
+| A safe `pub` or `pub(crate)` OSTD function with a `# Safety` section | `check_safe_contract_surface.sh` |
 | A crates.io dependency that places data in its own linker section | `check_registry_sections.sh` |
 | A registry entry type whose size changed without updating `ENTRY_SIZE` | `check_registry_sections.sh` |
 | `alloc::` containers in a kernel crate | `check_alloc_dep.sh` |

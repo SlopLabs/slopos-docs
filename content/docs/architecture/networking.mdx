@@ -1,18 +1,21 @@
 ---
 title: "Networking"
-description: "What the network stack gives your programs, how a packet travels between the card and your code, and how you configure it."
+description: "What the network stack gives your programs, which network cards it drives, how a packet travels between the card and your code, and how you configure it."
 ---
 
 import { PacketPath } from '@/components/diagrams/packet-path';
 
 A program on SlopOS talks to the network the same way it would on Linux:
-through *sockets*, with the same calls, flags and error codes. You get TCP
+through *sockets*, with the same calls, numbers and error codes. You get TCP
 connections, UDP datagrams, ping, local Unix sockets between programs on the
 same machine, name lookups through DNS, and an address handed out
-automatically by DHCP when the machine boots. That is enough for git, curl
-and cargo to fetch over the network on the
+automatically by DHCP on every network card the kernel finds. The kernel
+drives QEMU's virtual card, the Realtek gigabit chip on our development
+laptop, and USB Ethernet adapters, which can come and go while the system
+runs. That is enough for git, curl and cargo to fetch over HTTPS, and for git
+to fetch and push over SSH, on the
 [development machine](/docs/self-hosting/development-machine). What you don't
-get is IPv6: the stack speaks IPv4 only.
+get is IPv6 (the stack speaks IPv4 only) or Wi-Fi.
 
 Nothing here is new. The protocols are the ones the IETF wrote down in its
 RFCs, and we implemented them from those documents, in Rust, inside the
@@ -20,7 +23,12 @@ kernel. No existing network stack is linked in. We did read one closely:
 [smoltcp](https://github.com/smoltcp-rs/smoltcp), the embedded Rust TCP/IP
 stack, settled how our TCP connections represent their states. The side
 that programs see copies Linux, so code written against Linux sockets
-compiles and behaves the way you expect.
+compiles and behaves the way you expect, down to details such as when a
+restarted server may take its port back. The receive path borrows Linux's
+NAPI scheme, and what a card accepts from the wire follows the host
+requirements of RFC 1122 and, where those leave a choice, Linux's default.
+The page walks through a packet's path, the cards, what programs can use,
+configuration, what the machine accepts from the wire, and encryption.
 
 ## How a packet reaches your program
 
@@ -29,14 +37,19 @@ compiles and behaves the way you expect.
 1. **The card receives a frame.** The network driver gave the card empty
    buffers in advance, so the card writes the frame straight into memory and
    then raises an interrupt.
-2. **A receive thread collects a batch.** The interrupt code does no protocol
-   work. It wakes a kernel thread that belongs to the driver, and that
-   thread picks up packets in batches, up to a fixed number per round, so a
-   flood of traffic can't keep one processor busy forever. Linux calls this
-   scheme *NAPI*, and the code uses the same name.
-3. **The packet is checked and sorted.** The stack validates the IPv4 header,
-   reassembles packets that were split into fragments on the way, answers ARP
-   requests, and hands the rest to TCP, UDP or ICMP.
+2. **The receive thread collects a batch.** The interrupt code does no
+   protocol work. It wakes *netpoll*, one kernel thread the network stack
+   owns for every card, and netpoll picks up packets from each card in
+   batches, up to a fixed number per card per round, so a flood of traffic
+   on one card can't keep a processor busy forever or starve the others.
+   Linux calls this scheme *NAPI*, and the code uses the same name.
+3. **The packet is checked and sorted.** The stack drops anything that isn't
+   addressed to this machine (see [what the machine
+   accepts](#what-the-machine-accepts-from-the-wire)), validates the IPv4
+   header, reassembles packets that were split into fragments on the way,
+   answers ARP requests (ARP is how a machine learns which hardware address
+   on the local network has a given IPv4 address), and hands the rest to TCP,
+   UDP or ICMP.
 4. **The protocol finds the socket.** TCP and UDP look up the socket by the
    addresses and ports in the packet. TCP also acknowledges the data and puts
    out-of-order pieces back in sequence.
@@ -47,23 +60,71 @@ compiles and behaves the way you expect.
 
 Sending is the same in reverse: `send` puts bytes in the socket, TCP cuts them
 into segments and keeps a copy until they are acknowledged, the route table
-picks the next hop, ARP supplies its hardware address, and the driver hands
-the frame to the card.
+picks the card and the next hop, ARP supplies the next hop's hardware
+address, and the driver of that card sends the frame. The frame carries the
+hardware address of the card it actually leaves on, which matters once a
+machine has more than one.
+
+A second kernel thread, *net-timer*, runs the protocols' timers
+(retransmissions, DHCP renewals, ARP expiry) and checks every card's link
+state. Both threads start at boot, before any card is found, and serve
+whatever cards turn up.
+
+## The network cards
+
+| Card | Where you meet it | Interface |
+|---|---|---|
+| virtio-net | QEMU's virtual card | `eth0` under QEMU |
+| Realtek RTL8168h / RTL8111h, RTL8168M | The wired port on our development laptop, and many other PCs | `eth0` on the laptop |
+| USB Ethernet adapters speaking CDC-ECM or CDC-NCM | Plugged in at any time; QEMU's `usb-net` among them | the lowest `ethN` free, e.g. `eth1` |
+
+Every card enters service the same way: its driver hands the stack a device
+that can send, receive and report its link state, and the stack gives it an
+interface named `eth` plus the lowest free number, a place in netpoll's
+rounds and net-timer's link checks, and a DHCP client of its own. When a
+USB adapter is unplugged the stack undoes all of it in reverse: the DHCP
+client stops, the card's routes, ARP entries and interface go, and its name
+is free for the next card.
+
+**The Realtek chip** needs a bring-up sequence specific to each version of
+the chip, and Realtek publishes none, so the driver brings up only the
+versions it has a sequence for: the RTL8168h (also sold as RTL8111h) and the
+RTL8168M, which is the same chip under another name. Any other version is
+left alone, with a line in the kernel log naming its version number, so you
+know why the port is dead. The register offsets and the order of the
+bring-up are facts taken from Linux's `r8169` driver and Redox's `rtl8168d`;
+no code or prose of either is. Linux also loads a small firmware patch into
+the chip's PHY (the part that drives the cable) for this version; SlopOS
+doesn't carry that binary, and the chip works without it, as it does on
+Linux when the file is missing. One RTL8168 per machine is supported. A
+brought-up chip logs a line like:
+
+```text
+rtl8168: RTL8168h/8111h at 02:00.0 mac 00:e0:4c:68:01:02 irq MSI-X
+```
+
+**USB adapters** are described on [USB](/docs/architecture/usb). To the
+network stack they are cards like any other, except that they leave.
 
 ## What programs can use
 
-The socket calls use Linux's numbers and meanings: `socket`, `bind`,
-`listen`, `accept`, `accept4`, `connect`, `send`/`recv` and their `to`/`from`
-and `msg` variants, `shutdown`, `setsockopt`, `getsockopt`, `getsockname` and
-`getpeername`. C programs reach them through slibc and Rust programs through
-`std::net`, as described in [Userland](/docs/architecture/userland).
+The socket calls use Linux's numbers and meanings: `socket`, `socketpair`,
+`bind`, `listen`, `accept`, `accept4`, `connect`, `send`/`recv` and their
+`to`/`from` and `msg` variants, `shutdown`, `setsockopt`, `getsockopt`,
+`getsockname` and `getpeername`. C programs reach them through slibc and Rust
+programs through `std::net`, as described in
+[Userland](/docs/architecture/userland). Some are narrower than Linux's: the
+`msg` variants work only on `AF_UNIX` sockets, `setsockopt` and `shutdown`
+only on `AF_INET` ones, and each send or receive call moves at most 4096
+bytes, so a program must loop on a short count, as it should anyway. The
+[System call ABI](/docs/abi/syscalls) lists each call's limits.
 
 | You ask for | You get |
 |---|---|
 | `AF_INET`, `SOCK_STREAM` | A TCP connection or listener |
 | `AF_INET`, `SOCK_DGRAM` | UDP datagrams |
-| `AF_INET`, `SOCK_DGRAM`, `IPPROTO_ICMP` | Ping without special permission, as on Linux |
-| `AF_UNIX`, `SOCK_STREAM` | A local stream between programs, named by a file path |
+| `AF_INET`, `SOCK_DGRAM`, `IPPROTO_ICMP` | Ping without special permission. Linux has the same socket, but opens it only to the groups `net.ipv4.ping_group_range` names |
+| `AF_UNIX`, `SOCK_STREAM` | A local stream between programs, named by a file path, or a connected pair from `socketpair` |
 | `AF_INET6` | Refused with `EAFNOSUPPORT` |
 
 A few things behave in ways worth knowing:
@@ -74,13 +135,41 @@ A few things behave in ways worth knowing:
   mode, which is also what Linux does.
 - **Writing to a closed connection** raises `SIGPIPE`, unless you pass
   `MSG_NOSIGNAL`.
-- **Unix sockets can carry open files.** With `sendmsg` and `SCM_RIGHTS` one
-  program can hand another an open file descriptor. The desktop relies on this
-  to share window contents; see [Desktop and windowing](/docs/architecture/userland-windowing).
+- **Per-call flags are refused.** `MSG_NOSIGNAL` on a send is the only
+  `MSG_*` flag the kernel takes. Any other, on a send or a receive
+  (`MSG_PEEK`, `MSG_DONTWAIT`, `MSG_WAITALL`, `MSG_OOB`...), fails with
+  `EINVAL` rather than being ignored, because a receive that ignored
+  `MSG_PEEK` would consume the data it was asked only to look at. Make the
+  socket non-blocking instead of passing `MSG_DONTWAIT`.
+- **A restarted server gets its port back.** A TCP listener that sets
+  `SO_REUSEADDR` can listen on a port that its predecessor's old connections
+  still hold in their closing state (`TIME_WAIT`); only another listener on
+  the same port refuses it. Without the option, those connections keep the
+  port until they expire, as on Linux.
+- **UDP ports are shared only by consent.** Two UDP sockets can bind the same
+  address and port, or one the wildcard address and one a specific address
+  on the same port, only if every one of them set `SO_REUSEADDR`; the newest
+  then receives. So no program can take over a port another holds. A bind to
+  port 0 picks a free port at once. A connected UDP socket receives only
+  datagrams from the address it connected to.
+- **`IP_TOS` marks your packets.** The type-of-service byte you set on a
+  socket goes into the IPv4 header of every TCP segment and UDP datagram it
+  sends, with the two congestion-notification bits left to TCP, and an
+  accepted connection inherits its listener's value. OpenSSH sets it on every
+  connection.
+- **Unix sockets have owners and tell their peers who connected.** A Unix
+  socket's name is a file, made and reached under the ordinary
+  [file permission checks](/docs/architecture/users), and the other end can
+  ask who connected, and what program they were running, which is how the
+  [privilege broker](/docs/architecture/privd) knows whom it is talking to.
+  With `sendmsg` and `SCM_RIGHTS` one program can hand another an open file
+  descriptor; the desktop relies on this to share window contents (see
+  [Windowing](/docs/architecture/userland-windowing)).
 - **Name lookups go through the kernel.** The kernel has a small DNS client
   (a *stub resolver*) behind a `resolve` system call, and slibc's
   `getaddrinfo` uses it. It looks up IPv4 addresses (A records), follows
-  aliases, and caches answers.
+  aliases, and caches answers. slibc's `res_query` asks the same nameservers
+  for other record types, over UDP and, when a reply is too long, over TCP.
 - **Everything is available asynchronously.** Send, receive, accept, connect
   and poll can also be queued on [SlopRing](/docs/abi/slopring), SlopOS's
   submission and completion queue, including a send that reads straight from
@@ -91,17 +180,32 @@ The exact list of socket options and error codes is in the
 
 ## How interfaces are configured
 
-An *interface* is something packets go out of: the virtio network card
-(`eth0`) or the *loopback* interface (`lo`, `127.0.0.1`), which delivers
+An *interface* is something packets go out of: a network card (`eth0`,
+`eth1`, ...) or the *loopback* interface (`lo`, `127.0.0.1`), which delivers
 packets back to the same machine. Loopback comes up first and stays up even
 when networking is switched off, so programs that talk to each other over
 localhost keep working.
 
-When the card comes up, the kernel's DHCP client asks the local network for
-an address. The lease it gets installs the address, a default route through
-the gateway, and DNS servers, and renews itself before it expires. If the
-lease is lost, everything it installed goes with it. You don't need to do
-anything for a QEMU guest to reach the internet.
+When a card's link comes up, its DHCP client asks the local network for an
+address. The lease it gets installs the address, a default route through the
+gateway, and DNS servers, and renews itself before it expires. If the lease
+is lost or refused, everything it installed goes with it and the client asks
+again. You don't need to do anything for a QEMU guest, or a machine plugged
+into an ordinary home network, to reach the internet.
+
+Because any card gets a DHCP client without being asked, including an
+adapter someone plugs in later, the client is careful about what it accepts:
+
+- **An offer with an unusable network mask is ignored.** A lease whose mask
+  is missing, has holes in it, or is shorter than `/8` would make a large part
+  of the internet look like the local network.
+- **The first card keeps the default route.** Each lease's default route has
+  a *metric* (a cost the route table compares) of 100 plus its interface's
+  index, so the card found first wins and an adapter plugged in later doesn't
+  take over the machine's traffic.
+- **The first card's DNS servers win too.** The resolver uses the lease of
+  the lowest-numbered interface that names a DNS server. When that lease
+  goes, the next interface's servers take over.
 
 To look at or change the configuration, use `ip`, which follows the Linux
 command of the same name:
@@ -111,43 +215,85 @@ ip -br addr         # addresses, one line per interface
 ip route            # the route table
 ip dhcp             # the current lease
 ip status           # the whole stack on one screen
-ip monitor          # print changes as they happen
+ip monitor          # print changes as they happen, for ten seconds
+ip -t 0 monitor     # the same, until you stop it
 ip link set eth0 down
 ```
 
-Anyone can read the configuration, but changing it takes the network
-administration permission, and the kernel grants that only to `/bin/ip`. So a
-program that wants to change the network runs `ip`, which is what the
-desktop's network menu does too. [Permissions](/docs/architecture/authority)
-explains how a program gets that kind of grant. For familiar habits,
-`ifconfig` is `ip` under another name and `netstat` is `ss` under another
-name.
+Anyone can read the configuration. Changing it takes the `NetAdmin`
+[capability](/docs/architecture/authority), which ordinary programs don't
+hold, so when `ip` is asked to change something it asks the
+[privilege broker](/docs/architecture/privd) to run it with that capability:
+the action `org.slopos.net.configure`, which an administrator confirms with a
+click, or `org.slopos.net.toggle` for `ip net on` and `ip net off`, which an
+administrator may do unasked. The desktop's network switch runs the same
+`ip net` command, and is offered only to people who can use it without being
+asked. For familiar habits, `ifconfig` is `ip` under another name and
+`netstat` is `ss` under another name, with `netstat -r` and `netstat -i` for
+the routes and the per-interface counters; `ss` shows every socket to anyone,
+but names the process that owns one only to its owner or a `NetAdmin` holder.
 
-The desktop's top bar shows whether you have no connection, only the local
-network, or the internet. It works this out from the card's link state, the
-address and the default route, and confirms it by pinging the gateway and a
-machine beyond it.
+The desktop's menu bar shows whether you have no connection, only the local
+network, or the internet. The kernel works this out from the cards' link
+state, the address and the default route, and from traffic it has seen
+answered: a reply from the gateway, a name lookup, a TCP connection to a
+machine beyond it. When that evidence is old, it pings the gateway or the DNS
+server to check.
+
+## What the machine accepts from the wire
+
+A machine on a real network sees traffic that isn't meant for it, and some
+that is forged. So on every interface but loopback the stack keeps only
+packets addressed to this machine, following the *weak host model* that
+Linux uses by default: a packet may arrive on any card for any of the
+machine's addresses, plus broadcast and multicast. It drops packets claiming
+to come from `127.0.0.0/8`, from a broadcast or multicast address, or from
+no address at all, and packets for `127.0.0.0/8`, which never legitimately
+arrive on a cable. It never sends a packet with a `127.x` source out of a
+card either.
+
+There is one exception. Until a card holds an address, it also accepts an
+unfragmented UDP packet to the DHCP client port, because some DHCP servers
+send their offer straight to the address they are offering instead of
+broadcasting it.
+
+ARP follows the rule its RFC gives: an ARP packet refreshes the entry of any
+sender the machine already knows, but creates a new entry only when the ARP
+was aimed at this card's own address, and a card answers ARP requests only
+for its own address. So a neighbour can't fill the table by announcing
+itself. A ping sent to a broadcast or multicast address goes unanswered, as
+RFC 1122 allows, because the reply would have to carry that address as its
+source.
 
 ## Encryption (TLS)
 
 The kernel knows nothing about encryption. TLS, the protocol behind HTTPS,
 runs inside the programs that need it, the same as on Linux. SlopOS has its
 own TLS 1.3 client library (`tls-core`), written for SlopOS in safe Rust along
-with every cryptographic primitive it uses, and `curl` is built on it.
+with every cryptographic primitive it uses. `curl` and the
+[remote-control agent](/docs/self-hosting/remote-control) are built on it.
 Certificates are checked against Mozilla's root list, shipped in
-`/etc/ssl/certs/ca-certificates.crt`. [Userland](/docs/architecture/userland)
-lists the network tools that use it.
+`/etc/ssl/certs/ca-certificates.crt`.
+
+The developer tools in the [toolchain](/docs/self-hosting/toolchain) bring
+their own, built from upstream: git's HTTPS and cargo's registry downloads go
+through libcurl with Mbed TLS, cargo fetches git dependencies through
+libgit2, which uses OpenSSL, and git's `ssh://` remotes go through OpenSSH's
+`ssh` client, the one git is tested against. OpenSSH's server is installed
+with the client, but nothing starts it.
 
 ## What is missing
 
 - **IPv6.** Not implemented.
-- **Real network cards.** The only network driver is for virtio, the virtual
-  card QEMU provides. On physical hardware SlopOS has no network yet. A driver
-  for a wired card is part of the bare-metal plan.
-- **Some socket kinds.** No `socketpair`, no Unix datagram or sequenced-packet
-  sockets, and no raw or packet sockets for capturing traffic.
+- **Wireless networking.** Wi-Fi needs a driver per chip, firmware blobs and
+  WPA, and is out of scope.
+- **Most wired cards.** Only the three kinds of card above are driven. A
+  Realtek chip of another version is declined.
+- **Some socket kinds.** No Unix datagram or sequenced-packet sockets, and no
+  raw or packet sockets for capturing traffic.
 - **TCP out-of-band data.** Urgent bytes arrive inline with the rest, and
-  `MSG_OOB` is refused.
+  `MSG_OOB` is refused like every per-call flag but `MSG_NOSIGNAL`.
+- **Forwarding.** SlopOS doesn't route packets between its cards.
 
 [Known limitations](/docs/status/known-limitations) keeps the current list.
 
@@ -156,20 +302,51 @@ lists the network tools that use it.
 Most of the stack is pure logic, so the kernel's test suite exercises it
 directly: TCP connections are opened, fed lost, duplicated and reordered
 segments, and closed, the DHCP client is walked through a lease's whole life
-on a fake clock, and DNS replies are forged to check they are refused. The
-parsing that `ip` shares with the desktop (`net-core`) is tested on the host
-with `just test-host`. Inside a booted guest, git and cargo fetching over the
-network exercise the whole path.
+on a fake clock, DNS replies are forged to check they are refused, and fake
+cards are published and retired to check that every route, neighbour and
+lease goes with them and that a frame leaves with the right card's address.
+The Realtek chip's bring-up is tested on the host against a simulated chip
+(`rtl8168-core`), since QEMU has no model of it; only the laptop tests the
+real one. `just test-usb` plugs QEMU's USB adapter in beside the virtio card,
+checks that it becomes `eth1`, leases its own address, carries TCP to a peer
+on its own network, and leaves cleanly when unplugged. The parsing that `ip`
+shares with the desktop (`net-core`) is tested on the host with
+`just test-host`. Inside a booted guest, git and cargo fetching over HTTPS,
+and git fetching and pushing over SSH to the host, exercise the whole path.
 
 ## For contributors
 
 The rules a change to the stack has to keep:
 
-- **The interrupt does no protocol work.** It only wakes the driver's receive
-  thread, which drains a bounded batch and reschedules itself if it used the
-  whole budget. Receive queues are bounded against a shared packet pool, and
-  the virtio driver refills receive buffers whose allocation failed so the
-  ring doesn't shrink under memory pressure.
+- **The stack owns the threads; a driver supplies a device.** A card driver
+  implements `NetDevice`, an interrupt handler that only wakes netpoll,
+  `rx_pending` (receive work that raced in after a poll) and
+  `sample_carrier`, and calls `nic::publish`. No driver keeps a thread of its
+  own. A driver whose device can leave calls `nic::retire`, which undoes
+  everything `publish` did. Call both with no driver lock held.
+- **No bring-up under a spinlock.** A chip's bring-up busy-waits for tens to
+  hundreds of milliseconds, so the Realtek driver runs it with its spinlock
+  released, serialised by a sleeping mutex.
+- **A device never writes past the buffer it was given.** The Realtek chip's
+  receive size limit is the buffer length its descriptors name. A larger
+  limit over smaller buffers was the precondition of CVE-2009-1389 in Linux's
+  driver for the same family.
+- **Egress identity comes from the route.** The source hardware address is
+  stamped once the route has picked the device, an ARP names that device's
+  address, and a neighbour's queued packets leave on the neighbour's device.
+- **IPv4 headers carry real identification.** Every outgoing packet gets a
+  fresh 16-bit ID, which RFC 6864 requires of any packet that may be
+  fragmented, and TCP segments set Don't Fragment, as Linux sends them. A
+  home network extender in the field corrupted every TCP data segment that
+  had neither.
+- **TCP options fit inside the MSS.** A data segment carrying the 12-byte
+  timestamp option carries 12 bytes less data (RFC 6691), or full segments
+  overflow a 1500-byte path and are dropped.
+- **The interrupt does no protocol work.** It only wakes netpoll, which
+  drains a bounded batch per card and goes round again if it used the whole
+  budget. Receive queues are bounded against a shared packet pool, and the
+  virtio driver refills receive buffers whose allocation failed so the ring
+  doesn't shrink under memory pressure.
 - **Packet filters are safe Rust.** The *XDP* hook (the name comes from
   Linux's eXpress Data Path) runs a chain of Rust filters on each raw frame
   before IP sees it; a filter can pass, drop, transmit or redirect. Linux
@@ -180,7 +357,9 @@ The rules a change to the stack has to keep:
   queue for connections still in their handshake and one for finished ones.
   Only the final ACK moves a connection into the machine-wide table, so a
   flood of fake connection attempts fills one listener's queue and nothing
-  else. Overflow of the accept queue resets the new connection.
+  else. Overflow of the accept queue resets the new connection, and a full
+  table shard evicts its oldest `TIME_WAIT` connection rather than refusing
+  a new one.
 - **TCP follows the RFCs it cites.** Retransmission timing is RFC 6298 with
   Karn's rule, loss recovery uses SACK (RFC 6675), windows scale per RFC 7323,
   and congestion control is CUBIC (RFC 8312) with HyStart++ (RFC 9406).
@@ -188,9 +367,11 @@ The rules a change to the stack has to keep:
   segments on an established connection get a rate-limited challenge ACK
   rather than a reset (RFC 5961).
 - **The DHCP client is a state machine without I/O.** Transport is separate,
-  which is what lets tests drive it on a mock clock. Addresses, routes and
-  DNS servers it installs are tagged with their origin and removed with the
-  lease.
+  which is what lets tests drive it on a mock clock. It sends nothing until
+  the link is up, runs one retransmission chain at a time, and gives up an
+  address the server refused or let expire before asking again. Addresses,
+  routes and DNS servers it installs are tagged with their origin and removed
+  with the lease.
 - **DNS queries don't share fate.** Each lookup has its own slot, random
   source port and transaction id from the kernel's random number generator,
   and a reply is accepted only from the queried server to that port.
@@ -206,22 +387,45 @@ The rules a change to the stack has to keep:
 - [`socket(7)`](https://man7.org/linux/man-pages/man7/socket.7.html),
   [`tcp(7)`](https://man7.org/linux/man-pages/man7/tcp.7.html) and
   [`unix(7)`](https://man7.org/linux/man-pages/man7/unix.7.html). The Linux
-  manual pages for the behaviour SlopOS copies.
+  manual pages for the behaviour SlopOS copies; `socket(7)` describes
+  `SO_REUSEADDR`.
 - [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293), the current TCP
   specification, which gathers forty years of corrections into one document.
 - [smoltcp](https://github.com/smoltcp-rs/smoltcp). A small TCP/IP stack in
   Rust whose socket design influenced ours.
-- [*Monitoring and Tuning the Linux Networking Stack: Receiving Data*](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-receiving-data/)
-  from packagecloud. A detailed tour of Linux's receive path, including NAPI,
-  for comparison with the steps above.
+- [NAPI](https://docs.kernel.org/networking/napi.html) in the Linux kernel
+  documentation, the scheme behind "the interrupt only wakes the poll". Linux
+  can give each card's poll a thread of its own; SlopOS has one netpoll
+  thread for every card. For a longer tour of Linux's receive path, read
+  packagecloud's
+  [*Monitoring and Tuning the Linux Networking Stack: Receiving Data*](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-receiving-data/).
+- [RFC 1122](https://www.rfc-editor.org/rfc/rfc1122.txt), *Requirements for
+  Internet Hosts*. Section 3.3.4.2 defines the weak and strong host models;
+  section 3.2.1.3 lists the source addresses a host must not accept. Linux's
+  [IP sysctl](https://docs.kernel.org/networking/ip-sysctl.html)
+  documentation shows the same choices as knobs (`arp_ignore`, `arp_accept`,
+  `route_localnet`); in SlopOS they are fixed.
+- [RFC 2131](https://www.rfc-editor.org/rfc/rfc2131.txt) (DHCP), whose
+  section 4.1 is why a card accepts a DHCP offer sent straight to the address
+  it offers, and [RFC 826](https://www.rfc-editor.org/rfc/rfc826.txt) (ARP),
+  whose merge rule SlopOS's ARP follows.
+- [Redox's `rtl8168d`](https://gitlab.redox-os.org/redox-os/base/-/tree/main/drivers/net/rtl8168d),
+  an MIT-licensed driver for the same chip that runs as a user-space program,
+  and [Linux's Realtek drivers](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/net/ethernet/realtek),
+  where the chip's register facts were checked.
 
 ## In the source
 
 | Path | What is there |
 |---|---|
-| `net/src/` | The stack: interfaces, ARP, routing, IPv4, UDP, ICMP, DHCP, DNS, Unix sockets |
+| `net/src/` | The stack: interfaces, ARP, routing, IPv4, UDP, ICMP, DNS, Unix sockets |
+| `net/src/nic.rs` | Bringing a card into service and out of it; the netpoll and net-timer threads |
+| `net/src/dhcp/` | The DHCP client and its transport |
 | `net/src/tcp/` | TCP |
-| `net/src/napi.rs`, `net/src/ingress.rs`, `net/src/xdp/` | The receive path and packet filters |
+| `net/src/ingress.rs`, `net/src/ipv4.rs`, `net/src/xdp/` | The receive path, what the machine accepts, and packet filters |
+| `drivers/src/virtio_net.rs` | QEMU's virtual card |
+| `drivers/src/rtl8168.rs`, `rtl8168-core/` | The Realtek driver and its host-tested chip model |
+| `drivers/src/usb/net.rs` | USB Ethernet adapters |
 | `net-core/` | Address types and `ip` parsing shared with user space, host-tested |
 | `userland/src/apps/ip/` | The `ip` command |
 | `tls-core/` | The TLS 1.3 client |

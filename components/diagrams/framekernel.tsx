@@ -7,13 +7,13 @@ const LAYERS = [
   },
   {
     name: 'Kernel services',
-    detail: 'Scheduler, memory manager, filesystem, network stack, drivers: about two dozen crates.',
+    detail: 'Scheduler, memory manager, filesystems, network stack, drivers: every other SlopOS crate the kernel links.',
     rule: 'Safe Rust only',
     trusted: false,
   },
   {
     name: 'Trusted core (OSTD)',
-    detail: 'Every line of the kernel’s unsafe code, wrapped in safe functions and types.',
+    detail: 'Every line of SlopOS’s own unsafe kernel code, wrapped in safe functions and types.',
     rule: 'May use unsafe',
     trusted: true,
   },
@@ -26,7 +26,7 @@ const LAYERS = [
 ] as const;
 
 const SUMMARY =
-  'The layers of SlopOS, top to bottom: programs in user mode; kernel services, written in safe Rust only; the trusted core, the one crate that may use unsafe code; and the hardware. The kernel services reach the hardware only through the trusted core.';
+  'The layers of SlopOS, top to bottom: programs in user mode; kernel services, written in safe Rust only; the trusted core, the one SlopOS crate that may use unsafe code; and the hardware. The kernel services reach the hardware only through the trusted core.';
 
 export function FramekernelLayers() {
   return (
@@ -61,7 +61,8 @@ export function FramekernelLayers() {
       </div>
       <figcaption className="mt-3 text-xs" style={{ color: 'var(--ink-dim)' }}>
         Kernel services reach the hardware only through the trusted core, so a memory-safety bug in
-        the kernel has to start in the highlighted layer, not in the code above it.
+        the kernel starts in the highlighted layer, or in the few trusted pieces beside it that this
+        page lists, never in the code above it.
       </figcaption>
     </figure>
   );

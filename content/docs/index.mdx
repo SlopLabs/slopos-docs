@@ -4,18 +4,24 @@ description: "An x86-64 operating system in Rust, written by AI agents and check
 ---
 
 SlopOS is an operating system for x86-64 PCs, written from scratch in Rust.
-It has its own kernel, drivers, filesystem, network stack, C library, shell
-and desktop. It boots on a real laptop, and inside QEMU it can compile a new
-version of itself, install it next to the running one, and boot into it.
+It has its own kernel, drivers, filesystem, network stack, C library, shell,
+desktop and installer. Several people can have accounts on one machine, each
+with their own desktop, and a program gets power over the machine only when
+the program that started it handed that power over, or when the system's
+policy allows it, often after asking the person at the machine. SlopOS runs
+installed on the disk of a real laptop, and there, as in QEMU, it can compile
+a new version of itself, install it beside the running one, and boot into it.
 
 Most of the code was written by AI agents. We named the project after what
 that usually produces, and then arranged things so that it wouldn't matter.
 An agent's claim that its code is correct is worth nothing, so the build
-checks instead. One crate (`slopos-ostd`) holds every line of `unsafe` Rust in
-the kernel, and the compiler refuses `unsafe` everywhere else. Verus, a proof
-checker for Rust, verifies the invariants where a bug in that crate would mean
-undefined behaviour rather than an error. Thousands of tests boot the kernel
-under QEMU on every change.
+checks instead. One crate (`slopos-ostd`) holds all but a few lines of the
+kernel's own `unsafe` Rust, and the build fails if `unsafe` appears anywhere
+else in the kernel's code. For selected parts of the kernel where a bug would
+corrupt memory rather than return an error, Verus, a proof checker for Rust,
+has checked a model of each mechanism against its rules, such as "a page is
+never freed twice". On every change, thousands of tests run against the
+kernel booted in QEMU.
 
 <Frame>
   <img src="/images/slopos-on-hardware.jpg" alt="The SlopOS desktop running on a Lenovo laptop, showing the terminal, file manager, system monitor and image viewer" />
@@ -28,24 +34,31 @@ by reading the hardware description the firmware provides (its ACPI tables).
 None of the hard ideas in SlopOS are new. The split between one trusted crate
 and everything else comes from Asterinas. The system call interface, the
 signals, the terminal handling and the journal format come from Linux. The
-source README [credits every project we learned from](https://github.com/SlopLabs/slopos#the-wizards-invented-none-of-this)
+source README
+[credits every project we learned from](https://github.com/SlopLabs/slopos#the-wizards-invented-none-of-this)
 and says what we took from each.
 
 ## Where to start
 
 **To see it run,** follow the [Quickstart](/docs/getting-started/quickstart).
-Two commands boot a live system in a QEMU window.
+Two commands boot a live system in a QEMU window. [Installing
+SlopOS](/docs/self-hosting/installing) puts it on a disk.
 
 **To understand how it works,** start with the
 [Overview](/docs/architecture/overview), which maps the whole system, and
 follow whatever catches your interest. If you have never worked on an
 operating system, [Crash recovery](/docs/architecture/crash-recovery) is a
 good first read: it explains what happens to your files when the power goes.
+[Capabilities](/docs/architecture/authority) and [Privileged
+actions](/docs/architecture/privd) explain what a program may do and who
+decides.
 
 **To change it,** set up the [Development machine](/docs/self-hosting/development-machine),
 where SlopOS builds and installs itself, then read the guide for what you are
 touching: [Add a syscall](/docs/development/adding-a-syscall),
-[Add a driver](/docs/development/adding-a-driver) or
+[Add a driver](/docs/development/adding-a-driver),
+[Write an app](/docs/development/writing-an-app),
+[Package an extension](/docs/development/packaging-an-extension) or
 [Write tests](/docs/development/adding-tests). When the kernel hangs,
 [Diagnosing the kernel](/docs/development/diagnostics) shows how to ask it why.
 
