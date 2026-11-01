@@ -87,7 +87,7 @@ directly.
 | `BootEntry` | On top of `Power`, the firmware's boot manager entries: `Boot####`, `BootOrder`, `BootNext` and `BootCurrent`, and no other firmware variable | privd; the installer |
 | `SetId` | Taking a user or group id the process doesn't already hold, setting supplementary groups, and starting a child as someone else or with a login tag | privd |
 | `DacOverride` | Reading and writing any file whatever its permission bits, and giving any file to any owner | privd; `users`, the installer, what `priv` runs |
-| `SchedHigh` | Starting a program at the `High` scheduling tier, and setting a nice value below zero | Init alone, which starts the compositor at `High` |
+| `SchedHigh` | Starting a program at the `High` scheduling tier, and setting a nice value below both zero and the task's current one | Init alone, which starts the compositor at `High` |
 | `BaseUpdate` | Making another archive the running base | privd; `bootctl base install` and `base rollback` |
 | `ExtensionUpdate` | Activating and deactivating extensions; it also lifts the per-process disk-space limit | privd; `extctl` |
 | `TestHarness` | The test-only system calls, which do nothing unless the kernel booted with `tests=on` | The copy of init that runs the tests |

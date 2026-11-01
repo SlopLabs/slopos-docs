@@ -11,7 +11,9 @@ results can arrive in any order. The design is Linux's io_uring (Jens Axboe,
 2019), cut down to the operations SlopOS needs; SlopRing is not
 binary-compatible with io_uring. The layouts, opcodes, flags and limits are
 defined in `abi/src/ring.rs`; the kernel side is the `ring` crate and
-`core/src/syscall/ring_handlers.rs`. [Userland](/docs/architecture/userland)
+`core/src/syscall/ring_handlers.rs`. SlopRing is for the base's own programs:
+its calls are private calls, and `libc.so` exports none of them, so a program
+outside the base cannot use a ring. [Userland](/docs/architecture/userland)
 describes the runtime that drives the ring.
 
 ## System calls

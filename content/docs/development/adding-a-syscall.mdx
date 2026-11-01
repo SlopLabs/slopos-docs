@@ -332,7 +332,7 @@ scripts/check_base_interface.sh
 
 ```
 check_base_interface: the private call surface changed under an issued number:
-    interface 10 is recorded as …, but the surface now digests to …
+    interface 12 is recorded as …, but the surface now digests to …
 ```
 
 1. Raise `BASE_INTERFACE` in `abi/src/base_interface.rs` by one.
@@ -352,7 +352,7 @@ check_base_interface: the private call surface changed under an issued number:
 Run the gate again and it passes:
 
 ```
-check_base_interface: OK — <calls> private calls, <lines> surface lines, digest <sha256>…
+check_base_interface: OK — <calls> private calls, <lines> surface lines, digest <first 16 hex digits>…
 check_base_interface: matches the ledger's row for BASE_INTERFACE
 ```
 

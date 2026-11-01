@@ -286,8 +286,9 @@ a library by name in this order:
 
 `AT_SECURE` is a flag the kernel sets for a program that starts holding any
 gated [capability](/docs/architecture/authority), or running as other ids
-than its starter's real ones, whatever its starter held. Skipping the last two directories for such a program, and for uid
-0, means a library a person can write never ends up inside a program that
+than its starter's real ones, and for a program `exec` loads while the
+caller's effective ids differ from its real ones. Skipping the last two
+directories for such a program, and for uid 0, means a library a person can write never ends up inside a program that
 holds more than that person does. The loader reads `HOME` from the
 environment the process started with and uses it only if it is an absolute
 path.

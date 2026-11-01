@@ -65,8 +65,8 @@ stores the return address in `rcx`.
   reach a program. When a signal interrupts a call that returned one of them,
   the kernel either restarts the call after the signal handler runs or returns
   `-EINTR`, following Linux's `SA_RESTART` rules. `nanosleep`, `poll`, `futex`
-  and `ring_enter`, which carry a timeout they do not hand back, return
-  `-EINTR` instead.
+  and `ring_enter` always return `-EINTR` instead, because a restart would
+  wait their whole timeout again; `nanosleep` writes the time left to `rem`.
 
 ## Capability classes
 
