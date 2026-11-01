@@ -239,12 +239,12 @@ resort at shutdown.
 ## How it is tested
 
 Kernel tests in `sched/src/sched_tests.rs` cover waits that time out, waits
-ended by a kill, and the disk wait that must outlast one. Tests in
-`core/src/syscall/tests.rs` check that the `poll` marker refuses a late wake
-from an old generation, and others check that a busy Normal task can't starve
-a Low one forever while aging leaves the usual order alone. Another kernel
-test blocks a task while its CPU can't switch tasks and
-checks that it comes back running. In userland, `spin_signal_test` kills a
+ended by a kill, the disk wait that must outlast one, and the aging rule: a
+busy Normal task can't starve a Low one forever, and aging leaves the usual
+order alone. Tests in `core/src/syscall/tests.rs` check that the `poll`
+marker refuses a late wake from an old generation. Another kernel test blocks
+a task while its CPU can't switch tasks and checks that it comes back
+running. In userland, `spin_signal_test` kills a
 program spinning in a loop, `ctrlc_flood_test` interrupts a job blocked in a
 write, and `exit_stress_test` ends processes whose threads are on their way
 into `futex_wait`, hundreds of times on every CPU, and checks that none

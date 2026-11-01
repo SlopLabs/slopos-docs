@@ -149,11 +149,14 @@ following the chain if that CPU is waiting too. Then the watcher interrupts
 the stuck CPU with a signal it can't mask (an *NMI*), and the stuck CPU
 prints where it is: `rip=` is the instruction it's running, and the symbol
 next to it is the function. Here, it was spinning on a read from device
-memory.
+memory. The last line says the stall was counted as an oops (see the next
+section) and the CPU was left to carry on.
 
-A stall that lasts five times the threshold is fatal, and so is a chain of
-CPUs waiting on each other in a circle (a deadlock), on the first report.
-Under a hypervisor, a CPU that the host didn't schedule looks exactly like a
+While the CPU stays stuck, the report comes again each time the stall
+doubles (at 200, 400 and 800 samples with the default threshold). The first
+report at five times the threshold or more is fatal, which with the default
+is the one at 800 samples. A chain of CPUs waiting on each other in a circle
+(a deadlock) is fatal at its first report. Under a hypervisor, a CPU that the host didn't schedule looks exactly like a
 stuck one, so there the watchdog only reports unless you boot with
 `watchdog.panic=on`. A fatal stall ends the machine as a panic does,
 leaving a crash record (below) with the message
@@ -373,11 +376,16 @@ each hold one lock and wait for the other's will wait forever. The kernel
 prevents this with a *lock-order checker*, modelled on Linux's
 [lockdep](https://docs.kernel.org/locking/lockdep-design.html): every time
 code takes a lock while holding another, the checker records that order, and
-if anything ever takes the same two kinds of lock in the opposite order, it
-reports it, even if the two never collided at run time.
+if anything ever takes the same two kinds of lock in the opposite order (or
+closes a longer circle of such orders), it reports it, even if the two never
+collided at run time.
 
-**What you'll see.** By default the first violation panics, so it shows up as
-a kernel panic whose message starts `LOCK DEPENDENCY CYCLE`. Before that the
+**What you'll see.** By default the first violation panics with a message
+that starts `LOCK DEPENDENCY CYCLE`. On a test boot, during boot, or anywhere
+else the kernel can't recover from a panic, that is a kernel panic. In a
+program's system call or a kernel thread on a running system it is an oops
+instead (see [A program died with an oops](#a-program-died-with-an-oops)),
+whose `panic recovery:` line carries the same message. Before either, the
 log has the full report:
 
 ```
@@ -396,8 +404,8 @@ path" is the order the checker saw earlier, which this acquisition
 contradicts. One of the two orders is wrong; fix the code so both places
 take the locks in the same order.
 
-**What to do.** A single violation stops the boot, so if you suspect more
-than one, boot with `lockdep=warn`: the checker reports each problem once and
+**What to do.** The first violation stops the test run or the boot, so if you
+suspect more than one, boot with `lockdep=warn`: the checker reports each problem once and
 carries on, so one boot lists them all. SysRq `d` shows how full the checker's
 tables are. The kernel also prints a summary line at boot and after each test
 phase:

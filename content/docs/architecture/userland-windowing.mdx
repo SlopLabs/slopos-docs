@@ -198,11 +198,12 @@ call only init may make (`seat_switch`), which also routes all input to the
 new holder; the desktop that goes behind stops drawing and locks.
 [Sessions and login](/docs/architecture/sessions) explains switching.
 
-There are two seat ranks. Compositors hold the lower one. The higher one
-belongs to the kernel's own log and to `/bin/roulette`, the Wheel of Fate
-that runs at boot, so either can always take the screen back from a stuck
-compositor. Asking for a seat that is held at the same or a higher rank
-fails with `EBUSY`. Below the seats, the kernel picks which display driver
+There are two seat ranks. Compositors hold the lower one, and only
+`/bin/roulette`, the Wheel of Fate that runs at boot, takes the higher one.
+Asking for a seat that is held at the same or a higher rank fails with
+`EBUSY`. The kernel's own log takes no seat: while it is on screen, the
+kernel holds back every compositor's frames, so it shows even over a stuck
+compositor. Below the seats, the kernel picks which display driver
 shows the frame: Intel graphics, virtio-gpu in QEMU, or the plain framebuffer
 the firmware left behind ([Drivers](/docs/architecture/drivers)).
 
