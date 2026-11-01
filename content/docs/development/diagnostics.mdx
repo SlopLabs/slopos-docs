@@ -79,9 +79,9 @@ answers when nothing else does.
 | `x` | Tasks that have exited but haven't been collected, and who should collect each one | no |
 | `s` | Scheduler counters, per CPU and in total | no |
 | `i` | The kernel's I/O service threads: state and how many rounds each has done | no |
-| `k` | The longest stall each CPU has seen, and which tasks are waiting on which | no |
+| `k` | The longest stall each CPU has seen, and each CPU spinning on a lock, with the chain of CPUs holding what the next one waits for | no |
 | `p` | Asks every other CPU for its registers and what it is running, and prints a stack trace for this one | no |
-| `d` | How full the lock-order checker's tables are (needs `lockdep=warn`) | no |
+| `d` | Whether the lock-order checker is active, and how full its tables are | no |
 | `m` | Memory: the page allocator, per-CPU caches, the small-object allocator | no |
 | `c` | Each CPU's memory-type settings | no |
 | `q` | Resource accounts: used, peak, limit and refusals for each kind of resource | no |
@@ -115,7 +115,8 @@ byte a program can write. This is narrower than Linux, whose
 **What to do.** First press SysRq and `w`. If the system is up but some
 programs are stuck, this shows every blocked task and the stack it's blocked
 on, which usually names the thing it's waiting for. `t` shows all tasks, and
-`k` shows any chain of tasks waiting on each other.
+`k` shows any CPU spinning on a lock, following the chain of CPUs that hold
+what the next one waits for, and says when that chain closes in a circle.
 
 If the console doesn't answer either, the CPU that handles the keyboard is
 stuck too. Wait for the watchdog (below), or attach a debugger: boot with
