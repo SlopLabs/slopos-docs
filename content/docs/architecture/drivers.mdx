@@ -146,9 +146,9 @@ The Xe driver doesn't set the display mode itself. It takes over the mode the
 firmware already set and points the screen at the kernel's own picture. If
 the panel stops scanning in the moment after the switch, the driver puts the
 firmware's settings back and the screen stays on the firmware's display. The
-RTL8168 driver brings up only the chip versions it knows,
-because each Realtek version needs a start-up sequence of its own; another
-version is declined and named in the log.
+RTL8168 driver brings up only the chip versions it knows, because each
+Realtek version needs a start-up sequence of its own; another version is
+declined and named in the log.
 
 All the virtio drivers use the current virtio standard and need
 message-based interrupts (MSI or MSI-X). A virtio disk or network card
@@ -199,8 +199,8 @@ everyone:
   kernel repeats its last key after 500 ms, about 30 times a second.
 - **A few keys belong to the machine.** Alt+PrintScreen arms the
   [diagnostic console](/docs/development/diagnostics), Esc shows or hides the
-  kernel log until the first desktop or login screen draws, and Shift+PageUp and Shift+PageDown scroll the
-  console's history. A USB keyboard counts as the physical console as much
+  kernel log until the first desktop or login screen draws, and Shift+PageUp
+  and Shift+PageDown scroll the console's history. A USB keyboard counts as the physical console as much
   as the built-in one does.
 - **A keyboard that leaves releases what it held.** Every key it held goes
   up as it is unplugged.
