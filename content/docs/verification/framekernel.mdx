@@ -221,9 +221,10 @@ just check-framekernel-gates
   and Sound TCB*](https://arxiv.org/abs/2506.03876) by Peng et al., USENIX ATC
   '25 ([conference page](https://www.usenix.org/conference/atc25/presentation/peng-yuke)).
   The full design, the invariants the trusted core must keep, and how it was
-  tested with Miri. The rule behind SlopOS's limit on stack frames (a frame
-  must not be able to step over a stack's guard page) comes from section 4.3;
-  the 2 KiB figure matches Linux's default frame-size warning.
+  tested with KernMiri, their extended Miri. The rule behind SlopOS's limit
+  on stack frames (a frame must not be able to step over a stack's guard
+  page) comes from section 4.3; the 2 KiB figure matches Linux's default
+  frame-size warning.
 - [*What soundness means*](https://asterinas.github.io/book/ostd/soundness/what-soundness-means.html)
   in the Asterinas book. Separates soundness from correctness and sets out
   Asterinas's trust model, the clearest statement of limits like the ones

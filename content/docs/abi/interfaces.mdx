@@ -3,11 +3,14 @@ title: "Interfaces and stability"
 description: "Every place where parts of SlopOS that are built or updated separately meet, how each one may change, and the check that holds it."
 ---
 
-This page lists every interface between parts of SlopOS that are built or
+This page lists the interfaces between parts of SlopOS that are built or
 replaced at different times: the kernel, the base, programs outside the base,
 extensions, the boot disk, the root filesystem, the host's tools and the test
 harness. Each entry names its source in the tree, its level, what a change to
-it takes and the gate or test that fails when the rule is broken. A script
+it takes and the gate or test that fails when the rule is broken. Files that
+one base program keeps on the root for its own later runs, such as
+`bootctl`'s slot records under `/var/lib/slopos/slots` and the saved keyboard
+layout in `/etc/keymap`, are unversioned in the same way and are not listed. A script
 under **Checked by** runs from `just check-framekernel-gates`, which CI runs,
 unless the entry says otherwise; a name ending in `_test` is a userland test
 that `just test` runs.
@@ -60,6 +63,8 @@ interface lasts.
 | [Shell completion rules](#shell-completion-rules) | Shell and installed trees | Unversioned |
 | [Extension images](#extension-images) | `tools/extension`; `extctl`, init, privd and kernel | Unversioned |
 | [Extension programs at run time](#extension-programs-at-run-time) | Init, privd and loader; an extension's programs | Unversioned |
+| [Extension configuration](#extension-configuration) | `extctl` and init; an extension's programs | Unversioned |
+| [Extension commands](#extension-commands) | `extctl`; every program that searches `PATH` | Unversioned |
 | [Base manifest](#base-manifest) | One base's init and the next base | Unversioned |
 | [Consent channel](#consent-channel) | privd and each compositor | Versioned (`consent::VERSION`) |
 | [Init re-execution state](#init-re-execution-state) | Running init and the next `/sbin/init` | Versioned (header lines) |
@@ -73,6 +78,7 @@ interface lasts.
 | [Accounts record and extension store](#accounts-record-and-extension-store) | Every base that runs on one root | Unversioned |
 | [Remote control protocol](#remote-control-protocol) | `remoted` and the host's broker | Versioned (`proto`) |
 | [Toolchain target and link line](#toolchain-target-and-link-line) | Installed toolchain and the tree | Private |
+| [Clang configuration files](#clang-configuration-files) | The toolchain's clang and the sysroot beside it | Private |
 | [C++ runtime](#c-runtime) | `libc++.so` and `libc.so` | Private |
 | [KTAP results](#ktap-results) | Test harness and host runner | Private |
 | [Report lines](#report-lines) | Kernel and the ratchets | Private |
@@ -479,6 +485,45 @@ interface lasts.
   `extension_test`.
 - **See:** [Extensions](/docs/architecture/extensions).
 
+### Extension configuration
+
+- **What:** `/etc/<name>`, for an extension that declares `config`: a sealed
+  directory owned by uid 0 that everyone can read, holding at most 64 sealed
+  files one level deep, each what the computer changed of the extension's
+  configuration. A file's name is letters, digits, `.`, `_` and `-`, at most
+  64 bytes and not starting with `.`; a file is at most 256 KiB. A signed
+  file arrives with a sidecar `<file>.meta` (`name`, `file`, `serial` and
+  `sha256` lines) and its signature `<file>.meta.sig`, made with
+  `ssh-keygen -Y sign -n extension-config@slopos`.
+- **Between:** an extension's programs, built on their own schedule, which
+  read the files their declaration's `reads` names; and the base's `extctl`
+  (`config edit` and `config apply`), which installs a file, and init, which
+  restarts a service whose `reads` of `/etc/<name>` now hold other bytes.
+- **Level:** unversioned. What a file holds is the extension's own format.
+- **Held by:** `slopos_extension_core::config`. The extension's record keeps
+  the last serial a signed file went in under, and a signed file goes in
+  only with a higher one, so a replaced file never comes back.
+- **Checked by:** `extension-core`'s host tests; `extension_action_test`, in
+  which a file edited and a file signed each restart the service that reads
+  it.
+- **See:** [Extensions](/docs/architecture/extensions#commands-apps-and-settings).
+
+### Extension commands
+
+- **What:** `/opt/bin`, holding a link `/opt/bin/<command>` to
+  `/opt/<name>/bin/<command>` for each command the grant of every shown
+  extension names. `/opt/bin` is last on the default search path
+  (`slopos_abi::fs::DEFAULT_PATH`, `/bin:/sbin:/usr/local/bin:/opt/bin`), so
+  an extension's command shadows no command of the base or of `/usr/local`.
+- **Between:** `extctl`, in the base, which rewrites the links after every
+  change, and the shell, slibc's `execvp` and every other program that
+  searches `PATH`; the extension's declaration names the commands.
+- **Level:** unversioned.
+- **Held by:** `extctl` touches nothing in `/opt/bin` but its own links into
+  `/opt`, and no two extensions are granted one command.
+- **Checked by:** `extension_action_test`.
+- **See:** [Extensions](/docs/architecture/extensions#commands-apps-and-settings).
+
 ## Inside the base, across a live update
 
 Programs of one base are built together, but a base activated while the
@@ -726,6 +771,26 @@ interfaces are the ones that cross that gap.
   grades its link jobs; `toolchain_test` (`just test-toolchain`), which holds
   an installed toolchain to the manifest it was installed with.
 - **See:** [Toolchain](/docs/self-hosting/toolchain).
+
+### Clang configuration files
+
+- **What:** the files beside clang in the installed toolchain's `bin/`:
+  `x86_64-unknown-slopos.cfg`, which names the sysroot as `<CFGDIR>/..` (the
+  toolchain's own prefix, whose `lib/` and `include/` hold the target
+  sysroot), and `x86_64-unknown-slopos-clang.cfg` and
+  `x86_64-unknown-slopos-clang++.cfg`, which include it, the second adding the
+  C++ runtime's ABI flags (`scripts/make_slopos_cxx.sh --print-abi-flags`);
+  and the `cc`, `c++` and `ld.lld` links.
+- **Between:** clang and the sysroot it compiles and links against, and so
+  everything on a SlopOS machine that runs `cc` or `c++`: rustc linking a
+  program, cargo's build scripts, CMake, `scripts/build_userland.sh` in the
+  guest.
+- **Level:** private. `scripts/bootstrap_slopos_toolchain.sh` writes them in
+  the run that fills the prefix, so they always describe the sysroot beside
+  them.
+- **Checked by:** `toolchain_test` (`just test-toolchain`), whose ladder
+  compiles C and C++ with the installed clang and builds a CMake project.
+- **See:** [Toolchain](/docs/self-hosting/toolchain#llvm-and-clang).
 
 ### C++ runtime
 

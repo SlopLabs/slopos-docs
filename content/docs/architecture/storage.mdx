@@ -72,9 +72,10 @@ disk of its own. [USB](/docs/architecture/usb) explains how a stick is found
 and how the driver recovers one that stops responding mid-command; on this
 page a stick is simply a disk that can leave.
 
-Under QEMU, SlopOS's own development and test disks are NVMe: the root
-filesystem is the first NVMe namespace, and the boot disk sits on the last
-controller. On the laptop, the drive is NVMe too.
+Under QEMU the root filesystem is the first NVMe namespace (`nvme0n1`) and
+the boot disk sits on the last NVMe controller; the test suite adds virtio
+and USB disks beside them so that every transport is exercised. On the
+laptop, the drive is NVMe too.
 
 ## How a request reaches the disk
 
@@ -301,7 +302,7 @@ answer is reset at its port and found again as if it had been plugged back
 in. Either way the filesystem on the disk turns read-only when it sees the
 errors; see [Filesystem](/docs/architecture/filesystem).
 
-## Watching a disk work
+## Disk statistics
 
 Every disk counts what it has served since it appeared: bytes and requests
 read and written, flushes, and how long it has been busy, meaning the wall

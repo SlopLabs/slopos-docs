@@ -77,9 +77,13 @@ firmware reports a clean handover and leaves them armed.
 
 After that the controller is halted, stopped from reaching memory, reset,
 given its rings and started. As a last check SlopOS sends it a command that
-does nothing and waits for the answer: a controller whose rings or interrupt
-don't work shows up here, at boot, rather than later as a device that never
-appears. The log says which way it went:
+does nothing and waits for the answer, so a broken controller shows up here,
+at boot, rather than later as a device that never appears: one that never
+answers is taken off the bus and left unused, and one that answers but never
+raises its interrupt is kept and served by polling, with a line in the log
+saying so. On the laptop, a controller that works logs the lines below;
+QEMU's controllers have no firmware to take them from, so they log only the
+second:
 
 ```text
 USB: xhci 1 taken from the firmware
@@ -313,7 +317,8 @@ to announce itself and has been quiet since, and every device that connected
 has reached an end: bound, declined, matched by no driver or given up on,
 with every new disk's partition table read. The USB threads run on the other
 processors while the boot waits, so on a machine with a single processor the
-wait is skipped and the log says so.
+wait is skipped and the log says so; under `tests=on` that fails the run,
+since the tests could not see the same bus every time.
 
 `root=auto` and `root=disk` never choose a USB disk: they mean the machine's
 own disk, and a stick left in a port must not change what boots. A root on a
@@ -324,12 +329,13 @@ boots one.
 
 - **Mounting a stick takes the `Mount` capability**, as mounting any disk
   does, so at a shell you ask for it with
-  [`priv`](/docs/architecture/privd), which asks before it runs anything:
+  [`priv`](/docs/architecture/privd), which runs the command once an
+  administrator allows it:
 
   ```bash
-  mkdir ~/stick
-  priv mount /dev/sda1 ~/stick
-  priv umount ~/stick
+  mkdir $HOME/stick
+  priv mount /dev/sda1 $HOME/stick
+  priv umount $HOME/stick
   ```
 
   `mount` takes a device as ext4 unless `-t` says otherwise. The kernel
@@ -369,8 +375,9 @@ boots one.
 - Media change in card readers: the disk is the card that was present when
   the reader was plugged in.
 - USB on the panic path: a panic's record is written to the NVMe disk, and
-  the panic screen reads only the built-in keyboard, so a machine whose only
-  keyboard is USB should boot with `panic=reboot`.
+  the panic screen waits for Enter on the built-in keyboard only, so a
+  machine whose only keyboard is USB should boot with `panic=reboot`, as an
+  installed system does by default.
 
 ## Differences from Linux
 

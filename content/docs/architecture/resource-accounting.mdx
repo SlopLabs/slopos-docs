@@ -3,18 +3,19 @@ title: "Resource limits"
 description: "What the kernel limits for each program, why it refuses memory up front, and what happens when memory runs out anyway."
 ---
 
-SlopOS stops any one program, or any one person, from taking the whole
-machine. Each program has a budget for memory, open files, threads, child
-processes, disk space and some kinds of kernel memory, and everything a
-person runs shares one ceiling on processes and threads, so one person's
-runaway program leaves everyone else's session working. A call that would go
+SlopOS keeps any one program from filling the tables every program shares.
+Each program has a budget for open files, threads, child processes, address
+space, disk space and some kinds of kernel memory, and everything a person
+runs shares one ceiling on processes and threads, so one person's runaway
+program can't stop anyone else from starting programs. A call that would go
 over budget fails with the error it already uses when that resource runs out
 (`ENOMEM`, `EMFILE`, `EAGAIN`, `ENOSPC`), so programs written for Linux need
-no changes. Memory is
-handled more strictly than on Linux: SlopOS refuses memory when a program asks
-for it, so a program that runs out almost always gets an error it can handle
-and is not killed. The main exception is `fork`, and when a forked child does
-run the machine out of memory, the kernel ends one process, chosen by a rule
+no changes. RAM is not divided up this way: it has one ceiling for the whole
+machine, so one program can still use most of it. But it is handled more
+strictly than on Linux: SlopOS refuses memory when a program asks for it, so a
+program that runs out almost always gets an error it can handle and is not
+killed. The main exception is `fork`, and when a forked child does run the
+machine out of memory, the kernel ends one process, chosen by a rule
 described below.
 
 The per-process budgets are Unix resource limits, read with `getrlimit` as on
@@ -27,6 +28,7 @@ overcommit accounting*, an option there and the default here.
 |---|---|---|
 | Open files | Descriptors in the program's table | `EMFILE` |
 | Kernel objects | Pipes, sockets and other kernel objects the program created | `ENFILE` |
+| Descriptors in flight | Descriptors the program sent over a Unix socket that nobody has received yet | `ENFILE` |
 | Threads | Threads in the program | `EAGAIN` |
 | Processes | Processes the program forks, their own forks, and so on down | `EAGAIN` |
 | Address space | Memory the program has mapped or reserved | `ENOMEM` |
@@ -63,7 +65,7 @@ person running many programs, or a program that spawns rather than forks, can
 still fill the process and thread tables everyone shares. So the kernel keeps
 an account for each person (each uid in the people's range, 1000 to 59999; see
 [Users and file permissions](/docs/architecture/users)). Every process started
-to run as that person debits through it, and so does everything those
+to run as that person is counted against it, and so is everything those
 processes fork, each new thread included. The account allows a quarter of the
 machine's processes and a quarter of its threads, for all of that person's
 programs together. When one person's programs reach it, their next `fork`,
@@ -135,8 +137,8 @@ to make room and retries the write. This is the *out-of-memory killer* (OOM
 killer). It chooses a victim like this:
 
 1. It considers only processes that hold no capability the writer lacks,
-   the same test `kill` applies (see
-   [Processes and signals](/docs/architecture/processes#who-may-signal-whom)),
+   the capability half of the test `kill` applies (see
+   [Capabilities](/docs/architecture/authority#who-may-signal-whom)),
    so an ordinary program's memory use never takes down the compositor or a
    system service. Unlike `kill`, it doesn't look at user ids: the process it
    picks may belong to another person. Init and kernel threads are never
@@ -246,7 +248,7 @@ pages be populated.
 
 | Class | Regions | Charged |
 |---|---|---|
-| `Unreserved` | Shared memfd, SlopRing share, shared file mappings, `PROT_NONE` reservations | Nothing |
+| `Unreserved` | Shared memfd, SlopRing share, shared file mappings, read-only private file mappings, `PROT_NONE` reservations | Nothing |
 | `Extent` | Lazy anonymous memory, writable private file mappings | Whole span at creation |
 | `Frames` | The loader's eager segments, the stack and its growth range, `MAP_NORESERVE` | A page at a time as each is placed |
 | `Forked` | A fork's copy of a region its parent had charged | A page from the moment the child owns it |

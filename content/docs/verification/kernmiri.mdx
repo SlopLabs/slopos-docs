@@ -12,13 +12,16 @@ threads race on ordinary memory. So when the trusted core's tests pass under
 Miri, you know the `unsafe` code they exercise kept Rust's rules on those
 runs, which an ordinary passing test can't tell you. The limit is in "those
 runs": Miri only sees the code the tests execute, on a normal computer, and
-never the kernel booting on real hardware, and a handful of tests that
-depend on real assembly or linker symbols are skipped under it.
+never the kernel booting on real hardware, and it skips the handful of tests
+it can't model.
 
-We call the setup *KernMiri*, after the approach the Asterinas authors
-describe in their [ATC '25 paper](https://arxiv.org/abs/2506.03876): run the
-trusted core's own tests under stock Miri, with small stand-ins for the
-hardware. There is no modified Miri and no separate test harness.
+We call the setup *KernMiri*, after the tool of that name the Asterinas
+authors describe in their [ATC '25 paper](https://arxiv.org/abs/2506.03876):
+a version of Miri they extended, by about 1,200 lines, to simulate physical
+memory and page tables so that it can interpret their trusted core. SlopOS
+takes a lighter road to the same end. It runs the trusted core's own tests
+under stock Miri, and the stand-ins for the hardware live in the trusted core
+itself, so there is no modified Miri and no separate test harness.
 
 ## Why tests alone aren't enough
 
@@ -161,8 +164,8 @@ together with the other safety checks.
   by Villani et al., PLDI 2025. The newer rule set, and which real-world code
   it accepts that Stacked Borrows rejects.
 - [*Asterinas*](https://arxiv.org/abs/2506.03876) by Peng et al., USENIX ATC
-  '25. Describes running a kernel's trusted core under Miri, the approach
-  followed here.
+  '25. Section 6.3 describes KernMiri, the extended Miri Asterinas tests its
+  trusted core with, which the setup here is named after.
 
 ## In the source
 

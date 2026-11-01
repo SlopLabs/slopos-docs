@@ -91,12 +91,13 @@ A program can also map memory as code: with `PROT_EXEC` on a mapping, or by
 `mprotect` on memory it already has, which is how a loader or a just-in-time
 compiler works. That is allowed, but it changes one thing. The kernel records
 which program each process runs, so that privd can tell who is asking it for
-something ([Privileged actions](/docs/architecture/privd)). Once a process
-maps code that came from anywhere but the [base](/docs/architecture/base)
-(or, for an extension's program, its own image), the record can no longer
-vouch for what the process runs, so the kernel drops it before that code can
-run. The program itself carries on unaffected; privd simply treats it as an
-unknown program until its next `exec`.
+something ([Privileged actions](/docs/architecture/privd)). The record can
+vouch only for code from the [base](/docs/architecture/base) (or, for an
+extension's program, from its own image). So when a process maps code from a
+file anywhere else or from anonymous memory, or `mprotect` makes any page
+executable that wasn't, the kernel drops the record before that code can
+run. The program itself carries on unaffected; privd treats it as an unknown
+program until its next `exec`.
 
 ### Sharing memory between programs with memfd
 
@@ -148,8 +149,9 @@ call fails with `EFAULT`.
   stack growth, and mappings made with `MAP_NORESERVE`) are explained on
   [Resource limits](/docs/architecture/resource-accounting).
 - **New memory reads as zero.** Every frame a program receives was cleared.
-- **`fork` takes the same time whatever the parent's size.** Only page tables
-  are copied.
+- **`fork` copies no memory.** It copies the parent's page tables, so it
+  costs more for a parent with more memory filled in, but no page is copied
+  until one side writes to it.
 - **Some addresses differ between runs.** The stack and heap start at a
   random offset each time a program starts, which makes memory-corruption
   bugs harder to exploit. The program itself and the area `mmap` places

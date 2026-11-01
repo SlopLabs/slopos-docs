@@ -331,12 +331,12 @@ resume a job it stopped; Linux makes the same exception to its user-id rule.
 Beyond those rules, nothing may signal init, the first program the kernel
 starts, and kernel threads aren't processes and can't be signalled at all.
 A signal sent to a whole group skips the members the sender may not signal,
-and fails with `EPERM` only if it reached none of them. The nice-value calls
-(`setpriority`) use the same rule to decide whose priority you may change,
-and setting a nice value below both zero and the task's current value takes
-the `SchedHigh` capability. When memory runs out, the kernel's
-[out-of-memory killer](/docs/architecture/resource-accounting) uses the
-capability half of the rule to decide which process it may end.
+and fails with `EPERM` only if it reached none of them. The same rule decides
+whose nice value (`setpriority`) you may change, and setting one below both
+zero and the task's current value takes the `SchedHigh` capability.
+[Capabilities](/docs/architecture/authority#who-may-signal-whom) explains the
+capability half, which the
+[out-of-memory killer](/docs/architecture/resource-accounting) also uses.
 
 ### How a kill takes effect
 

@@ -291,8 +291,9 @@ The two slots are there so that installing a new kernel can't leave you with
 a machine that doesn't boot. Which slot boots by default is recorded in a
 firmware variable, not in Limine's configuration, and after an install it is
 slot a. `bootctl` writes a new kernel into the other slot and asks Limine to
-boot it once. An installed system boots with `panic=reboot`, so if the new
-kernel panics, the machine resets onto the old default, and on an NVMe drive
+boot it once. The installer gives an installed system `panic=reboot` unless
+its `--cmdline` says otherwise, so if the new kernel panics, the machine
+resets onto the old default, and on an NVMe drive
 the next boot saves the panic's record. If the new kernel comes up,
 `bootctl commit` makes it the default. A new base goes beside the old one
 too, and runs without a reboot when the running kernel serves it.
