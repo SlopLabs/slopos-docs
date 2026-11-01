@@ -20,13 +20,13 @@ const STAGES: Stage[] = [
   },
   {
     title: 'Kernel setup',
-    detail: 'CPU tables, memory, interrupt controllers, timers, the other CPUs, devices',
+    detail: 'CPU tables, the choice of base, memory, interrupt controllers, timers, the other CPUs, devices',
     seen: 'a ring of twelve segments lighting up clockwise',
   },
   {
     title: 'Base and root',
-    detail: 'one base is chosen, a disk or memory becomes /, and the base is mounted over it',
-    seen: 'BOOT: base, ROOTFS: and VFS: lines in the log',
+    detail: 'a disk or memory becomes /, and the chosen base is mounted over it',
+    seen: 'ROOTFS: and VFS: lines in the log',
   },
   {
     title: 'init',
@@ -51,7 +51,7 @@ const STAGES: Stage[] = [
 const FIRST_USER = STAGES.findIndex((s) => s.user);
 
 const SUMMARY =
-  'The boot sequence in order: firmware, Limine, kernel setup, choosing the base and the root, then in user mode init, the Wheel of Fate and a session. ' +
+  'The boot sequence in order: firmware, Limine, kernel setup, which chooses the base, then the root and the base mounted over it, then in user mode init, the Wheel of Fate and a session. ' +
   STAGES.map((s) => `${s.title}: you see ${s.seen}.`).join(' ');
 
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)' };

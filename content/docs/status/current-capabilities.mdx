@@ -64,7 +64,7 @@ missing, never one holding a capability the process that ran out lacks
 When the kernel hits a bug, it can often recover from the panic instead of
 freezing; a key combination prints what every CPU and task is doing even when
 the desktop is stuck; and a panic that does stop the machine leaves its report
-on the boot disk for the next boot to collect
+on the boot disk, when that is an NVMe drive, for the next boot to collect
 ([Diagnosing the kernel](/docs/development/diagnostics)).
 
 ## People and permissions
@@ -128,9 +128,10 @@ Works with limits: IPv4 only.
 ## Programs and the desktop
 
 SlopOS has its own C library, whose list of exported symbols (929 at this
-commit, the entries of `scripts/gates/libc/exports.txt`) only ever grows, a dynamic loader, a POSIX shell and a multi-call
-`coreutils` with the everyday tools (`ls`, `grep`, `sed`, `find`, `tar` and
-the rest) ([Userland](/docs/architecture/userland)). The system's own
+commit, the entries of `scripts/gates/libc/exports.txt`) only ever grows, a
+dynamic loader, a POSIX shell and a multi-call `coreutils` with the everyday
+tools (`ls`, `grep`, `sed`, `find`, `tar` and the rest)
+([Userland](/docs/architecture/userland)). The system's own
 programs form one read-only *base* that can be replaced while the system runs
 ([Base system](/docs/architecture/base)); everything else is installed under
 `/usr/local` or a person's `~/.local` ([Installed
@@ -151,9 +152,9 @@ system from memory, and its installer (a window, or a command with every
 answer as a flag) installs SlopOS onto a whole disk, into free space beside
 another system, or over an existing partition, sharing the disk's EFI system
 partition when it has one. Booted from the same medium, a rescue shell can
-repair an installed system ([Installing SlopOS](/docs/self-hosting/installing)). Works with limits: an
-install from a live system with 512 MiB of memory, the size `just boot-live`
-gives it, dies writing the boot slots ([Known
+repair an installed system ([Installing SlopOS](/docs/self-hosting/installing)).
+Works with limits: an install from a live system with 512 MiB of memory, the
+size `just boot-live` gives it, dies writing the boot slots ([Known
 limitations](/docs/status/known-limitations#installing-and-updating)).
 
 An installed system keeps two kernels in two boot slots, so a new kernel that

@@ -15,7 +15,7 @@ const STAGES: Stage[] = [
     generations: [{ n: 1, state: 'current', note: 'read where the boot loader put it, no copy' }],
   },
   {
-    title: 'A new base is installed',
+    title: 'A new base takes over',
     shows: 2,
     generations: [
       { n: 2, state: 'current', note: 'a copy the kernel owns' },
@@ -23,7 +23,7 @@ const STAGES: Stage[] = [
     ],
   },
   {
-    title: 'Another base is installed',
+    title: 'Another base takes over',
     shows: 3,
     generations: [
       { n: 3, state: 'current', note: 'a copy the kernel owns' },
@@ -43,7 +43,7 @@ const mono: CSSProperties = { fontFamily: 'var(--font-mono)' };
 
 const SUMMARY =
   'Base generations over one boot. At boot, generation 1 is current and is read where the boot loader put it. ' +
-  'After a new base is installed, generation 2 is current and generation 1 stays, since the booted generation is kept for the whole boot. ' +
+  'After a new base takes over, generation 2 is current and generation 1 stays, since the booted generation is kept for the whole boot. ' +
   'After another, generation 3 is current, generation 2 is freed once no open file, mapping or running program holds it, and generation 1 stays.';
 
 export function BaseGenerations() {

@@ -34,19 +34,20 @@ them alone.
 `just iso` builds `builddir/slop.iso`. When it boots, Limine loads three
 things from it (see [Boot](/docs/architecture/boot)): the kernel, the base it
 runs, and the *install medium*, an archive the kernel serves read-only at
-`/media/install`. The medium holds what an install copies
-beyond the kernel and base: Limine for the EFI system partition, with its
-licence and notices, the apps that live outside the base (editor, files, image
-viewer, widget gallery), and the source code of the third-party programs
-the base carries.
+`/media/install`. Beside the kernel and base, the medium holds what an
+install copies: Limine for the EFI system partition, with its licence and
+notices, and the apps that live outside the base (the editor, file manager,
+image viewer and widget gallery). It also carries the source code of the
+third-party programs the base includes, since it distributes them.
 
 Built with `PAYLOAD=1`, the ISO also carries a *payload*: a read-only ext4
 partition with the developer tools (the [toolchain](/docs/self-hosting/toolchain)
 for `/usr/local`) and a clone of the source for `/src/slopos`, so an installed
 machine can build SlopOS itself. Limine never loads the payload. The kernel
-finds it on the stick itself and mounts it at `/media/payload`, which it can
-do only when the ISO was written to a USB stick: booted as a CD, or
-copied onto a stick as a file, the medium has no payload, and the installer
+finds it on the disk whose partition table carries the medium's own disk
+GUID, which is the stick when the ISO was written to one, and mounts it at
+`/media/payload`. Booted as a CD, or copied onto a stick as a file, the
+medium has no disk the kernel can read the payload from, so the installer
 installs without the developer tools and says so.
 
 ## Making the install medium
@@ -272,8 +273,9 @@ are at `/usr/local`, and with the payload so are the developer tools, with
 the source at `/src/slopos`. From there, updates follow
 [Updating SlopOS](/docs/self-hosting/updating): a new kernel goes into the
 spare slot and is tried once, and a new base goes beside the running one.
-To have the login screen ask for a password, turn automatic login off with
-`users autologin --off`.
+To have the login screen ask for a password, give the first person one with
+`users passwd` if the install gave them none, then turn automatic login off
+with `users autologin --off`.
 
 ## Repairing an installed system from the medium
 

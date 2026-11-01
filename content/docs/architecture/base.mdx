@@ -291,8 +291,8 @@ Here is what happens, in order:
 3. In one step, under the lock that guards the table of mounts, the kernel
    points all six base directories at the new generation. A program never
    sees `/bin` from one base and `/lib` from another.
-4. The kernel logs the switch, and a descriptor that programs can watch
-   (below) becomes readable:
+4. The kernel logs the switch, and the descriptor that the `base_monitor`
+   system call gives programs to watch becomes readable:
 
    ```text
    BASE: generation <n> is the base, interface <i>
@@ -341,21 +341,13 @@ still installed on disk, and the next boot takes it.
 
 ### What restarts after a switch
 
-A new base usually changes only some programs, so SlopOS restarts only what
-changed. Init compares the old base's manifest with the new one's: privd and
-remoted finish what they are serving and start again from the new base when
-their program or the data they read changed, init re-executes itself when
-`/sbin/init` changed, and the extensions' services are checked again when
-their ceiling changed. Everything else picks up the new version the next time
-it starts. Your desktop is never restarted under you: when a new base changes
-the compositor or the terminal, the system menu shows *Restart the desktop to
-finish updating* and offers *Restart desktop…* for whenever you are ready.
-[Init and services](/docs/architecture/init#when-a-new-base-arrives) has the
-details.
-
-A program of your own can follow switches too: the `base_monitor` system call
-returns a descriptor that becomes readable at each switch, and reading it
-gives the current generation number.
+Init compares the old base's manifest with the new one's and restarts only
+the services whose program or data changed (privd, remoted, init itself, the
+extensions' services); everything else picks up the new version the next
+time it starts, and your desktop is never restarted under you: when the
+compositor or the terminal changed, the system menu offers *Restart
+desktop…* instead. [Init and services](/docs/architecture/init#when-a-new-base-arrives)
+lists each case.
 
 ## What it means in practice
 

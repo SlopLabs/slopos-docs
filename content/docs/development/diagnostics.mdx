@@ -236,10 +236,12 @@ to stop at the panic and how to record a run and step backwards from it.
 By default a panicked machine stops on its panic screen so you can read it,
 and nothing runs after that. With `panic=reboot` it resets instead,
 after holding the screen for ten seconds on real hardware (not under a
-hypervisor, whose log you already have). An installed system boots with
-`panic=reboot`, so a kernel tried in the spare slot that panics hands the
-machine back to the default slot; see
-[Updating SlopOS](/docs/self-hosting/updating).
+hypervisor, whose log you already have). The installer gives an installed
+system `panic=reboot` unless you name another command line (`--cmdline`), so
+a kernel tried in its spare slot that panics hands the machine back to the
+default slot ([Updating SlopOS](/docs/self-hosting/updating)). The
+development machine's boot disk leaves it out, so a panic there stays on
+screen.
 
 To see a panic on purpose, `panic.fatal_smoke=on` raises one right after
 boot.
@@ -271,9 +273,9 @@ the kernel log. Then the next boot saves it as a file.
    `/var/log/crash/<index>-<UTC time>-<slot>.txt`, makes the copy durable, and
    only then erases the record. It prints, for example,
    `bootctl: crash record 1 saved to /var/log/crash/000003-20261029T101502Z-b.txt: <panic>`.
-   It keeps the newest 64 files, and erases nothing while `/var/log/crash` is
-   on no writable disk, so a record waits in the partition until a boot can
-   keep it.
+   It keeps the newest 64 files and any file a slot names as its last crash,
+   and erases nothing while `/var/log/crash` is on no writable disk, so a
+   record waits in the partition until a boot can keep it.
 
 A saved record opens with its summary:
 

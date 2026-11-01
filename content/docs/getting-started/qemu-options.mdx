@@ -65,7 +65,9 @@ The long checks have their own budgets, in seconds: `INSTALL_TIMEOUT_SECS`
 `INSTALLER_BOOT_TIMEOUT_SECS` and `INSTALLER_STALL_SECS` (`test-installer`),
 `SELFHOST_TIMEOUT_SECS` (`test-selfhost`, `bench-selfhost`) and
 `REMOTE_TEST_TIMEOUT_SECS` (`test-remote`). Raise them when QEMU runs without
-KVM, which runs a guest's build many times slower.
+KVM, which runs a guest's build many times slower. `test-remote` also reads
+`REMOTE_STEP_TIMEOUT`, the seconds each `remote.py` step but an install may
+take (180), and `REMOTE_TEST_PORT`, the broker's port (a free one by default).
 
 ## Machine
 

@@ -14,12 +14,14 @@ limitations](/docs/status/known-limitations).
 
 The source repository keeps its plans in `plans/`, and a plan only ever
 describes what is still to do. When part of it lands, that part is removed
-from the plan, and the page for the subsystem is updated to describe how it
-works. When nothing is left, the plan is deleted; git history keeps the
-record. So a feature that appears only in a plan does not exist yet.
+from the plan, and how it works is described from then on in the source tree
+and on the page for the subsystem here. When nothing is left, the plan is
+deleted; git history keeps the record. So a feature that appears only in a
+plan does not exist yet.
 
-`plans/` now holds two files: `ci-latency.md`, the one open plan, and
-`KNOWN_ISSUES.md`, working notes on open defects. Plans can mention file
+Beside its `README.md`, which states those rules, `plans/` now holds two
+files: `ci-latency.md`, the one open plan, and `KNOWN_ISSUES.md`, working
+notes on open defects. Plans can mention file
 paths that have since moved, so check a path against the tree before relying
 on it.
 

@@ -44,9 +44,12 @@ part, how disks are mounted, and what the disk format is.
 | `/mnt` | The root disk, when it could only be mounted read-only and SlopOS booted from memory instead | Nothing written there, since it is read-only |
 
 A *mount* is how one filesystem appears inside another: the kernel keeps a
-table saying "below this directory, ask that filesystem instead". All of the
-rows above are mounts, set up by the kernel during boot, except `/opt/<name>`,
-which appears when an extension is activated.
+table saying "below this directory, ask that filesystem instead". The kernel
+sets up the mounts for `/`, the base directories, `/tmp`, `/run`, `/dev`,
+`/dev/shm`, the install medium and `/mnt` during boot, and `/opt/<name>`
+appears when an extension is activated, which init does for every enabled
+one at boot. `/etc`, `/var`, `/home` and the other rows marked "the root
+disk" are plain directories of the root.
 
 `/run` holds what only matters while the machine is up: the sockets of
 system services such as `/run/privd` and `/run/init`, the session table in
@@ -137,9 +140,10 @@ otherwise the kernel takes the first disk that isn't a USB disk, so a stick
 left in a port never changes what boots. If that disk can only be mounted
 read-only (its journal couldn't be replayed after a crash, for example), or
 there is no disk, SlopOS boots from memory instead:
-it unpacks the base archive into a filesystem in RAM (what Linux calls an
-*initramfs*) and puts the read-only disk, if there is one, at `/mnt`. The
-live ISO always boots from memory.
+it unpacks what the base archive holds outside the base directories (the
+skeleton of `/etc`, `/var`, `/home` and the rest) into a filesystem in RAM,
+which is what Linux calls an *initramfs*, and puts the read-only disk, if
+there is one, at `/mnt`. The live ISO always boots from memory.
 
 Either way, the base directories are then mounted from the base over whatever
 `/` turned out to be. A root that has a symbolic link where a base directory
@@ -211,10 +215,10 @@ themselves, from user space.
 
 ## The disk format
 
-Every disk image the build produces uses one fixed set of ext4 features,
-written down in one file (`ext4-core/profile`). The host's image scripts pass
-that file to `mke2fs`, and the kernel is held to writing exactly those
-features. In plain terms, that profile means:
+Every volume the build formats uses one fixed set of ext4 features, written
+down in one file (`ext4-core/profile`). The host's image scripts pass that
+file to `mke2fs`, and a test holds every feature in it to one the kernel
+writes. In plain terms, that profile means:
 
 - **4 KiB blocks**, which work on drives with either 512-byte or 4 KiB
   sectors.
@@ -233,14 +237,29 @@ SlopOS, and `mke2fs`, `e2fsck`, `resize2fs`, `tune2fs`, `debugfs` and
 The kernel also reads disks made elsewhere: older ext2 and ext3 volumes and
 ext4 volumes made with other settings. A file whose blocks are listed one by
 one keeps that list, and new files get extents wherever the volume supports
-them. A volume that uses a feature SlopOS can read but not write mounts
-read-only, and one with a feature it can't read safely is refused.
+them. ext4 sorts its features by what an older reader must do with one it
+doesn't know, and the kernel follows that sorting:
+
+- **Mounted read-write.** The profile's features, the older `gdt_csum`
+  checksums and `metadata_csum_seed`, and any feature that changes nothing
+  the kernel writes, such as a directory's hashed index (`dir_index`, which
+  the kernel drops from a directory the first time it changes it) or
+  extended attributes (`ext_attr`).
+- **Mounted read-only.** A "read-only compatible" feature the kernel doesn't
+  write, such as `bigalloc`, `quota`, `project` or ext4's own `read-only`
+  flag (which the install medium's payload carries), and the two layout
+  features `sparse_super2` and `exclude_bitmap`.
+- **Refused.** An "incompatible" feature outside the kernel's set, such as
+  `inline_data`, `encrypt`, `casefold`, `meta_bg` or `mmp`, because it
+  changes how the volume's blocks must be read. A volume past 16 TiB at 4 KiB
+  blocks is refused too.
 
 ## What happens after a crash
 
-Every writable disk the build makes carries a journal, so a crash or power
-loss can't leave the filesystem inconsistent, and the disk is repaired by
-itself at the next boot. [Crash recovery](/docs/architecture/crash-recovery)
+Every writable disk the build makes carries a journal unless it is built
+with `FS_JOURNAL_SIZE=0`, so a crash or power loss can't leave the
+filesystem inconsistent, and the disk is repaired by itself at the next
+boot. [Crash recovery](/docs/architecture/crash-recovery)
 explains how the journal works, what programs can rely on after a crash, and
 what happens if the journal itself is damaged.
 

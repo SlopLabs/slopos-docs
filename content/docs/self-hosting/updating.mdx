@@ -101,8 +101,10 @@ copy of Limine at the fallback path `\EFI\BOOT\BOOTX64.EFI`, which firmware
 boots when it has no other entry. On a shared ESP that path belongs to
 whoever was there first, and SlopOS leaves it alone.
 
-The boot menu has one entry per slot, `slopos-a` and `slopos-b`. Each loads
-that slot's kernel and both bases. The menu doesn't say which slot is the
+The boot menu has one entry per slot, `slopos-a` and `slopos-b`, and on an
+installed disk one for each other system in the firmware's startup order
+that Limine could start at install time. Each slot's entry loads that slot's
+kernel and both bases. The menu doesn't say which slot is the
 default; a firmware variable does (see [below](#how-the-boot-loader-is-told-what-to-boot)),
 and with none set Limine boots the first entry, slot `a`. A system the
 [installer](/docs/self-hosting/installing) put on a disk shows the menu for
@@ -317,8 +319,9 @@ one at the keyboard. A system the installer put on a disk boots with
 machine's boot disk doesn't, so after a panic there you restart QEMU
 yourself. [Boot options](/docs/abi/boot-options) describes the option.
 
-A kernel that panics also leaves a *crash record* on the crash partition:
-its report and the end of the kernel log. At the next boot, the fallback
+A kernel that panics on a disk attached over NVMe also leaves a *crash
+record* on the crash partition: its report and the end of the kernel log (on
+any other kind of disk the panic leaves none). At the next boot, the fallback
 boot, `bootctl collect` (which init runs at every boot) moves it to
 `/var/log/crash/` and notes the slot it came from, so `bootctl status`
 reports it:
@@ -327,7 +330,8 @@ reports it:
 slot b: kernel <n> bytes, last boot crashed: /var/log/crash/<record>.txt
 ```
 
-Installing a kernel into a slot clears that slot's record.
+Installing a kernel into a slot clears what `bootctl status` remembers of
+that slot's last boot; the saved record stays in `/var/log/crash/`.
 [Diagnostics](/docs/development/diagnostics#the-kernel-panicked) explains
 crash records.
 
@@ -383,9 +387,10 @@ means a commit never touches the ESP, so the menu stays byte for byte as it
 was installed.
 
 These variables are shared by every boot loader on the machine that follows
-the same interface. If another loader left a default that names no SlopOS
-entry, `bootctl install` refuses to go on until `bootctl set-default` names
-one, because it can't tell which slot is safe to overwrite. `set-default`
+the same interface. If another loader left a default that names no entry
+Limine's menu offers, `bootctl install` refuses to go on until `bootctl
+set-default` names one, because it can't tell which slot is safe to
+overwrite. `set-default`
 itself only accepts a slot whose kernel serves a base on the partition.
 
 ## Writing the boot disk safely
@@ -427,10 +432,11 @@ most one of the commands that change what boots at a time.
 | `status`, `spare` | Any person, without being asked |
 | `install`, `clone`, `base install`, `base rollback`, `set-default` | An administrator, after allowing it in a dialog |
 | `oneshot`, `commit` | An administrator, without being asked |
-| `reboot` | An administrator; any person, or the login screen, while nobody else is logged in |
+| `reboot` | An administrator; any other person while no one else is logged in; the login screen while no one is |
 
 A person who isn't an administrator can still ask for the actions an
-administrator may run, and privd then asks for an administrator's password.
+administrator may run, and privd then asks, in a dialog on their desktop, for
+an administrator's password.
 uid 0 running a base program, and the paired agent of
 [remote control](/docs/self-hosting/remote-control), run all of them without
 being asked.

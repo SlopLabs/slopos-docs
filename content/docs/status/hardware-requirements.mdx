@@ -68,7 +68,7 @@ tried.
 | Display | Intel integrated graphics of the Tiger Lake, Alder Lake and Raptor Lake generations that the driver's table lists; otherwise the firmware's framebuffer |
 | Disks | NVMe, and USB sticks and drives (Bulk-Only). SATA disks have no driver |
 | Network | Realtek RTL8168h and RTL8168M, and USB Ethernet adapters that speak CDC-ECM or CDC-NCM. Other Realtek versions are declined, naming their id in the log |
-| USB | xHCI controllers with MSI-X or MSI and 64-bit addressing; older USB controllers have no driver |
+| USB | Up to eight xHCI controllers with MSI-X or MSI, 64-bit addressing and 4 KiB pages; any other is left to the firmware, and older USB controllers have no driver |
 | Keyboard and pointer | The i8042 (PS/2) keyboard and mouse, USB keyboards, mice and tablets, and an I²C-HID touchpad on the DesignWare I²C controller, found through the firmware's ACPI tables |
 
 ## The tested laptop

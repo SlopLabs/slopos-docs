@@ -82,7 +82,8 @@ is split by responsibility:
   use, and `fork` shares pages copy-on-write. Unlike Linux, the kernel
   refuses memory when a program asks for it rather than when it first
   touches it, so running out is usually an error the program can handle
-  instead of a kill. Each program, and each person, has a budget. See
+  instead of a kill. Each program has budgets for files, threads and address
+  space, and each person a share of the machine's processes and threads. See
   [Memory](/docs/architecture/memory) and
   [Resource limits](/docs/architecture/resource-accounting).
 - **Capabilities and users.** Every process carries a capability mask and a
@@ -96,8 +97,9 @@ is split by responsibility:
   same format Linux uses. See [Filesystem](/docs/architecture/filesystem),
   [Disks](/docs/architecture/storage) and
   [Crash recovery](/docs/architecture/crash-recovery).
-- **Network stack.** TCP, UDP, IPv4, DHCP and DNS run inside the kernel, as
-  they do on Linux. See [Networking](/docs/architecture/networking).
+- **Network stack.** TCP, UDP and IPv4 run inside the kernel, as they do on
+  Linux, and so do the DHCP client and a small DNS resolver, which on Linux
+  are ordinary programs. See [Networking](/docs/architecture/networking).
 - **Drivers.** NVMe and virtio disks, virtio network and graphics, the Intel
   Xe display, the Realtek RTL8168 Ethernet chip, PS/2 keyboards and mice, an
   I²C touchpad, and USB through an xHCI controller (keyboards, mice and
@@ -126,7 +128,8 @@ Above the system call line is *userland*:
   changes. See [Userland](/docs/architecture/userland).
 - **SlopRing** is a queue of requests a program shares with the kernel, so it
   can have many operations in flight without one system call each. A small
-  async runtime for Rust programs is built on it. See
+  async runtime for Rust programs is built on it. Its calls are private ones,
+  so only the base's own programs use it. See
   [SlopRing](/docs/abi/slopring).
 - **Init and the system's services.** `init`, which the kernel starts first,
   starts privd, the sessions people log in to, and the other services, and
@@ -227,9 +230,9 @@ ones you will open most often:
 | `slopos-ostd` | The trusted core, and the only kernel crate allowed `unsafe` |
 | `kernel`, `boot` | The kernel's entry point and the boot sequence |
 | `abi` | Everything shared with userland: syscall numbers, errno values, flags, structs, capability bits |
-| `core` | System call dispatch and handlers, `exec` and spawn, the OOM killer |
+| `core` | System call dispatch and handlers, `exec` and spawn |
 | `sched` | Task lifecycle, scheduling, sleeps, futexes, CPU frequency |
-| `mm` | Physical and virtual memory, address spaces, ELF loading |
+| `mm` | Physical and virtual memory, address spaces, ELF loading, the OOM killer |
 | `fs`, `drivers`, `net` | The filesystem layer, device drivers (USB among them), the network stack |
 | `*-core` (`ext4-core`, `usb-core`, `priv-core`, ...) | Pure logic with no system calls, so its tests also run on the development host |
 | `slibc`, `userland` | The C library, and the base's programs: init, privd, the compositor, the shell and the rest |
@@ -283,7 +286,8 @@ Rules a change must keep:
 |---|---|
 | `Cargo.toml` | The workspace: every crate |
 | `slopos-ostd/` | The trusted core |
-| `kernel/src/main.rs` | The kernel's entry point |
+| `boot/limine_entry.s`, `boot/src/early_init.rs` | The kernel's entry point, and the boot sequence it starts |
+| `kernel/src/main.rs` | The kernel binary: its heap allocator and panic handler |
 | `core/src/syscall/handlers.rs` | The system call tables |
 | `abi/src/caps.rs` | The capabilities |
 | `userland/src/apps/init/` | Init, its services and the sessions |

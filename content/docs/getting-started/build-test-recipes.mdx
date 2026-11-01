@@ -60,8 +60,10 @@ gates](/docs/verification/tcb-discipline) lists them.
 The *dev* kernel is built quickly, with symbols, and is what `just build`,
 `just boot-live` and the debugger recipes use. The *release* kernel is
 optimised, and `just boot` uses it because the development machine runs a
-compiler. `KERNEL_RELEASE=1` selects the release kernel for any recipe, and
-`KERNEL_RELEASE=0 just boot` boots the dev kernel instead. The test suite
+compiler. `KERNEL_RELEASE=1` selects the release kernel for most recipes, and
+`KERNEL_RELEASE=0 just boot` boots the dev kernel instead; [QEMU
+options](/docs/getting-started/qemu-options#recipe-variables) names the
+checks that choose their own. The test suite
 uses a *tests* kernel, which has the test harness compiled in and comes in
 the same two builds (`kernel-tests.elf` and `kernel-release-tests.elf`).
 `PAYLOAD=1 just iso` builds the release kernel instead, since a system
@@ -263,6 +265,12 @@ base the guest installed survives guest reboots but not the next `just boot`.
 | `just check-quota-headroom` | Fail if a resource account nears its cap or anything was denied |
 | `just check-lockdep-headroom` | Fail unless the lock-order checker booted active with room in its pools |
 | `just check-sched-spread` | Fail unless every online CPU can be given tasks |
+
+Each of these but `check-fs-image`, like `check-test-count` above, boots the
+test suite once and grades what it printed. The scripts behind them
+(`scripts/check_*.sh`) take `--log <file>` to grade a saved capture of
+`builddir/run_tests --raw --no-color` instead, which is how CI grades one run
+with several of them.
 
 ### Remote control
 

@@ -162,7 +162,7 @@ base becomes the one every slot boots, and because the running kernel serves
 it, the machine switches to it straight away:
 
 ```text
-base installed: interface 12, build tag -; the system runs it now (generation 2)
+base installed: interface <i>, build tag -; the system runs it now (generation 2)
 ```
 
 The apps go into `/usr/local` next, provided the C library they were built
@@ -175,8 +175,9 @@ selfhost: bootctl base rollback takes the base back; a kernel it needs goes in w
 
 A program you start from now on comes from the new base. Programs already
 running keep the files they started from until they exit. Init restarts the
-services the new base changed, and if the desktop itself changed, its system
-menu offers *Restart the desktop to finish updating*.
+services the new base changed. If the desktop's own programs changed, the
+desktop keeps running them until you restart it: its system menu then shows
+*Restart the desktop to finish updating* and offers *Restart desktop…*.
 [Base system](/docs/architecture/base) explains what a switch moves and what
 it leaves.
 

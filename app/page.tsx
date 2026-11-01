@@ -253,8 +253,8 @@ export default function HomePage() {
                   {'      '}
                   <span className="c"># pinned rust nightly</span>
                   {'\n'}
-                  <span className="g">just boot</span>
-                  {'       '}
+                  <span className="g">just boot-live</span>
+                  {'  '}
                   <span className="c"># spins the wheel</span>
                   {'\n'}
                   <span className="g">just test</span>
@@ -314,8 +314,8 @@ export default function HomePage() {
               <p className="section__lead">
                 Before the desktop starts, SlopOS spins the Wheel of Fate and
                 charges the result to your W/L balance. We shipped the joke and
-                then had to live with it. Run <code>just boot-fast</code> to skip
-                the spin.
+                then had to live with it. Set <code>ROULETTE=0</code> to skip the
+                spin.
               </p>
             </Reveal>
 

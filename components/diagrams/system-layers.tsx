@@ -14,9 +14,9 @@ const USER_BANDS: Band[] = [
     parts: ['init', 'privd', 'compositor', 'shell', 'terminal', 'apps', 'cat, ls, curl ...'],
   },
   {
-    name: 'C library',
-    note: 'turns function calls into system calls',
-    parts: ['slibc', 'SlopRing runtime'],
+    name: 'Libraries',
+    note: 'the C library turns function calls into system calls',
+    parts: ['slibc, the C library and loader', 'Rust std', 'SlopRing runtime (base programs only)'],
   },
 ];
 
@@ -41,7 +41,7 @@ const HARDWARE: Band = {
 };
 
 const SUMMARY =
-  'The layers of SlopOS, top to bottom: programs and the C library run in user mode; below the system call boundary, the kernel runs in kernel mode on top of a small trusted core, the only part of the kernel allowed to use unsafe Rust; the hardware is at the bottom.';
+  'The layers of SlopOS, top to bottom: programs and the libraries they link, the C library among them, run in user mode; below the system call boundary, the kernel runs in kernel mode on top of a small trusted core, the only part of the kernel allowed to use unsafe Rust; the hardware is at the bottom.';
 
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)' };
 

@@ -144,17 +144,19 @@ information, and two copies of that machinery in one process can leave an
 exception that nobody can catch.
 
 The runtime is built with everything LLVM's sources use (locales, wide
-characters, `<filesystem>`, random devices). No program in a base uses C++,
-so no base carries the runtime. It goes onto the test image, where probes
-exercise exceptions across libraries, iostreams and locales, and into the
-cross-built toolchain, so `clang++` in the guest can link C++ programs. The
+characters, `<filesystem>`, random devices). No program of the shipped base
+uses C++, so that base carries no runtime. The tests base and test image do,
+beside probes that exercise exceptions across libraries, iostreams and
+locales, and so does the cross-built toolchain, so `clang++` in the guest can
+link C++ programs. The
 compiler itself links its own copy in statically.
 
 ## Tools on the host
 
 SlopOS needs more on your Linux machine than Rust and QEMU in two places: the
 C++ runtime and the LLVM port, and the third-party programs below. One of
-those, e2fsprogs, is in every base, so even `just test` builds it.
+those, e2fsprogs, is in every base, so every recipe that packs a base (each
+ISO, boot disk and test run) builds it and the C++ runtime first.
 
 | Tool | Why |
 |------|-----|
@@ -282,8 +284,9 @@ goes into `builddir/slopos-toolchain/install`, and only once the build has
 finished, so a failed run never leaves a half toolchain that `just boot` would
 pick up. Re-running after a patch reuses every compiler stage already built.
 
-It is expensive: hours of CPU, many gigabytes of disk, and a download of the
-LLVM sources. `just check-bootstrap-config` is the cheap half: it checks the
+It is expensive: hours of CPU, many gigabytes of disk, and a first run that
+downloads the compiler bootstrap starts from. `just check-bootstrap-config` is
+the cheap half: it checks the
 build plan and a test compile and link without building the compiler.
 
 <Callout type="warning">

@@ -15,9 +15,9 @@ rules exist.
 
 | Command | Runs |
 |---|---|
-| `just check-framekernel-gates` | The gates' self-tests, then the source, image, interface and toolchain gates below. Needs a prior `just build`. This recipe is the single list CI's gates job calls. |
+| `just check-framekernel-gates` | The gates' self-tests, then the source, image, interface and toolchain gates below. Needs a prior `just build`. CI's gates job runs this recipe rather than its own copy of the list. |
 | `just check-framekernel` | The above, then `cargo fmt --check`, `just check-miri` and `just verify` |
-| Any kernel build (`just build`, `just iso`, a test boot) | The kernel image gates and `check_kernel_pml4_writer.sh`, for the variant just built, through `scripts/check_kernel_elf_gates.sh` |
+| Any kernel build (`just build`, `just iso`, a test boot) | `check_stack_sizes.sh`, `check_kernel_softfloat.sh`, `check_registry_sections.sh`, `check_bootstrap_stack_rewind.sh` and `check_kernel_pml4_writer.sh`, for the variant just built, through `scripts/check_kernel_elf_gates.sh` |
 | `KERNEL_BUILD_GATES=1` on a kernel build | Also `check_vendor_pin.sh`, `check_unsafe_outside_ostd.sh`, `check_no_kernel_async.sh`, `check_alloc_dep.sh`, `check_drop_panic_free.sh` and `tcb_ratio.sh --max 1.0` |
 | A userland build from the `justfile` | `check_loose_programs.sh` on every program built outside the base |
 | `scripts/<gate>.sh --self-test` | One gate's self-test |
@@ -99,12 +99,12 @@ outside the base reach the system only through `libc.so`, and
 ## Kernel image gates
 
 These read the linked kernel ELF, so they see the effect of inlining, generics
-and dependencies. They run after every kernel build, for every variant
-(`builddir/kernel-{dev,release,tests,release-tests}.elf`).
+and dependencies. All but the last run after every kernel build, for every
+variant (`builddir/kernel-{dev,release,tests,release-tests}.elf`).
 
 | Gate | Fails when |
 |---|---|
-| `check_stack_sizes.sh` | A function's stack frame, read from `.stack_sizes`, exceeds the 2 KiB threshold and is not on the variant's allowlist; or any frame reaches the 4 KiB guard page, which no allowlist can exempt; or the image carries fewer stack records than the allowlist's floor |
+| `check_stack_sizes.sh` | A function's stack frame, read from `.stack_sizes`, exceeds the 2 KiB threshold and is not on the variant's allowlist; or any frame is larger than the 4 KiB guard page, which no allowlist can exempt; or the image carries fewer stack records than the allowlist's floor |
 | `check_kernel_softfloat.sh` | An x87, MMX, SSE or AVX instruction appears outside the sanctioned save and restore. Kernel entry doesn't save user vector state, so one stray instruction corrupts the interrupted program. Allowlist `scripts/gates/vector/<variant>.txt` |
 | `check_registry_sections.sh` | See above |
 | `check_bootstrap_stack_rewind.sh` | Anything other than its one writer changes the boot CPU's bootstrap data-stack pointer |

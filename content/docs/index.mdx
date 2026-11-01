@@ -17,8 +17,8 @@ An agent's claim that its code is correct is worth nothing, so the build
 checks instead. One crate (`slopos-ostd`) holds every line of `unsafe` Rust in
 the kernel, and the compiler refuses `unsafe` everywhere else. Verus, a proof
 checker for Rust, verifies the invariants where a bug in that crate would mean
-undefined behaviour rather than an error. Thousands of tests boot the kernel
-under QEMU on every change.
+undefined behaviour rather than an error. On every change, thousands of tests
+run against the kernel booted in QEMU.
 
 <Frame>
   <img src="/images/slopos-on-hardware.jpg" alt="The SlopOS desktop running on a Lenovo laptop, showing the terminal, file manager, system monitor and image viewer" />

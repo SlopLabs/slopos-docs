@@ -32,10 +32,10 @@ or a local copy:
 | `llvm-project` sources, for the C++ runtime every build needs | `third_party/llvm-project-<version>.src.tar.xz` | Place the pinned tarball there, or set `LLVM_URL` |
 | Source tarballs of the programs ported to SlopOS (e2fsprogs for every base; the rest for `just recipes`) | `third_party/recipes/<name>-<version>.<ext>` | Place the pinned tarball there, or set `<NAME>_URL`, such as `E2FSPROGS_URL` |
 
-A `third_party/limine` directory that holds a different Limine release is
-replaced with the pinned one. A directory named by `LIMINE_DIR` that holds a
-different release, or a partly filled one, stops the build instead: remove it
-or complete it.
+A different Limine release in `third_party/limine` is replaced with the
+pinned one, but a different release in a directory `LIMINE_DIR` names stops
+the build, and so does any Limine directory that is only partly filled:
+remove it or complete it.
 
 ## The build says a host tool is missing
 
