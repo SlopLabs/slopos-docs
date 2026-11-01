@@ -146,7 +146,7 @@ does not promise every flag of the Linux call.
 | 45 | `recvfrom` | `NoneFd` | At most 4096 bytes per call; any `MSG_*` flag is `EINVAL` |
 | 46 | `sendmsg` | `NoneFd` | `AF_UNIX` only (`ENOTSOCK` otherwise): at most 4096 bytes and 4 descriptors (`SCM_RIGHTS`, the only control message) per call; every `MSG_*` flag but `MSG_NOSIGNAL` is `EINVAL` |
 | 47 | `recvmsg` | `NoneFd` | `AF_UNIX` only (`ENOTSOCK` otherwise): at most 4096 bytes and 4 descriptors per call; any `MSG_*` flag is `EINVAL` |
-| 48 | `shutdown` | `NoneFd` | |
+| 48 | `shutdown` | `NoneFd` | `AF_INET` only; `ENOTSOCK` on an `AF_UNIX` socket |
 | 49 | `bind` | `NoneFd` | |
 | 50 | `listen` | `NoneFd` | |
 | 51 | `getsockname` | `NoneFd` | |

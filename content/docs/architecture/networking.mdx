@@ -113,7 +113,11 @@ The socket calls use Linux's numbers and meanings: `socket`, `socketpair`,
 `to`/`from` and `msg` variants, `shutdown`, `setsockopt`, `getsockopt`,
 `getsockname` and `getpeername`. C programs reach them through slibc and Rust
 programs through `std::net`, as described in
-[Userland](/docs/architecture/userland).
+[Userland](/docs/architecture/userland). Some are narrower than Linux's: the
+`msg` variants work only on `AF_UNIX` sockets, `setsockopt` and `shutdown`
+only on `AF_INET` ones, and each send or receive call moves at most 4096
+bytes, so a program must loop on a short count, as it should anyway. The
+[System call ABI](/docs/abi/syscalls) lists each call's limits.
 
 | You ask for | You get |
 |---|---|
