@@ -118,7 +118,7 @@ export function DesktopAnatomy() {
         ))}
       </ol>
       <figcaption className="mt-3 text-xs" style={{ color: 'var(--ink-dim)' }}>
-        Only the content of each window is the app's. The compositor draws everything else, over the
+        Only the content of each window is the app’s. The compositor draws everything else, over the
         same theme the apps use.
       </figcaption>
     </figure>

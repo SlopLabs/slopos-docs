@@ -29,8 +29,10 @@ and focus indicators. Icons are glyphs of Lucide, an open icon set shipped as
 a font. App icons follow GNOME's and Apple's guidance: a few simple filled
 shapes, no shadows of their own. An app is a function from its state to a
 view plus a function that applies messages, which is the Elm architecture.
-And failing a raw colour where a named one belongs is what lints such as the
-`RawColor` check for Android layouts do, except that here it fails the build.
+And refusing a raw colour where a named one belongs is what the
+`HardCodedColor` lint check does for parts of Android's own source, which
+must take their colours from theme attributes; here the check is one of the
+gates every change must pass.
 
 ## Why the look is enforced rather than suggested
 
@@ -41,7 +43,7 @@ the dock, *Sloped* in its title bar and "SlopOS editor" in its About box.
 Nothing about this is hard to fix once found, but finding it means looking at
 every screen at every width after every change, which nobody does. So SlopOS
 moves the decisions into code (a theme of named roles and components that
-apply them), makes the shortcuts fail the build, and checks the result by
+apply them), makes the shortcuts fail a gate, and checks the result by
 laying every screen out off screen and measuring it.
 
 ## The theme

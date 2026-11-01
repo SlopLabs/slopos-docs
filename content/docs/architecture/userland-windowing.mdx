@@ -231,6 +231,11 @@ window and its two buffers, and hands over the events. Either way:
   sends an error naming why and disconnects the program.
 - **The compositor moves and resizes windows itself.** There is no request
   for a program to start a move or a resize.
+- **Shared memory is scarce.** The kernel holds at most 64 memfds at once,
+  across every process, each sized once and at most 64 MiB, and every window
+  holds two of them. So no buffer can be larger than a 4096 × 4096 window at
+  four bytes a pixel, and a program that leaks memfds starves every other
+  program's windows.
 
 The messages are listed in [Window protocol](/docs/abi/window-protocol).
 
@@ -244,7 +249,7 @@ calls. `apps_test` starts each app against a stand-in compositor and checks
 that it names its window as its dock entry does. The parts that need no screen
 are host-tested with `just test-host`: window placement and the menu bar's
 state (`chrome-core`), keyboard handling (`keymap-core`) and the terminal's
-grid and escape-code parser (`terminal-core`, `vt`).
+grid and key encoding (`terminal-core`).
 
 ## For contributors
 

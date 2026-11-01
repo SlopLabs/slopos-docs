@@ -72,7 +72,7 @@ export function SessionLogin() {
         ))}
       </ol>
       <figcaption className="mt-3 text-xs" style={{ color: 'var(--ink-dim)' }}>
-        A second person logs in while the first person's desktop waits behind, locked. Had alice been logged in
+        A second person logs in while the first person’s desktop waits behind, locked. Had alice been logged in
         already, step 4 would find her desktop running and step 6 would tell it to unlock as well.
       </figcaption>
     </figure>

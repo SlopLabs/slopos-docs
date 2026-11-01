@@ -74,7 +74,7 @@ export function PrivdRequest() {
         ))}
       </ol>
       <figcaption className="mt-3 text-xs" style={{ color: 'var(--ink-dim)' }}>
-        <code>bootctl install b kernel.elf</code> typed in a terminal on the first person's desktop. Only step 4
+        <code>bootctl install b kernel.elf</code> typed in a terminal on the first person’s desktop. Only step 4
         needs the person; an action that runs unasked goes straight from step 3 to step 6.
       </figcaption>
     </figure>

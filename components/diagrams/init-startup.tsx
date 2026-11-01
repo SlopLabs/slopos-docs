@@ -92,8 +92,11 @@ const SUMMARY =
 
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)' };
 
+const FIRST_STEP = PHASES.map((_, p) =>
+  PHASES.slice(0, p).reduce((count, phase) => count + phase.steps.length, 1),
+);
+
 export function InitStartup() {
-  let n = 0;
   return (
     <figure className="not-prose my-8">
       <div className="grid gap-4" role="img" aria-label={SUMMARY}>
@@ -108,8 +111,8 @@ export function InitStartup() {
               </span>
             </div>
             <ol className="grid gap-1.5">
-              {phase.steps.map((step) => {
-                n += 1;
+              {phase.steps.map((step, i) => {
+                const n = FIRST_STEP[p] + i;
                 return (
                   <li
                     key={step.title}

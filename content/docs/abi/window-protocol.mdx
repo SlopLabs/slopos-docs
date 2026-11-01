@@ -96,7 +96,10 @@ version: rebuild this program").
 | 14 | `ClipboardRead` | `len: u32`, `serial: u32` | the destination |
 | 15 | `ToplevelSetSizeLimits` | `toplevel: u32`, `min_width: u32`, `min_height: u32`, `max_width: u32`, `max_height: u32` | |
 
-A tag of 16 or more is a malformed message.
+A tag of 16 or more is a malformed message. `SurfaceAttach` takes a
+descriptor only when `has_fd` is set; `ClipboardCopy` and `ClipboardRead`
+always take one, so a client sends a descriptor with each of them, or the
+request takes whichever descriptor a later message carries.
 
 | Request | What the compositor does |
 |---|---|
@@ -219,6 +222,10 @@ that could not be decoded would otherwise be read again forever.
 4. `SurfaceDamage` names what changed, and `SurfaceCommit` shows it.
 5. When the other slot is committed, `BufferRelease` hands the first back.
 
+A memfd is sized once, to at most 64 MiB, and the kernel holds at most 64
+memfds at a time across all processes (`mm/src/memfd.rs`); a window's two
+buffers take two of them.
+
 A toplevel appears the first time it is committed with a buffer of non-zero
 size. The compositor places it then and logs `COMPOSITOR: shown <app id>` on
 its console.
@@ -256,7 +263,8 @@ Clipboard contents never travel inside a message. Each desktop's compositor
 keeps one clipboard, at most 16 MiB.
 
 1. To copy, the client sends `ClipboardCopy` with a memfd holding the
-   selection and its length in bytes. A length of `0` empties the clipboard.
+   selection and its length in bytes. A length of `0`, still sent with a
+   memfd, empties the clipboard.
 2. To paste, the client sends `ClipboardPaste`. The compositor answers
    `PasteReady { len }`; `0` means empty or refused.
 3. The client sends `ClipboardRead` with a memfd of at least `len` bytes.
