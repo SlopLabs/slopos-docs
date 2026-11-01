@@ -1,13 +1,14 @@
 ---
 title: "Proofs"
-description: "Which rules in the trusted core are proven by a machine, what that proof covers, and how to run it."
+description: "Which rules in the kernel are proven by a machine, what that proof covers, and how to run it."
 ---
 
-For the parts of SlopOS's trusted core where a bug would corrupt memory, you
-can rely on more than tests. A tool has checked, for every possible sequence
+For the parts of the SlopOS kernel where a bug would corrupt memory or hand a
+program power it shouldn't have, you can rely on more than tests. Most of
+them are in the trusted core; SlopRing's queues and zero-copy TCP sends are
+the exceptions. A tool has checked, for every possible sequence
 of operations, that rules such as "a page of memory is never freed twice"
-can't be broken, and every change to the trusted core has to keep those
-checks passing. The proofs cover the logic of each mechanism, written out as a
+can't be broken, and every change has to keep those checks passing. The proofs cover the logic of each mechanism, written out as a
 small model next to the kernel. They don't cover the kernel's actual code line
 by line, and they say nothing about how CPUs see each other's memory writes.
 This page explains what that means, lists what is proven, and shows how to
@@ -42,7 +43,7 @@ proof covers all of them, including the ones nobody thought to write.
 
 ## How SlopOS uses it
 
-Each proof is a single file that restates one part of the trusted core in the
+Each proof is a single file that restates one part of the kernel in the
 form Verus understands: the data it keeps, the steps that change it, and the
 rules those steps must preserve. Verus then proves that every step keeps every
 rule.
@@ -98,8 +99,8 @@ The capability proof covers the masks alone: the user and group ids a
 process carries, and the rules for changing them, are held by the kernel's
 own tests.
 Proving the whole trusted core isn't a goal. The proofs cover the places where
-a bug would corrupt memory rather than return an error, which is where they
-buy the most.
+a bug would corrupt memory or widen a capability mask rather than return an
+error, which is where they buy the most.
 
 ## Running the proofs
 

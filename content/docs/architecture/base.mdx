@@ -190,13 +190,16 @@ install and boot one, it boots current.
 
 The base the kernel didn't choose is loaded in memory but never used, so its
 pages are handed to the allocator as free memory before anything else can
-read them. That is why the choice happens so early: there is no way to give
-the allocator more memory later on.
+read them. That is why the choice happens so early: the pages join the free
+memory when the allocator is first set up, and nothing has looked at them by
+then.
 
-If the kernel serves neither base, the `initramfs root` boot step fails,
-which stops the boot with a kernel panic, and says what it found:
+If the kernel serves neither base, it says so as it chooses, and the
+`initramfs root` boot step then fails, which stops the boot with a kernel
+panic:
 
 ```text
+BOOT: no base this kernel serves (interfaces <min>-<max>): current interface <i>, previous interface <j>
 ROOTFS: this kernel serves base interfaces <min>-<max>; current is interface <i> and previous interface <j>
 ```
 
@@ -267,9 +270,12 @@ with one. The rules:
 
 ## Replacing the base while the system runs
 
-When `bootctl base install` writes a new base and the running kernel serves
-its interface, it also *activates* it: it hands the kernel the archive and
-asks for it to become the base now. The kernel calls each base it serves in a
+When `bootctl base install` writes a new base, the system booted from that
+boot partition and the running kernel serves the base's interface, it also
+*activates* it: it hands the kernel the archive and asks for it to become the
+base now. Otherwise the base waits on the disk for the next boot of a kernel
+that serves it, and `bootctl` says which happened
+([Updating SlopOS](/docs/self-hosting/updating#when-the-new-base-runs)). The kernel calls each base it serves in a
 boot a *generation*: the base it booted is generation 1, the first one
 activated after that is generation 2, and so on, never reusing a number
 within a boot.
