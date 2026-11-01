@@ -11,9 +11,9 @@ separately. A new base usually takes over at once, without a reboot, and the
 base it replaced is kept so that `bootctl base rollback` can bring it back. A
 new kernel needs a reboot, so it is tried more carefully: it goes into the
 spare *slot* next to the kernel you are running, boots once, and becomes the
-default only when you say so. Until then any reset, a crash included, brings
-back the kernel that booted before. Neither kind of update touches your files
-on the root disk.
+default only when you say so. Until then any reset brings back the kernel
+that booted before, including the reset an installed system makes by itself
+after a crash. Neither kind of update touches your files on the root disk.
 
 When you build SlopOS inside the
 [development machine](/docs/self-hosting/development-machine), two commands

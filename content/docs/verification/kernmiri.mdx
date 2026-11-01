@@ -3,7 +3,7 @@ title: "Miri"
 description: "How the trusted core's tests run under Rust's undefined-behaviour checker, and what that does and doesn't catch."
 ---
 
-Every test of SlopOS's trusted core also runs under
+The tests of SlopOS's trusted core also run under
 [Miri](https://github.com/rust-lang/miri), a tool from the Rust project that
 runs a Rust program one operation at a time and stops the moment the program
 does something the language forbids: reads freed memory, writes past the end
@@ -12,7 +12,8 @@ threads race on ordinary memory. So when the trusted core's tests pass under
 Miri, you know the `unsafe` code they exercise kept Rust's rules on those
 runs, which an ordinary passing test can't tell you. The limit is in "those
 runs": Miri only sees the code the tests execute, on a normal computer, and
-never the kernel booting on real hardware.
+never the kernel booting on real hardware, and a handful of tests that
+depend on real assembly or linker symbols are skipped under it.
 
 We call the setup *KernMiri*, after the approach the Asterinas authors
 describe in their [ATC '25 paper](https://arxiv.org/abs/2506.03876): run the
@@ -63,7 +64,7 @@ is no list of open findings.
 Rust hasn't finalised exactly which uses of references are allowed, so Miri
 offers two candidate rule sets. *Stacked Borrows* is the older and stricter;
 *Tree Borrows* is newer and accepts some patterns real `unsafe` code relies
-on. SlopOS runs every test under both, so code has to be correct under either
+on. SlopOS runs the tests under both, so code has to be correct under either
 reading of the rules.
 
 ## How the trusted core runs on a normal computer
@@ -126,7 +127,7 @@ in `builddir/kernmiri-<model>-<shard>.log`. Miri is much slower than running
 the tests natively, so this is not a check to run on every edit.
 
 CI runs the same recipe in its own job, alongside the proofs, so a Miri failure
-blocks a merge like any failing test. `just check-framekernel` runs it locally
+fails the CI run like any failing test. `just check-framekernel` runs it locally
 together with the other safety checks.
 
 ## For contributors

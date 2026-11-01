@@ -342,35 +342,20 @@ still installed on disk, and the next boot takes it.
 ### What restarts after a switch
 
 A new base usually changes only some programs, so SlopOS restarts only what
-changed. Init watches for switches, compares the old base's manifest with the
-new one's, and acts on the differences:
+changed. Init compares the old base's manifest with the new one's: privd and
+remoted finish what they are serving and start again from the new base when
+their program or the data they read changed, init re-executes itself when
+`/sbin/init` changed, and the extensions' services are checked again when
+their ceiling changed. Everything else picks up the new version the next time
+it starts. Your desktop is never restarted under you: when a new base changes
+the compositor or the terminal, the system menu shows *Restart the desktop to
+finish updating* and offers *Restart desktop…* for whenever you are ready.
+[Init and services](/docs/architecture/init#when-a-new-base-arrives) has the
+details.
 
-| What the new base changes | What happens |
-|---------------------------|--------------|
-| privd's program, its policy under `/usr/share/slopos/privd/`, or the pairing | privd *drains*: it finishes the requests it already took, refuses new ones, and exits. Init starts the new privd when it does, or beside it after five seconds |
-| `/bin/remoted` | remoted drains and starts again from the new base |
-| The pairing under `/usr/share/slopos/remote/` | Init ends remoted and everything the old broker ran, then starts remoted again if the new base is paired |
-| `/sbin/init` | Init re-executes itself as soon as nothing is starting or ending, keeping its process, its children and its state |
-| The extensions' ceiling, `/usr/share/slopos/privd/extensions` | Init re-reads which [extension](/docs/architecture/extensions) services may run |
-| `/bin/compositor` or `/bin/terminal` | Nothing is forced. The desktop's system menu shows *Restart the desktop to finish updating* and offers *Restart desktop…*, for whenever you are ready |
-| Anything else | Nothing restarts. Each program picks up the new version the next time it starts |
-
-[Init and services](/docs/architecture/init) explains draining, restart
-budgets and re-execution. A program of your own can follow switches too: the
-`base_monitor` system call returns a descriptor that becomes readable at each
-switch, and reading it gives the current generation number.
-
-### When a new base runs at once, and when at the next boot
-
-`bootctl` activates a base it installed only when both of these hold:
-
-- the system booted from the boot partition it just wrote (from the install
-  medium's rescue shell, repairing another disk, it doesn't), and
-- the running kernel serves the new base's interface.
-
-Otherwise the base stays installed, and the next boot of a kernel that serves
-it takes it. `bootctl` says which in the last line it prints.
-[Updating SlopOS](/docs/self-hosting/updating) walks through both cases.
+A program of your own can follow switches too: the `base_monitor` system call
+returns a descriptor that becomes readable at each switch, and reading it
+gives the current generation number.
 
 ## What it means in practice
 
@@ -388,8 +373,9 @@ it takes it. `bootctl` says which in the last line it prints.
   base first and the kernel second: `bootctl install` refuses a kernel that
   serves neither base on the partition, so the new base has to be there
   before the kernel that needs it.
-- **Long-running programs keep the old version** until they restart. Restart
-  the desktop from the system menu to pick up a new compositor or terminal.
+- **Long-running programs keep the old version** until they restart. When a
+  new base changes the compositor or the terminal, *Restart desktop…* in the
+  system menu picks them up.
 
 ## How we know it works
 
