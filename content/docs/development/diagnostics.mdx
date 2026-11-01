@@ -330,9 +330,10 @@ prof report slow > slow.log
 prof stop
 ```
 
-`prof report <label>` prints the report's lines, which start `PROF[<label>]:`,
-and `scripts/prof_report.py --label slow slow.log` on the host turns them
-into tables. To profile one of the self-hosting checks instead, add `prof=on`
+`prof report <label>` prints the report's lines, which start `PROF[<label>]:`.
+Copy the file to the host (`just remote pull` on a paired machine, or
+`just export-file` once the development machine has shut down), where
+`scripts/prof_report.py --label slow slow.log` turns them into tables. To profile one of the self-hosting checks instead, add `prof=on`
 to its command line through `TEST_CMDLINE_EXTRA` (which `test-toolchain` and
 `test-selfhost` read, and `just test` does not), and the report comes at the
 end of its test run:
@@ -355,7 +356,7 @@ summarises the result with `scripts/prof_report.py`.
 - calls per futex, how long each context switch keeps interrupts off, and
   how long tasks waited for and held the filesystem's lock and each address
   space's lock;
-- disk reads, writes and flushes, with the time they took.
+- disk reads and writes with the time they took, and how many flushes.
 
 **How to read it.** Start with the per-CPU split. Mostly idle while the work
 is slow means tasks are waiting, so read the "where blocked programs were

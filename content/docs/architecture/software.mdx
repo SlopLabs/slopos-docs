@@ -86,9 +86,10 @@ hello
 `tree-install` first reads the source and writes down what it holds in a
 *manifest*: an `identity` line, which is a SHA-256 digest over every entry's
 kind, mode, path and contents, an `at` line naming the destination, and one
-line per entry, directories before what is in them. For a tree in someone's
-home the manifest is kept in `~/.local/share/slopos/trees/<name>`; for any
-other destination, in `/var/lib/slopos/trees/<name>`:
+line per entry, directories before what is in them. For a tree installed
+into your own home the manifest is kept in
+`~/.local/share/slopos/trees/<name>`; for any other destination, in
+`/var/lib/slopos/trees/<name>`:
 
 ```text
 $ cat $HOME/.local/share/slopos/trees/hello
