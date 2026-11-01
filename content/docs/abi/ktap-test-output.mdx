@@ -26,7 +26,8 @@ Each phase prints its own header. The runner names phases by order: the first
 ## Line prefix
 
 Every harness line starts with `KTAP` and a tab. Ordinary kernel log lines are
-interleaved with them and the parser ignores those. Diagnostic and subtest
+interleaved with them; the parser keeps the most recent of those only as
+context for a failure (`pre_fail_klog_tail` below). Diagnostic and subtest
 lines add two spaces after the tab.
 
 ## Header
@@ -128,7 +129,8 @@ KTAP	# elapsed_ms=14238 pass=2391 fail=1 skip=0 over_time=14
 
 - Each phase ends with a footer holding its time and counters.
 - If a test whose name starts with `bootstrap_` fails, the harness prints
-  `KTAP	Bail out! <test name>` and runs no more tests in that phase.
+  `KTAP	Bail out! <name>`, the test's name without its module path, and runs
+  no more tests in that phase.
 - The format-free abort a lockup or a broken unwind takes prints
   `=== KERNEL ABORT ===` and a reason line, which the runner records as a
   kernel abort. The other CPUs may go on producing results, so the runner
@@ -174,7 +176,7 @@ as `TEST_CMDLINE`.
 | `0` | Tests ran and all passed |
 | `1` | A test failed, a phase bailed out, the run timed out, the output was cut short, or the kernel aborted |
 | `2` | No trustworthy answer: no phase header appeared, an unfiltered run planned zero tests, or QEMU's wrapper exited with an unexpected status |
-| `64` | Bad command-line arguments (`--rerun-failed` with no recorded failures among them), or the runner could not build the ISO, find the ISO or test image, or start QEMU |
+| `64` | Bad command-line arguments (`--rerun-failed` with no recorded failures among them), or the runner could not build the ISO, find the ISO or test image, open the `--json` file, or start QEMU |
 | `130` | Interrupted with Ctrl-C |
 
 ## JSON lines

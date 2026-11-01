@@ -233,7 +233,7 @@ report. `just test` never sets them.
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `tests=` | `on`, `off` | `off` | Runs the kernel test harness, and makes the `usb settle` boot step wait up to a minute for USB to settle and fail the run with `USB: unsettled after 60000 ms` if it does not. `off` also clears an earlier `tests.shutdown`. Any `tests=on` also puts userland in test mode: init runs the userland tests in a copy of itself, `test_key` answers, and the Wheel of Fate cannot restart the machine |
+| `tests=` | `on`, `off` | `off` | Runs the kernel test harness and lets `test_key` answer. It also makes the `usb settle` boot step wait up to a minute for USB to settle and fail the run with `USB: unsettled after 60000 ms` if it does not; on a machine with one CPU and a USB controller the step fails at once. `off` also clears an earlier `tests.shutdown`. Any `tests=on` on the line, whatever follows it, also puts userland in test mode: init runs the userland tests in a copy of itself, and the Wheel of Fate cannot restart the machine |
 | `tests.run=` | globs separated by commas | all tests | Runs only tests whose `module::name` matches one of the globs. A test registered as explicit runs only when a pattern is exactly its full name |
 | `tests.skip=` | globs separated by commas | none | Skips matching tests |
 | `tests.verbosity=` | `quiet`, `summary`, `verbose` (any case) | `summary` | `quiet` prints only failures; `verbose` adds the captured log of passing tests. Any other value means `summary` |

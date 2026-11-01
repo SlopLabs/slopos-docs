@@ -168,7 +168,7 @@ mount("LABEL=home", "/home", "ext4", 0, NULL);
 mount("/dev/nvme0n1p3", "/media/data", "ext4", MS_RDONLY, NULL);
 ```
 
-A person who administers the machine can do the same from a shell through
+An administrator can do the same from a shell through
 [`priv`](/docs/architecture/privd), whose commands hold `Mount`. `/media`
 belongs to uid 0, so the mount point is made through `priv` too (it then
 belongs to you):
@@ -297,7 +297,7 @@ which nothing you run in a session holds, so boot the install medium and run
 A file can be *sealed*. A sealed file can't be written, truncated, deleted,
 renamed, replaced by a rename, linked to, or have its owner, permissions or
 times changed, and a sealed directory takes no new names and loses none.
-Every file in the base is sealed for good, and you can seal files on a disk
+Every file in the base is sealed for good, and files on a disk can be sealed
 too.
 
 On ext4 the seal is the standard *immutable* flag, the `i` that Linux's

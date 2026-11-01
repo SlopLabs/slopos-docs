@@ -169,7 +169,8 @@ The detail is a sentence under it, and the allowing button says the verb, or
 
 ## Extensions' actions
 
-An enabled extension's actions are read from its activation's
+The actions of each extension that runs (enabled, installed and not stopped
+by a failed check) are read from its activation's
 `/.extension/declare` and added beside the base's as
 `ext.<extension>.<action>`. One whose name the base already uses is left out,
 and so is one whose `program` principal names a base program that is not
@@ -228,8 +229,8 @@ bytes, and each name occurs once.
 | `destructive` | none | no | The allowing button takes the danger tone, and Enter in the password field moves to it rather than pressing it. |
 | `medium` | none | no | The action exists only on a boot the kernel says served the install medium (`BOOT_FLAG_MEDIUM`); on any other boot privd and every requester treat it as no action at all. |
 
-A quoted value is one line of printable ASCII between `"` and `"`, with no
-`"` inside, at most 160 bytes.
+A quoted value is one line of printable ASCII between `"` and `"`, not
+empty, with no `"` inside, at most 160 bytes.
 
 privd refuses the base's whole policy, and with it every request, when a
 `program` principal names a program that is not statically linked, or an
@@ -248,8 +249,8 @@ attested the program as the base's.
 | `paired` | `/bin/remoted` on a base that carries a remote pairing | none |
 | `program <path>` | a requester running the base program at that canonical path, whatever its uid, unless it is the paired agent | none |
 
-uid 0 running a program from outside the base matches nothing. The paired
-agent matches `paired` and nothing else. privd reads the requester's program
+uid 0 alone is no principal: uid 0 running a program from outside the base
+is not `root`. The paired agent matches `paired` and nothing else. privd reads the requester's program
 from the kernel again before it judges, before it asks and before it starts
 the mechanism, and refuses a requester that has exec'd, mapped code from
 elsewhere or exited since it connected.
@@ -400,7 +401,7 @@ screen.
 | The command is too long to show in full, so it can't be allowed. | A question for the desktop whose command line or directory exceeds 320 bytes once escaped. |
 | Who can allow this changed while you were asked. Try again. | Judged again after the answer, the request no longer qualifies. |
 | The account that asked no longer exists. | A `uid requester` action for a uid the record no longer names. |
-| The extension that runs this has changed. Try again. | The extension's activation changed between the question and the start. |
+| The extension that runs this has changed. Try again. | Just before the start, the activation shown at `/opt/<name>` is no longer the one privd read the action from, or the program is not a file of it. |
 | Too many requests are waiting. Try again in a moment. | The connection limits below are reached. |
 | That request couldn't be read. | A malformed frame, or a request with the wrong number of descriptors; the connection ends. |
 | The answer came back incomplete. Try again. | A password answer arrived without its password or its administrator. |
@@ -419,7 +420,7 @@ screen.
 | A question unanswered | 120 seconds from when it is sent to the desktop |
 | Requests from a uid just refused | refused for 5 seconds |
 | Command line and directory shown | 320 bytes each, escaped |
-| Dialog input ignored after it appears, moves focus or changes shape | 750 ms |
+| Dialog input ignored after it first shows, after focus moves or another administrator is chosen, after its details are shown or hidden, and after it moves on the screen | 750 ms |
 | Wait before privd checks a person's password again after a wrong one | 2 seconds, doubling with each, at most 60 seconds, until a right one or privd starts again |
 | `keep` | at most 900 seconds; 64 answers |
 | Request frame | 64 KiB, at most 256 arguments |

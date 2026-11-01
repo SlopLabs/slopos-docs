@@ -21,7 +21,6 @@ the [differences](#differences-from-linux) are listed further down.
 
 The rest of the page explains why a crash can damage a filesystem at all, how
 the journal prevents that, and what it means for programs that write files.
-You don't need to know how filesystems work to follow it.
 
 ## Why a crash can damage a filesystem
 
@@ -174,8 +173,9 @@ Replay writes nothing until every copied block has passed its checksum. If
 one fails, SlopOS doesn't apply the entries that look fine and skip the rest.
 It mounts the disk read-only and leaves the repair to `e2fsck`, the standard
 checker from e2fsprogs. If that disk is your root filesystem, SlopOS by default
-boots from memory instead (the base, unpacked into a RAM filesystem), mounts
-the disk read-only at `/mnt`, and logs what to do:
+boots from memory instead (a RAM filesystem with the base mounted over it, as
+[Filesystem](/docs/architecture/filesystem#how-the-root-is-chosen)
+describes), mounts the disk read-only at `/mnt`, and logs what to do:
 
 ```text
 ext4: MOUNTING READ-ONLY — the volume went down in use and its journal could not be replayed. Replay it on the host with `e2fsck -fy <image>`.
