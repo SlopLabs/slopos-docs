@@ -130,9 +130,9 @@ What each part does for you:
 - **The view names what things are, not how they look.** A `Page` brings
   its title, its subtitle, its margins and a separator above the buttons;
   `TextRole::Display` is the role for a page that is one number. There is no
-  colour, font size or spacing in the file, and there mustn't be: the build
-  fails an app that constructs a colour or gives a spacing or an inset a
-  number (`scripts/check_ui_literals.sh`).
+  colour, font size or spacing in the file, and there mustn't be: one of the
+  gates CI runs fails an app that constructs a colour or gives a spacing or
+  an inset a number (`scripts/check_ui_literals.sh`, step 6).
 - **The footer is a `ButtonRow`.** `.confirm()` puts the button that finishes
   last on the right and filled with the accent, and makes Enter press it, so
   Enter starts and stops the stopwatch. `.aside()` puts *Reset* on the left.
@@ -267,7 +267,8 @@ just build
 ```
 
 The userland build compiles the apps against SlopOS's C library and stages
-them as one tree. Near the end you should see:
+them as one tree. When the userland part of the build finishes, before the
+disk image and the kernel are built, you should see:
 
 ```
 Apps built: builddir/apps
@@ -357,15 +358,16 @@ just test '*ext4_aaa*,*utest_apps,*utest_dock'
 
 The default view shows progress and failures only. To see each case, run the
 same filter raw, and the new ones appear among the cases of
-`slopos_core::utests::utest_apps`:
+`slopos_core::utests::utest_apps`, each on a line of its own that starts with
+`KTAP` and a tab:
 
 ```bash
 builddir/run_tests --raw --filter '*ext4_aaa*,*utest_apps,*utest_dock'
 ```
 
 ```
-  ok 6 - the_stopwatch_runs
-  ok 7 - the_stopwatch_reads_whole
+KTAP	  ok 6 - the_stopwatch_runs
+KTAP	  ok 7 - the_stopwatch_reads_whole
 ```
 
 A failing audit names each finding with the width it was found at. Squeezed
@@ -409,20 +411,29 @@ and the full `just test`.
 
 `just boot` installs every app in `apps/` for everyone. To try a build as one
 person on a running SlopOS instead, install it as a *tree* of your own in
-`~/.local`, which is on your `PATH`, searched by the loader and read by the
-dock ([Installed software](/docs/architecture/software) explains trees).
-On the development machine, with your change committed on the host:
+`~/.local`, whose `bin` is on your `PATH`, whose `lib` the loader searches
+and whose `share` the dock reads ([Installed software](/docs/architecture/software) explains trees).
+On the development machine, with the toolchain installed (`just toolchain`
+on the host before `just boot`) and your change committed on the host:
 
 ```sh
 cd /src/slopos
 git pull
 scripts/selfhost.sh build
 mkdir -p $HOME/stopwatch/bin $HOME/stopwatch/share/slopos/apps $HOME/stopwatch/share/slopos/icons
-cp builddir/apps/bin/stopwatch $HOME/stopwatch/bin/
+cp -p builddir/apps/bin/stopwatch $HOME/stopwatch/bin/
 cp builddir/apps/share/slopos/icons/org.slopos.stopwatch.png builddir/apps/share/slopos/icons/org.slopos.stopwatch@2x.png $HOME/stopwatch/share/slopos/icons/
 printf 'id=org.slopos.stopwatch\nname=Stopwatch\nexec=%s/.local/bin/stopwatch\nicon=org.slopos.stopwatch.png\n' $HOME > $HOME/stopwatch/share/slopos/apps/org.slopos.stopwatch.app
 tree-install stopwatch $HOME/stopwatch $HOME/.local
 ```
+
+`scripts/selfhost.sh build` builds the whole system in the guest, the apps
+among it, which takes a while. For the first person, whose home is
+`/home/user`, the last command prints
+`tree-install: installed stopwatch at /home/user/.local (… bytes copied)`.
+SlopOS's `cp` makes a new file with the default mode unless `-p` keeps the
+source's, so the program is copied with `-p` to stay executable: a tree is
+installed with the modes it has.
 
 The entry's `exec` must be an absolute path, here inside your home. An entry
 in `~/.local/share` replaces one with the same id from `/usr/local/share`,
@@ -435,9 +446,9 @@ put down and keeps anything else.
 - **`dock_test` fails on its list of entries** because `INSTALLED` doesn't
   name the new app, or isn't sorted; or on the icon sizes, because
   `just icons` wasn't run after adding the art.
-- **`apps_test` says the app "named its window …, not …"**: the window's
-  title isn't the entry's `name`. Use one constant for both, as `NAME` does
-  here.
+- **`apps_test` says the app "named its window …, titled …, not … and …"**:
+  the window's app id isn't the entry's `id`, or its title isn't the entry's
+  `name`. Use one constant for the title and the entry, as `NAME` does here.
 - **`check_ui_literals` fails** on a `Color32`, an `EdgeInsets` with numbers,
   or a `spacing:` that isn't a `space` step. Name a `Tone`, a `Surface`, a
   `TextRole` or a `theme::space` step instead.

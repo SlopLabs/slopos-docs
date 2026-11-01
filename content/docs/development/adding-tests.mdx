@@ -41,6 +41,8 @@ that the Intel display driver recognises a particular GPU:
 ```rust
 use slopos_testing::{TestResult, assert_eq_test, assert_test, fail, pass};
 
+use crate::xe_logic::platform;
+
 pub fn xe_platform_identifies_target_a7a8() -> TestResult {
     assert_test!(platform::is_intel_vendor(0x8086));
     assert_test!(!platform::is_intel_vendor(0x1234));
@@ -68,10 +70,12 @@ A test's full name is its module path plus the function name:
 `slopos_drivers::tests::xe_logic_tests::xe_platform_identifies_target_a7a8`.
 That is the name you filter on and the name you'll see in failures.
 
-Tests run in alphabetical order of their full names, and some tests rely on
-it. The test that mounts the test filesystem is named `test_ext4_aaa_init` so
-that it runs before anything that writes files, and the lock-order tests live
-in a module called `zz_lockdep_tests` so that they run last.
+Tests run in alphabetical order of their module path and then their name,
+except that tests named `bootstrap_…` run first, and some tests rely on that
+order. The test that makes the test filesystem ready is named
+`test_ext4_aaa_init` so that it runs before the filesystem tests that write
+files, and the lock-order tests
+live in a module called `zz_lockdep_tests` so that they run last.
 
 Three flags change how a test is treated. Pass them as
 `flags = slopos_testing::FLAG_...` in `stest!`:
@@ -128,9 +132,10 @@ fn main() {
 
 Each case is a function that returns `true` for a pass. `test_harness::run`
 runs them in order, reports each one, and exits with the number that failed.
-A program's own standard error doesn't reach the log the harness reads, so a
-case that fails should say why with `test_harness::note("...")`: the note
-travels with the case's result and appears on its line.
+A program's standard error goes straight to the serial console and is not
+kept in the test's log, so a case that fails should say why with
+`test_harness::note("...")`: the note travels with the case's result and
+appears on its line.
 `test_harness::run_with_progress` also prints a line as each case starts,
 which tells you which case was running if the program hangs.
 
@@ -242,7 +247,7 @@ line; [Boot options](/docs/abi/boot-options) describes both.
 
 The kernel reports results in KTAP, the plain-text test format Linux uses.
 Each test produces a line, and a userland test's cases come first, indented,
-followed by the program's own line. From a real run (the raw serial log puts
+followed by the program's own line. For example (the raw serial log puts
 `KTAP` and a tab in front of each line, left out here):
 
 ```
@@ -310,7 +315,7 @@ that cover what you changed.
 
 `test-install-guest`, `test-selfhost` and (unless you set
 `INSTALLER_PAYLOAD=0`) `test-installer` need the cross-built toolchain from
-`just toolchain`; see [The toolchain](/docs/self-hosting/toolchain).
+`just toolchain`; see [Toolchain](/docs/self-hosting/toolchain).
 
 One more recipe boots the live system but checks nothing: `just ui-shots`
 saves a picture of every screen of the desktop, the installer and each app
@@ -398,6 +403,13 @@ lists every check, including the ones that don't read a test log.
 - **A long test's failure report has no useful log.** The report keeps only
   the start of each test's log. Mark the test uncaptured, print less, or put
   the reason in a case's note.
+- **You added an app and `dock_test` or `apps_test` fails.** Both hold a
+  fixed list of the apps the system installs: `INSTALLED` in
+  `userland/src/bin/tests/dock_test.rs`, and `APPS` and `CASES` in
+  `userland/src/bin/tests/apps_test.rs`. Add the new app to each, and to
+  `APPS` in `scripts/ui_shots.py` so `just ui-shots` photographs it.
+  [Write an app](/docs/development/writing-an-app#6-hold-it-to-the-tests)
+  shows the rows.
 - **A test that needs the desktop times out.** A test boot starts no session
   until one is asked for; ask init to restart the sessions first and wait for
   one in front.

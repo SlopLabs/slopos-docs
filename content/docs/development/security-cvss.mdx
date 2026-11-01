@@ -112,12 +112,13 @@ keep scores consistent:
 - **A panic in code that can't use `unsafe` is an availability problem.**
   Code in a crate marked `#![forbid(unsafe_code)]` can crash but can't
   corrupt memory, so the impact is `A:`, never `C:` or `I:`.
-- **Say which build you scored.** The debug and test kernels check arithmetic
-  for overflow and the release kernel doesn't, so the same bug is a panic in
-  one and a silently wrong number in the other.
+- **Say which build you scored.** The dev and tests kernels check arithmetic
+  for overflow and the release kernels (`release` and `release-tests`) don't,
+  so the same bug is a panic in one and a silently wrong number in the
+  other.
 
 FIRST's [user guide](https://www.first.org/cvss/v3.1/user-guide) explains how
-to answer each question in the vector, with examples.
+to apply the metrics, with worked examples for scope and for impact.
 
 ## 4. Write the entry
 

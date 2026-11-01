@@ -18,7 +18,7 @@ call.
 | Range | Contents | Rule |
 |---|---|---|
 | `0` to `472` (`SYSCALL_LINUX_MAX`) | Linux-numbered calls | Number, name, arguments and behaviour are those of the Linux x86-64 call |
-| `1024` (`SYSCALL_PRIVATE_BASE`) to `1077` | SlopOS-only calls | Numbered `1024 + k`, contiguous from `k = 0`; the private table holds 54 slots (`SYSCALL_PRIVATE_TABLE_SIZE`) |
+| `1024` (`SYSCALL_PRIVATE_BASE`) to `1077` | SlopOS-only calls | Numbered `1024 + k`, contiguous from `k = 0`; the private table holds 54 slots (`SYSCALL_PRIVATE_TABLE_SIZE`), 53 of them with a handler |
 
 - A number below 1024 always means the Linux call with that number. If SlopOS
   does not implement it, the number returns `-ENOSYS`; it is never reused for
@@ -83,10 +83,22 @@ and how a program is given a capability.
 | `ConsoleIo`, `ClipboardGlobal`, `Fate` | A holder of that capability. These three are universal: every program holds them unless it or its spawner dropped them |
 | Any other capability (`Power`, `Mount`, `SysInspect`, ...) | A holder of that capability, which only a spawner that holds it can delegate |
 
-Some calls check more inside the handler. The credential calls ask
-`SyscallContext::holds` for `SetId`, `setpriority` for `SchedHigh` and
-`net_query` for `NetAdmin` before naming a socket's owner, and the display
-calls require the caller to hold the screen or input seat.
+Some calls check a further capability, or a seat, inside the handler
+(`SyscallContext::holds` or a capability witness):
+
+| Calls | Needs | For |
+|---|---|---|
+| `setuid`, `setgid`, `setreuid`, `setregid`, `setresuid`, `setresgid` | `SetId` | An id other than the caller's real, effective or saved one |
+| `setgroups` | `SetId` | Any call |
+| `spawn_path` | `SetId`, `SchedHigh` | A uid, gid, group list or login tag for the child; the `High` priority tier |
+| `setpriority` | `SchedHigh` | A nice value below both 0 and the task's current one |
+| `net_query` | `NetAdmin` | The owner of a socket the caller does not own |
+| `efivar_get`, `efivar_set` | `BootEntry` | `Boot####`, `BootOrder`, `BootNext` and `BootCurrent` |
+| `ioctl` (`FS_IOC_SETFLAGS`) | `Seal` | Setting or clearing the immutable flag |
+| `read`, `write`, `fsync` and `ioctl` (`BLKRRPART`) on a block device node; `read` and `unlink` in `/dev/crash` | `RawBlock` | Any call |
+| Every call that checks file permissions | `DacOverride` | Passing every mode check, and `chown` to any owner |
+| `fb_flip`, `cursor_set_image`, `cursor_move`, `set_display_mode` | The screen seat | Any call (`EPERM` otherwise) |
+| `input_poll_batch` | The input seat | Any call (`EPERM` otherwise) |
 
 ## Linux-numbered calls
 
@@ -143,7 +155,7 @@ does not promise every flag of the Linux call.
 | 55 | `getsockopt` | `NoneFd` | Also answers `SO_PEERPROGRAM` and `SO_PEEREXTENSION` at level `SOL_SLOPOS` ([Privileged actions](/docs/architecture/privd)) |
 | 56 | `clone` | `NoneSelf` | |
 | 57 | `fork` | `NoneSelf` | Copy-on-write; never refused by the commit ceiling |
-| 59 | `execve` | `NoneSelf` | The new program keeps only the universal capabilities |
+| 59 | `execve` | `NoneSelf` | Every thread of the process keeps only the universal capabilities it held. The exception is init re-executing the base's `/sbin/init`, which keeps its whole mask |
 | 60 | `exit` | `NoneSelf` | |
 | 61 | `wait4` | `NoneRelation` | A process-group wait (`pid` 0 or below -1) is `ESRCH` |
 | 62 | `kill` | `NoneRelation` | The sender must hold every capability the target holds, and its real or effective uid must be the target's real or saved uid. `ProcSignal` waives both; `SIGCONT` to the sender's own session needs neither. Init can never be signalled |
@@ -235,10 +247,10 @@ does not promise every flag of the Linux call.
 | 292 | `dup3` | `NoneFd` | |
 | 293 | `pipe2` | `NoneSelf` | |
 | 297 | `rt_tgsigqueueinfo` | `NoneRelation` | |
-| 302 | `prlimit64` | `NoneRelation` | `pid` must be 0 or the caller's own (`EPERM` otherwise) |
+| 302 | `prlimit64` | `NoneRelation` | `pid` must be 0 or the caller's kernel process id (the `process_id` field `process_list` reports, not the id `getpid` returns); `EPERM` otherwise |
 | 309 | `getcpu` | `NoneSelf` | `node` is always 0 |
 | 318 | `getrandom` | `NoneSelf` | `GRND_NONBLOCK` and `GRND_RANDOM` are accepted and change nothing; any other flag is `EINVAL` |
-| 319 | `memfd_create` | `NoneSelf` | `MFD_CLOEXEC` is the only flag |
+| 319 | `memfd_create` | `NoneSelf` | `MFD_CLOEXEC` is the only flag. At most 64 memfds exist at once on the machine (`ENFILE` past that) |
 | 434 | `pidfd_open` | `NoneSelf` | Any live process, by its leader's id; `flags` must be 0. The descriptor is close-on-exec and polls readable once the process exits; `read` on it is `EINVAL` |
 | 439 | `faccessat2` | `NoneFd` | |
 | 452 | `fchmodat2` | `NoneFd` | |

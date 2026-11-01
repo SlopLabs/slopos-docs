@@ -138,7 +138,7 @@ stack traces.
 Some bugs only make sense backwards: memory is found corrupted, and the
 question is who wrote it. QEMU can record everything that happens in a run
 and replay it identically, and GDB can then run the replay in reverse.
-QEMU's [record/replay documentation](https://www.qemu.org/docs/master/devel/replay.html)
+QEMU's [record/replay documentation](https://www.qemu.org/docs/master/system/replay.html)
 and GDB's on [reverse execution](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Reverse-Execution.html)
 describe the machinery.
 
@@ -212,6 +212,9 @@ the stack pointer.
 - **`just debug-bt` says the kernel file is missing.** It doesn't build
   anything; it attaches to a machine started with `just boot-debug`.
 - **Breakpoints early in boot never fire.** Use `hbreak`, not `break`.
+- **GDB says a function is not defined.** GDB finds a Rust function by its
+  full path: `slopos_boot::user_fault::terminate_user_task`, not
+  `terminate_user_task`.
 - **GDB prints Rust expressions oddly.** GDB uses Rust syntax for a Rust
   program: write `(*frame).rip`, not `frame->rip`.
 - **The replay no longer fails.** The bug depends on timing that recording

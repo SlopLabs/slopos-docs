@@ -23,14 +23,15 @@ just check-framekernel-gates
 ## Where `unsafe` may live
 
 Only in `slopos-ostd` (OSTD). Every other crate the kernel links starts with
-`#![forbid(unsafe_code)]`, and the build also checks the macro expansion of
-each crate, so `unsafe` arriving through a macro is rejected too. The table
+`#![forbid(unsafe_code)]`, and `just check-framekernel-gates` also checks the
+macro expansion of each crate, so `unsafe` arriving through a macro is
+rejected too. The table
 shows where each kind of low-level code goes:
 
 | You need to | Put it in |
 |---|---|
 | Read or write a CPU register, run a special instruction | OSTD's `arch` and `cpu` modules |
-| Write assembly that enters or leaves the kernel | OSTD's naked functions (context switch, task entry, CPU start-up, user-mode entry) |
+| Write assembly that enters or leaves the kernel | OSTD's naked functions and assembly files (context switch, task entry, CPU start-up, interrupt stubs, user-mode entry) |
 | Refer to a symbol defined by the linker or by assembly | `extern_block!` inside OSTD |
 | Add an entry to a table the linker assembles | `registry_entry!`, from any crate |
 | Define a function that assembly calls | `extern_c_entry!`, only for the three allowed names |
@@ -40,11 +41,14 @@ shows where each kind of low-level code goes:
 | Build a large struct without putting it on the stack | `Init<T, E>` and `#[derive(SlotFields)]` ([The trusted core](/docs/verification/ostd-trusted-core#building-large-values-in-place)) |
 
 Outside OSTD, one file holds anything of the kind: the kernel binary's own
-`kernel/src/main.rs`, which declares the global allocator (Rust requires
-that in the binary's crate) and places the base-interface note, the record
+`kernel/src/main.rs`. It declares the global allocator and the
+allocation-error handler, which need the `extern crate alloc;` no other
+kernel crate may write, and it places the base-interface note, the record
 that says which [base interfaces](/docs/architecture/base) the kernel serves,
-in a linker section of its own, because the note describes the kernel file.
-Nothing else is exempt.
+in a linker section of its own with a hand-written
+`#[unsafe(link_section)]`, because the note describes the kernel file. It
+also assembles the boot entry, `boot/limine_entry.s`, which calls
+`kernel_main` (below). Nothing else is exempt.
 
 If the API you need already exists in OSTD, use it and stop here.
 
@@ -79,8 +83,8 @@ If the API you need already exists in OSTD, use it and stop here.
    used once, a sealed trait, a slice instead of a pointer and length. They
    are described on [The trusted core](/docs/verification/ostd-trusted-core#how-safety-rules-become-types).
 
-   Don't write a `# Safety` section on a safe function. The build rejects
-   it:
+   Don't write a `# Safety` section on a safe function.
+   `just check-framekernel-gates` rejects it:
 
    ```text
    check_safe_contract_surface: 1 safe fns carry a '# Safety' section (baseline 0)
