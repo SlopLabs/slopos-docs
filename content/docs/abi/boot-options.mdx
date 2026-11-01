@@ -212,7 +212,7 @@ does not accept is ignored without a log line.
 | `lockdep=` | `off`, `warn`, `panic` | `panic` | What the lock-order checker does when it finds two locks taken in an order that could deadlock. `warn` reports each distinct pair once and keeps booting; `off` skips the ordering checks but still tracks which locks each CPU holds |
 | `watchdog=` | `on`, `off` | `on` | Whether the watchdog reports a CPU that has stopped making progress |
 | `watchdog.miss_threshold=` | positive integer | `100` | Consecutive heartbeat samples (one per timer tick, so 100 is a second) a CPU may miss before it is reported. `0` is refused |
-| `watchdog.panic=` | `on`, `off` | `on` on bare metal, `off` under a hypervisor | Whether a long stall stops the machine: a stall five thresholds long, or one threshold long when the stalled CPUs wait on each other in a cycle, takes the format-free abort (the stuck CPU halts, `=== KERNEL ABORT ===` is printed and a crash record written, with no panic screen; under `panic=reboot` the machine resets at once). A hypervisor can pause a virtual CPU, which looks the same as a stalled one, which is why the default differs |
+| `watchdog.panic=` | `on`, `off` | `on` on bare metal, `off` under a hypervisor | Whether a long stall stops the machine. Reports come at one, two, four and eight thresholds; the first at five thresholds or more (with the default, the one at 800 samples), or the first report of CPUs waiting on each other in a cycle, takes the format-free abort (the stuck CPU halts, `=== KERNEL ABORT ===` is printed and a crash record written, with no panic screen; under `panic=reboot` the machine resets at once). A hypervisor can pause a virtual CPU, which looks the same as a stalled one, which is why the default differs |
 
 ### Panics
 

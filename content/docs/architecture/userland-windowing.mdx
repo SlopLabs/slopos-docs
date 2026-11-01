@@ -64,7 +64,8 @@ is when the compositor places it: an app's first window opens centred in the
 space between the menu bar and the dock, and each later window of the same
 app opens one title bar's height down and to the right of the previous one,
 wrapping back to the top before it would cross the dock. A window larger than
-that space is shrunk to fit, and the program is told its new size.
+that space is shrunk to fit it, though never below the smallest size the
+program stated, and the program is told its new size.
 
 ## How pixels reach the screen
 
@@ -103,8 +104,10 @@ rectangles, which the display driver copies to the screen. On Intel graphics,
 when the driver can set aside a second buffer for the screen (the boot log
 says `XE-PRESENT: tear-free double-buffered scanout (pipe A)`), it switches
 to the new frame only between screen refreshes, so you never see half of one
-frame and half of another. Under QEMU's virtio-gpu the pointer is drawn by
-the device's cursor plane rather than painted into every frame.
+frame and half of another. Where the display driver offers a cursor plane
+(virtio-gpu in QEMU, and Intel graphics when the boot log says
+`XE-CURSOR: hardware cursor plane bound`), the pointer is drawn there rather
+than painted into every frame.
 
 A program that animates can ask to be told when its last frame reached the
 screen and draw the next one then, instead of drawing frames nobody sees.
@@ -173,9 +176,10 @@ content while holding Super unless zoom has maximised it.
 
 The compositor also checks requests that only make sense after the person did
 something. A program that has merely connected can't read the clipboard or
-replace it: a copy or paste must quote the serial number of a key event the
-compositor sent to a focused window of that program. Changing the pointer's
-shape needs the serial of the pointer entering the window. The clipboard the
+replace it: a copy or paste must quote the serial number of the latest key
+event the compositor sent to that program's focused window. Changing the
+pointer's shape needs the serial of the pointer's latest entry into the
+window, while the pointer is still over it. The clipboard the
 apps and the terminal copy to and paste from is the compositor's, so each
 person's desktop has its own and two people's desktops never share one. (The
 kernel also keeps a clipboard per session, which
@@ -226,7 +230,8 @@ and locks.
 
 Most apps should use **appkit**, SlopOS's toolkit: it connects, picks the
 buffers, lays out and draws its components in the theme, routes keys to the
-focused control and redraws after each message. [Write an app](/docs/development/writing-an-app)
+focused control, and rebuilds and redraws the window when the app's state
+changes. [Write an app](/docs/development/writing-an-app)
 walks through one, and the [Desktop](/docs/architecture/desktop) page
 describes what the toolkit gives every app.
 
