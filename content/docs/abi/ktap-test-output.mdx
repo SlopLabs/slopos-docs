@@ -60,7 +60,7 @@ The text after `#` holds:
 | `NO_TIME_BASE` | In place of `time_ms` when no clock was available |
 | `OVER_TIME` | Passed, but slower than `tests.warn_ms` |
 | `EXPECTED_PANIC` | The test was registered as expecting a panic, and panicked |
-| `SKIP <reason>` | Skipped; KTAP writes a skip as `ok`. A kernel test's reason is always `test returned Skipped` |
+| `SKIP <reason>` | Skipped; KTAP writes a skip as `ok`. The reason is always `test returned Skipped` |
 
 With `tests.verbosity=quiet` the harness prints only failing results, and
 of the subtest lines below only the failing ones.
@@ -87,9 +87,11 @@ KTAP	  ...
 | `log` | Kernel log captured while the test ran: the harness CPU first, then a `--- cpuN ---` section for each other CPU that logged |
 
 When the capture was cut short, the log contains `[head trimmed: N bytes]`
-(a CPU logged more than the 4096 bytes the block prints for each) or
-`[cpu0 tail trimmed: N bytes lost to ring overflow]` (the harness CPU's
-capture buffer wrapped; the text says `cpu0` whichever CPU that is). With
+(a CPU logged more than the 4096 bytes the block prints for each, and only its
+last 4096 are shown) or `[cpu0 tail trimmed: N bytes lost to ring overflow]`
+(CPU 0's 8 KiB capture buffer filled, and what it logged after that was lost;
+only CPU 0's buffer is counted, and the marker follows the first section
+whichever CPU the harness ran on). With
 `tests.verbosity=verbose` a passing test may print a block with only `log`.
 A test registered with `FLAG_UNCAPTURED` has no captured log, so its block has
 no `log` key and no closing `...` line.
