@@ -95,11 +95,12 @@ window counts as damage too, because it uncovers what was underneath.
 
 The compositor runs a pass about every 16 ms and paints only when something
 changed. It draws into a buffer of its own and hands the kernel the damaged
-rectangles, which the display driver copies to the screen. On Intel graphics
-the driver switches to the new frame only between screen refreshes, so you
-never see half of one frame and half of another; in QEMU's virtio-gpu the
-pointer is drawn by the device's cursor plane rather than painted into every
-frame. A program that animates can ask to be told when its last frame reached
+rectangles, which the display driver copies to the screen. On Intel graphics,
+when the driver can set aside a second buffer for the screen (the boot log
+says `XE-PRESENT: tear-free double-buffered scanout`), it switches to the new
+frame only between screen refreshes, so you never see half of one frame and
+half of another; in QEMU's virtio-gpu the pointer is drawn by the device's
+cursor plane rather than painted into every frame. A program that animates can ask to be told when its last frame reached
 the screen and draw the next one then, instead of drawing frames nobody sees.
 
 ### Resizing
@@ -133,8 +134,9 @@ input *seat* (below) can read: the compositor in front.
 The compositor then decides who gets each event, in this order:
 
 1. **The lock and login screens.** Ctrl+Alt+Delete always reaches the
-   compositor and locks the desktop, and while the lock or login screen is
-   up it takes every key and the pointer. This is a *secure attention key*:
+   compositor and locks the desktop (on the login screen, it starts the login
+   screen over), and while the lock or login screen is up it takes every key
+   and the pointer. This is a *secure attention key*:
    no program can intercept it, so the password prompt you get after pressing
    it is really the system's. [Sessions and login](/docs/architecture/sessions)
    explains locking.
@@ -163,26 +165,18 @@ The compositor also checks requests that only make sense after the person did
 something. A program that has merely connected can't read the clipboard or
 replace it: a copy or paste must quote the serial number of a key event the
 compositor sent to a focused window of that program. Changing the pointer's
-shape needs the serial of the pointer entering the window. The clipboard
-belongs to the desktop: each person's compositor keeps its own, so two
-people's desktops never share one.
+shape needs the serial of the pointer entering the window. The clipboard the
+apps and the terminal copy to and paste from is the compositor's, so each
+person's desktop has its own and two people's desktops never share one. (The
+kernel also keeps a clipboard per session, which
+[Sessions and login](/docs/architecture/sessions) describes; the apps don't
+use it.)
 
-### Changing the keyboard layout
-
-The layout is applied in the kernel rather than in each program, so a Swiss
-German keyboard types the same characters in a console, in the terminal and
-in every app, and dead keys work everywhere.
-
-```bash
-keymap            # show the active layout
-keymap list       # list layouts, the active one marked *
-keymap de_CH      # switch now, and remember it for the next boot
-```
-
-Layouts are text files in `/usr/share/keymaps`, and the choice is kept in
-`/etc/keymap`. Switching changes the keyboard for everyone, so `keymap` asks
-privd to do it (the action `org.slopos.console.keymap`): an administrator, or
-the only person logged in, switches without being asked anything.
+The keyboard layout is applied in the kernel rather than in each program, so
+a Swiss German keyboard types the same characters in a console, in the
+terminal and in every app, and dead keys work everywhere. `keymap` shows the
+layout and `keymap de_CH` switches it for everyone;
+[Drivers](/docs/architecture/drivers) explains layouts.
 
 ## Who may own the screen
 
@@ -196,9 +190,10 @@ the kernel takes it back when its holder exits, so a crashed compositor
 doesn't leave the screen locked.
 
 Several people can be logged in at once, each with a desktop, but only one
-desktop is *in front*. Init moves the seats from one compositor to another
-with a call only init may make (`seat_switch`), which also routes all input to
-the new holder; the desktop that goes behind stops drawing and locks.
+desktop is *in front*. A compositor init starts never takes a seat itself:
+init hands both to it, and later moves them to another compositor, with a
+call only init may make (`seat_switch`), which also routes all input to the
+new holder; the desktop that goes behind stops drawing and locks.
 [Sessions and login](/docs/architecture/sessions) explains switching.
 
 There are two seat ranks. Compositors hold the lower one. The higher one
@@ -268,8 +263,6 @@ grid and key encoding (`terminal-core`).
 - **Keep logic out of the compositor's crate.** It builds no host tests, so
   placement, the menu bar, the lock screen's and the system menu's models
   live in `chrome-core`, where `just test-host` reaches them.
-- **The kernel never parses layout text.** `keymap` parses a layout and
-  uploads a binary table, which the kernel only validates.
 
 ## Further reading
 
