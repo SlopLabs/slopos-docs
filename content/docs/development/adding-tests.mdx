@@ -139,7 +139,7 @@ appears on its line.
 `test_harness::run_with_progress` also prints a line as each case starts,
 which tells you which case was running if the program hangs.
 
-A new test program needs four one-line additions so that it is built, put on
+A new test program needs four small additions so that it is built, put on
 the test system, and run:
 
 1. A `[[bin]]` entry in `userland/Cargo.toml`:
@@ -284,9 +284,9 @@ just test-host
 ```
 
 This runs `cargo test` on the crates that build for your machine: the
-`*-core` crates, `abi`, `gfx` and `font`, the build tools that have tests
-(`initramfs`, `kallsyms`, `extension` and `icons`), and the kernel's trusted
-core (`slopos-ostd`). Write these as ordinary Rust `#[test]` functions. The
+`*-core` crates (all but `service-core`), `abi`, `gfx` and `font`, the build
+tools that have tests (`initramfs`, `kallsyms`, `extension` and `icons`), and
+the kernel's trusted core (`slopos-ostd`). Write these as ordinary Rust `#[test]` functions. The
 trusted core's tests are the same ones Miri runs (see below), run natively
 here so a broken assertion shows up in seconds. The TLS crate's tests talk to
 OpenSSL and `ssh-keygen`, so both must be on your `PATH`.
@@ -339,7 +339,7 @@ explain what each one catches.
 A passing `just test` is necessary but not enough. CI runs four jobs in
 parallel:
 
-- **ci**: `just fmt`, the full test boot, the checks that read its log, then
+- **ci**: `just fmt`, the full test boot and the checks that follow it, then
   `check-fs-image`, `test-persist`, `test-rude-exit`, `test-usb` and
   `test-toolchain`.
 - **gates**: `just test-host`, a kernel build, every check in
@@ -351,8 +351,9 @@ parallel:
   runtime, the LLVM port and the compiler cross-build against them.
 - **ostd-verify**: `just check-miri` and `just verify`.
 
-The checks that read the test log hold the line on numbers that should only
-move on purpose:
+The checks that follow the test boot hold the line on numbers that should
+only move on purpose. All but the authority check read the boot's log; that
+one reads the tests kernel itself:
 
 | Check | Fails when |
 |-------|-----------|

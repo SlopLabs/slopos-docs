@@ -136,10 +136,10 @@ The compositor then decides who gets each event, in this order:
 1. **The lock and login screens.** Ctrl+Alt+Delete always reaches the
    compositor and locks the desktop (on the login screen, it starts the login
    screen over), and while the lock or login screen is up it takes every key
-   and the pointer. This is a *secure attention key*:
-   no program can intercept it, so the password prompt you get after pressing
-   it is really the system's. [Sessions and login](/docs/architecture/sessions)
-   explains locking.
+   and the pointer. This is a *secure attention key*: no program can
+   intercept it, so the password prompt you get after pressing it is really
+   the system's. [Sessions and login](/docs/architecture/sessions) explains
+   locking.
 2. **A question.** While privd's consent dialog, or a question such as
    *Power off the computer?*, is on screen, it takes the keyboard and the
    pointer, and keys pressed into it stay away from every program, their

@@ -313,8 +313,8 @@ launching a program and showing its icon at both sizes. Add the app to
 
 `apps_test` starts each app against a stand-in compositor and checks that it
 names its window as its entry does, and that a program in `/usr/local` names
-SlopOS's loader, `/lib/ld-slopos.so.1`, as its interpreter. Add a row to
-`APPS` in `userland/src/bin/tests/apps_test.rs`:
+SlopOS's loader, `/lib/ld-slopos.so.1`, as its interpreter. Add a row at the
+end of `APPS` in `userland/src/bin/tests/apps_test.rs`:
 
 ```rust
     ("/usr/local/bin/stopwatch", "org.slopos.stopwatch"),
@@ -457,8 +457,9 @@ put down and keeps anything else.
   its `id` differs from its file name, when `exec` isn't absolute, when a key
   appears twice, or when `icon` contains a `/`.
 - **The app exits at once with "the compositor speaks another protocol
-  version: rebuild this program"**: the base it runs on speaks a newer window
-  protocol than the app was built against. Rebuild the apps with the base.
+  version: rebuild this program"**: the compositor of the base it runs on
+  speaks another version of the window protocol than the app was built
+  against. Rebuild the apps with the base.
 
 Read next: [Desktop](/docs/architecture/desktop) for the components, the
 theme and the words an app's screens use, and

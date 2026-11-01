@@ -97,12 +97,12 @@ just rr-replay
 ```
 
 Use `hbreak` (a hardware breakpoint) rather than `break` this early. A
-normal breakpoint works by writing an instruction into the kernel's code,
-which isn't possible before the kernel's memory is set up and may be
-write-protected afterwards; a hardware breakpoint is a CPU register and has
-no such problem. If GDB can't tell which of several Rust functions with the
-same name you mean, break on a file and line instead
-(`hbreak early_init.rs:<line>`).
+normal breakpoint is placed in the kernel's code, which may not yet be mapped
+where GDB expects it; a hardware breakpoint is held in the CPU's debug
+registers and needs only the address. Name the function by its full path, as
+above: GDB doesn't find a Rust function by its bare name. If GDB can't tell
+which of several Rust functions with the same name you mean, break on a file
+and line instead (`hbreak early_init.rs:<line>`).
 
 The replay runs the test kernel on one CPU under QEMU's software emulation,
 so this catches anything that happens the same way there. A problem that
@@ -118,9 +118,9 @@ which you can load into any session with `source scripts/gdb/slopos_mmu.py`;
 
 | Command | What it does |
 |---------|--------------|
-| `udinfo` | Prints the faulting context: the instruction address, the stack pointer, which address space was active, whether the CPU was running a program or the kernel, and a backtrace |
+| `udinfo` | Prints where the CPU is stopped: the instruction and stack pointers, the address space (`cr3`), whether it is running a program or the kernel, and a backtrace |
 | `v2p <cr3> <va>` | Translates an address in a program into the physical memory address behind it, printing each step of the lookup |
-| `wpva <cr3> <va>` | Sets a watchpoint on the physical memory behind an address, so any write to it stops the machine, whichever program or kernel path does it |
+| `wpva <cr3> <va>` | Sets a watchpoint on the physical memory behind an address, so any write to it stops the machine, whichever program or kernel path does it. It works only while GDB's language is C (below) |
 
 The `<cr3>` argument names the address space, because the same address
 means different memory in different programs. In a fault you are usually
@@ -132,6 +132,12 @@ the physical memory catches a stray write from anywhere. It leaves GDB in
 physical-memory mode, and it tells you so; run
 `maintenance packet Qqemu.PhyMemMode:0` before going back to symbols and
 stack traces.
+
+`wpva` sets its watchpoint with a C expression, and when GDB is stopped in
+the kernel's Rust code it reads expressions as Rust and refuses that one
+(`No symbol 'unsigned' in current context`), after it has already switched to
+physical-memory mode. So run `set language c` before `wpva`, and
+`set language auto` when you are done with it.
 
 ## Go backwards from a crash
 
@@ -148,10 +154,14 @@ describe the machinery.
 just rr-record
 ```
 
-This builds the test image and records a full test run to
-`builddir/replay.bin`. Recording only works with one CPU and QEMU's software
-CPU emulation, so it is slow, and it can't capture a bug that needs two CPUs
-running at once.
+This builds the test image and records a test run to `builddir/replay.bin`,
+with its serial output in `builddir/rr-serial.log`. Recording only works with
+one CPU and QEMU's software CPU emulation, so it is slow, and it can't
+capture a bug that needs two CPUs running at once. The recorded machine is
+smaller than `just test`'s, too: 512 MiB of memory (`QEMU_MEM`), and the root
+on a virtio disk with none of the suite's other disks. A recording stops
+after 15 minutes; set `RECORD_TIMEOUT` (in seconds, `0` for no limit) when
+the bug comes later in the run.
 
 **2. Replay it under GDB.**
 
@@ -159,53 +169,71 @@ running at once.
 just rr-replay
 ```
 
-GDB loads the test kernel's symbols and one test program's symbols, the
-helper commands, and breakpoints where a program is killed by a fault and
-where the kernel panics. It prints:
+GDB loads the test kernel's symbols, one test program's symbols and the
+helper commands, connects to the replay, which waits halted before the
+firmware runs, and prints:
 
 ```
 [slopos] connected. 'continue' to run to the fault, then 'udinfo'.
 [slopos] then: v2p $cr3 <corrupted-VA> ; wpva $cr3 <corrupted-VA> ; reverse-continue
 ```
 
-A typical session: `continue` to the fault, `udinfo` to see where it
-happened, `wpva $cr3 <address>` on the memory that holds the wrong value, and
-`reverse-continue` to run backwards until something writes it. GDB stops on
-the writing instruction, and `bt` shows who did it.
+The script (`scripts/gdb/slopos.gdb`) also tries to stop where a program is
+killed by a fault and where the kernel panics, but it names the two
+functions without their crate path, which GDB doesn't accept for Rust: a few
+lines earlier it printed `Function "terminate_user_task" not defined.` and
+`Function "panic_with_frame" not defined.`, and set neither. A plain
+`continue` would run to the end of the recording. Set the breakpoints
+yourself first:
+
+```
+(gdb) break slopos_boot::user_fault::terminate_user_task
+(gdb) break slopos_boot::user_fault::panic_with_frame
+(gdb) continue
+```
+
+When GDB stops in `terminate_user_task`, the CPU is in the kernel's fault
+handler, still in the faulting program's address space. `udinfo` shows that,
+and `print *frame` shows the registers the program had when it faulted,
+`rip` and `rsp` among them. Then watch the memory that holds the wrong value
+and run backwards until something writes it:
+
+```
+(gdb) set $victim = $cr3
+(gdb) set language c
+(gdb) wpva $cr3 0x4090fe
+(gdb) reverse-continue
+```
+
+Good addresses to try first are the program's `rip`, if its code itself was
+overwritten, or a stack slot near its `rsp`. GDB stops on the writing
+instruction. Two values say who it was: the low two bits of `cs` (3 for a
+program, 0 for the kernel), and whether `cr3` is still the victim's. A write
+from another address space usually means a page of memory was given to two
+owners at once. Then leave physical-memory mode and look at the writer's
+stack:
+
+```
+(gdb) print $cs & 3
+(gdb) print $cr3 == $victim
+(gdb) maintenance packet Qqemu.PhyMemMode:0
+(gdb) set language auto
+(gdb) bt
+```
 
 All test programs are built to load at the same address, so GDB can only
 hold one program's symbols at a time. Choose it with `SLOPOS_USER_ELF`, for
 example `SLOPOS_USER_ELF=builddir/keymap_test.elf just rr-replay`; the
 default is `builddir/io_capture_test.elf`.
 
-**3. Or let a script do it.**
-
-```bash
-just rr-gdb 0x4090fe
-```
-
-This replays to the fault without you, prints the fault, then (given an
-address) watches it and runs backwards to its writer. The address goes after
-the recipe name, not as `WATCH=`. The output has two sections:
-
-```
-========= FAULT REACHED =========
-handler PC=… CR3=… (victim address space)
-fault frame: vec=… err=…
-...
-========= CORRUPTOR =========
-writer PC=… CS=… CR3=…
-writer privilege: KERNEL (CPL0)
-writer CR3 != victim CR3 (FOREIGN address space — frame aliasing/UAF suspect)
-```
-
-The last two lines are the answer: whether the kernel or a program made the
-write, and whether it came from the same address space as the victim. A
-write from a different address space usually means a page of memory was
-given to two owners at once. The whole session is saved to
-`builddir/rr-session.log`. Good addresses to try first are the faulting
-instruction address (if the code itself was overwritten) or a stack slot near
-the stack pointer.
+**3. The script that should do this for you doesn't work yet.**
+`just rr-gdb <address>` (the address goes after the recipe name, not as
+`WATCH=`) runs `scripts/gdb/find_corruptor.gdb`, which is meant to replay to
+the fault, print it, watch the address and run backwards to its writer
+unattended, saving the session to `builddir/rr-session.log`. But it sets the
+same two breakpoints by their bare names, so it never stops at the fault,
+and it reads the fault's registers as `frame->vector`, C syntax that GDB
+refuses in a Rust program. Until the script is fixed, follow step 2 by hand.
 
 ## What usually goes wrong
 
@@ -214,9 +242,15 @@ the stack pointer.
 - **Breakpoints early in boot never fire.** Use `hbreak`, not `break`.
 - **GDB says a function is not defined.** GDB finds a Rust function by its
   full path: `slopos_boot::user_fault::terminate_user_task`, not
-  `terminate_user_task`.
-- **GDB prints Rust expressions oddly.** GDB uses Rust syntax for a Rust
-  program: write `(*frame).rip`, not `frame->rip`.
+  `terminate_user_task`. `just rr-replay`'s own breakpoints fail this way;
+  set them yourself as in step 2.
+- **GDB says `Syntax error near '->rip'`.** GDB reads expressions in Rust
+  syntax while it is stopped in Rust code: write `frame.rip` or
+  `(*frame).rip`, not `frame->rip`.
+- **`wpva` says `No symbol 'unsigned' in current context`.** GDB was reading
+  Rust. The failed `wpva` has left GDB in physical-memory mode, so run
+  `maintenance packet Qqemu.PhyMemMode:0`, then `set language c`, and
+  `wpva` again.
 - **The replay no longer fails.** The bug depends on timing that recording
   changes, or needs more than one CPU. Debug it live instead, starting with
   `just debug-bt` and the diagnostic console.
