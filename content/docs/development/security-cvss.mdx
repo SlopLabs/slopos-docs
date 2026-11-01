@@ -149,8 +149,12 @@ Before you fix anything, check the entry against the code. Entries can be
 wrong, and a fix for a misread bug changes behaviour for nothing.
 
 A fix lands with a test that fails without it. Prove that by reverting the
-fix and watching the test fail, not by reasoning that it would. For the
-example above, the test is the repro: a program that expects `SIGSEGV`.
+fix and watching the test fail, not by reasoning that it would. The example
+above was fixed with a kernel test
+(`test_cow_copy_keeps_the_region_no_execute` in
+`mm/src/tests/tests_cow_edge.rs`): it forks an address space, takes the
+child's write fault on a page it did not map executable, and checks that the
+copy the fault made is still not executable.
 [Write tests](/docs/development/adding-tests) covers where the test goes.
 
 When the fix lands, delete the entry from `CVSS.md`. SlopOS is pre-alpha

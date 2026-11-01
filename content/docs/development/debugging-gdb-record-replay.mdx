@@ -159,8 +159,10 @@ This builds the test image and records a test run to `builddir/replay.bin`,
 with its serial output in `builddir/rr-serial.log`. Recording only works with
 one CPU and QEMU's software CPU emulation, so it is slow, and it can't
 capture a bug that needs two CPUs running at once. The recorded machine is
-smaller than `just test`'s, too: 512 MiB of memory (`QEMU_MEM`), and the root
-on a virtio disk with none of the suite's other disks. A recording stops
+smaller than `just test`'s, too: 512 MiB of memory where the suite gets 1 GiB
+(`QEMU_MEM` changes it, and a replay must be given the same value as its
+recording), and the root on a virtio disk with none of the suite's other
+disks. A recording stops
 after 15 minutes; set `RECORD_TIMEOUT` (in seconds, `0` for no limit) when
 the bug comes later in the run.
 
