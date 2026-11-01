@@ -154,11 +154,12 @@ mechanism's status. Had the person pressed Cancel, it would have printed
 
 ## How privd knows who is asking
 
-A process id is a poor name for a requester: it can exit and its number can
-be handed to another process between the check and the action. A uid is too
-coarse: everything a person runs has the same one. So the kernel records who
-connected when a Unix-domain socket connects, and privd reads that record
-rather than looking the requester up later.
+A process id is a poor name for a requester. On Linux its number can be
+handed to another process between the check and the action; SlopOS never
+reuses one, but the process can still `exec` another program under the same
+id. A uid is too coarse: everything a person runs has the same one. So the
+kernel records who connected when a Unix-domain socket connects, and privd
+reads that record rather than looking the requester up later.
 
 The record is the connecting process's id, its effective uid and gid, and the
 *program* it runs. privd reads it through three socket options:
@@ -168,7 +169,8 @@ The record is the connecting process's id, its effective uid and gid, and the
   descriptor to another process does not change them.
 - `SO_PEERPIDFD` gives a process handle (a *pidfd*) for that same process. Task
   ids are never reused on SlopOS, so the handle cannot come to name a
-  stranger, and it turns readable when the process exits.
+  stranger, and it turns readable when the process's first thread exits,
+  normally when the process does.
 - `SO_PEERPROGRAM` (at the SlopOS-only level `SOL_SLOPOS`) gives the program,
   and `SO_PEEREXTENSION` the extension it belongs to, if any. These answer
   only while the process still runs the program it ran at `connect`.
@@ -177,7 +179,9 @@ The kernel attests a program when `exec` or `spawn` loads it: a base program
 when the file, every script of its `#!` chain and its ELF interpreter all come
 from the base, and an extension's program when the file comes from one
 extension's image and everything else from the base or that image. Anything
-else is *other*. A process stops counting as that program the moment it could
+else is *other*, and so is a program `exec`'d while another thread of the
+process was running, since that thread could change the new image before it
+starts. A process stops counting as that program the moment it could
 run code the attestation does not cover: when it maps code from anywhere else
 executable, makes memory executable with `mprotect`, `exec`s or exits. The
 socket's record then never answers for it again, so privd reads the program
