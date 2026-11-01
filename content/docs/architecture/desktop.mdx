@@ -30,7 +30,8 @@ a font. App icons follow GNOME's and Apple's guidance: a few simple filled
 shapes, no shadows of their own. An app is a function from its state to a
 view plus a function that applies messages, which is the Elm architecture.
 And refusing a raw colour where a named one belongs is what the
-`HardCodedColor` lint check does for parts of Android's own source, which
+[`HardCodedColor`](https://android.googlesource.com/platform/prebuilts/checkcolor/+/refs/tags/android-12.0.0_r14/README.md)
+lint check does for parts of Android's own source, which
 must take their colours from theme attributes; here the check is one of the
 gates every change must pass.
 
@@ -243,7 +244,7 @@ The compositor draws everything on screen that isn't an app's content.
   [Privileged actions](/docs/architecture/privd) explains how it guards what
   you type and click.
 
-The frames and the dock are painted directly every frame, but the
+The frames and the dock are drawn by the compositor's own drawing code, but the
 compositor's other surfaces (the lock and login screens, the system menu, the
 panels and the questions) are appkit trees like any app's, laid out and
 painted into the compositor's own buffer (`appkit::embed`), so they are built
