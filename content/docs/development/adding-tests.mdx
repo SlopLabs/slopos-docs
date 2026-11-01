@@ -219,7 +219,7 @@ commas, matched against the full test names. `*` matches anything.
 ```bash
 just test 'slopos_drivers::tests::xe_logic_tests::*'   # one file of kernel tests
 just test '*utest_keymap*'                             # one userland test
-just test '*ext4_aaa*,slopos_core::syscall::tests::*'  # one module's kernel tests, with the set-up test
+just test '*ext4_aaa*,slopos_fs::*'                    # the fs tests, and the test that sets them up
 ```
 
 <Callout type="warning">
@@ -229,9 +229,9 @@ you meant.
 </Callout>
 
 If your kernel tests create or write files, include `'*ext4_aaa*'` in the
-filter, so that the test that sets up their in-memory filesystem still runs.
-Userland tests don't need it: they run on the root disk, which the boot
-mounts after the kernel phase.
+filter, so that the test that sets up their in-memory filesystem still runs
+ahead of them. Userland tests don't need it: they run on the root disk, which
+the boot mounts after the kernel phase.
 
 Other ways to run the suite:
 
@@ -278,15 +278,16 @@ run in two phases. A case's note, when it set one, follows a `#` on its line.
 
 `just test` reads that stream and shows a progress bar. When a test fails, it
 prints a block for it at the end with the phase, the file and line where the
-test is registered, how it ended (`Fail`, or a panic), and the log the test wrote while it
-ran. That log is where the assertion macros' messages appear, such as
+test is registered, how it ended (`Fail`, or a panic), and the log the test
+wrote while it ran. That log is where the assertion macros' messages appear, such as
 `ASSERT_EQ: the leader's blocked pending set - expected …, got …` or
 `TEST FAIL: a7a8 must identify as a supported display`. For a userland test,
 the block also lists every case with a pass or fail mark and its note, so you
 see which case failed and why even if the program's log was too long to keep.
 
-After every complete run, the names of the failed tests are written to
-`builddir/last-fail.list`, which is what `just test-rerun-failed` reads.
+After every run you did not interrupt, the names of the failed tests are
+written to `builddir/last-fail.list`, which is what `just test-rerun-failed`
+reads.
 [Test output format](/docs/abi/ktap-test-output) documents every line the
 kernel emits and the JSON form the harness can write.
 

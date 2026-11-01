@@ -137,8 +137,8 @@ installing wrote it; one that anyone else wrote, or that does not parse, is
 treated as an unfinished install of the new tree, so a forged manifest cannot
 steer an install into removing files it never put there. A person's install
 goes further and refuses outright to replace a tree whose manifest is anyone
-else's, uid 0's included. And because the manifest records where the tree went, installing
-a tree of the same name somewhere else is refused too.
+else's, uid 0's included. And because the manifest records where the tree
+went, installing a tree of the same name somewhere else is refused too.
 
 ## Who may write `/usr/local`
 
@@ -285,7 +285,8 @@ a library by name in this order:
 
 1. `LD_LIBRARY_PATH`, except under `AT_SECURE`;
 2. the requesting object's `RUNPATH`, or else the `RPATH`s of the chain that
-   loaded it;
+   loaded it (under `AT_SECURE`, only their absolute entries that don't use
+   `$ORIGIN`);
 3. `/lib`, then `/usr/lib`;
 4. for a program of an extension, that extension's own `/opt/<name>/lib`;
 5. `$HOME/.local/lib`, then `/usr/local/lib`, only for a process that is
@@ -299,10 +300,10 @@ always tries `LD_LIBRARY_PATH` first.
 gated [capability](/docs/architecture/authority), or running as other ids
 than its starter's real ones, and for a program `exec` loads while the
 caller's effective ids differ from its real ones. Skipping the last two
-directories for such a program, and for uid 0, means a library a person can write never ends up inside a program that
-holds more than that person does. The loader reads `HOME` from the
-environment the process started with and uses it only if it is an absolute
-path.
+directories for such a program, and for uid 0, means a library a person can
+write never ends up inside a program that holds more than that person does.
+The loader reads `HOME` from the environment the process started with and
+uses it only if it is an absolute path.
 
 ## What it means in practice
 

@@ -105,7 +105,8 @@ no window, and runs every kernel test and then every userland test. A progress
 bar shows how far it is. When QEMU exits, the runner prints a summary and
 exits 0 if every test passed and 1 if any failed. It exits 2 when the run
 proves nothing: QEMU never reached the test harness, or the harness planned
-no tests although nothing filtered them. Each run starts from a freshly built
+no tests although nothing filtered them. It exits 64 when it could not start
+a run at all, for example because the build failed. Each run starts from a freshly built
 test disk, so no run depends on what the last one wrote.
 
 ### 2. Read a failure
@@ -114,7 +115,7 @@ For each failing test the runner prints its name (`<module>::<test>`) and the
 kernel log lines the test produced while it ran, which is usually where the
 reason is. Passing tests' logs are hidden; `just test-verbose` shows them too.
 
-After every run that finished, the names of the failed tests are in
+After every run you did not interrupt, the names of the failed tests are in
 `builddir/last-fail.list`, and this reruns only those:
 
 ```bash
@@ -137,9 +138,11 @@ just test 'slopos_mm::*'
 just test '*ext4_aaa*,slopos_fs::*'
 ```
 
-A filtered run whose tests create files must include `'*ext4_aaa*'`. That test
-mounts the test disk, and tests run in alphabetical order, so it is what makes
-the disk available to the tests after it.
+A filtered run whose kernel tests create files must include `'*ext4_aaa*'`.
+The kernel tests run before the boot mounts the root disk, so they write to a
+filesystem in memory, and that test, which sorts ahead of the filesystem
+tests, is the one that sets it up. Userland tests run on the root disk and
+don't need it.
 
 `just test-verbose` and `just test-quiet` take the same glob.
 
@@ -241,7 +244,7 @@ base the guest installed survives guest reboots but not the next `just boot`.
 | `just test-quiet ['glob']` | Print only failures and the summary |
 | `just test-raw` | Pass QEMU's output through unchanged, KTAP and kernel log mixed |
 | `just test-json <path>` | Also write one JSON event per line to `<path>`, replacing what it held |
-| `just test-userland-only` | Runs no tests at this commit. It boots the tests ISO with `tests.run=__userland_only__`, a pattern that names no test, and the harness applies `tests.run` to the userland phase as well as the kernel phase, so both plan nothing and the runner exits 2. To run the userland tests and only the one kernel test that mounts the disk, filter by module: `just test '*ext4_aaa*,slopos_core::utests::*'` |
+| `just test-userland-only` | Runs no tests at this commit. It boots the tests ISO with `tests.run=__userland_only__`, a pattern that names no test, and the harness applies `tests.run` to the userland phase as well as the kernel phase, so both plan nothing and the runner exits 2. To run every userland test program and no kernel test, filter by module: `just test 'slopos_core::utests::*'` |
 | `just test-elf [ELF=]<kernel> [BASE=<base.cpio>] ['glob']` | Run the suite on a tests kernel and base built elsewhere, such as inside the guest |
 | `just test-host` | Unit tests of the pure-logic crates and of `slopos-ostd`, on the host, no QEMU |
 | `just check-tests-host` | Unit tests of the Go test runner |
@@ -251,10 +254,10 @@ base the guest installed survives guest reboots but not the next `just boot`.
 | `just test-usb` | Boot with both of QEMU's USB controllers, plug and pull sticks, keyboards, pointers, a hub and a USB network adapter through QEMU's control socket, and check that every device comes and goes cleanly |
 | `just test-capacity` | Mount and write a 16 GiB volume (built once, then kept), and grade the cost |
 | `just test-install` | On one disk laid out as on a real machine: register SlopOS's firmware boot entry, install a kernel into a boot slot, try it, commit it, roll back slots that panic, install and roll back bases, and check the EFI system partition was left unchanged |
-| `just test-installer [disk...]` | Install from the ISO on an emulated USB stick onto a blank disk, beside another system and over an existing partition, and from a CD onto a blank disk; boot each, build the system there (the CD's install, which has no toolchain, clones a slot instead) and commit it; repair one from the rescue shell and reinstall it keeping its root. Names a subset: `blank`, `foreign`, `reuse`, `optical` |
+| `just test-installer [disk...]` | Install from the ISO on an emulated USB stick onto a blank disk, beside another system and over an existing partition, and from a CD onto a blank disk; boot each, build the system there (the CD's install, which has no toolchain, clones a slot instead) and commit it; check and roll back the blank disk from the rescue shell, and reinstall it keeping its root. Names a subset: `blank`, `foreign`, `reuse`, `optical` |
 | `just test-install-guest` | The guest builds a kernel and base from `HEAD`, installs them, boots them, pushes a commit back, commits the slot and rolls back a slot that panics |
 | `just test-remote` | Boot an installed machine paired with a broker on this host and drive it through `scripts/remote.py`: commands, files, the kernel log, a base and a kernel installed, power-off |
-| `just test-toolchain` | Run the toolchain checks on the self-hosting root, over two boots |
+| `just test-toolchain` | Run the toolchain checks on the self-hosting root, over two boots; with no toolchain built, one boot that checks only the clone |
 | `just test-selfhost` | The guest builds the dev and tests systems; the host checks the result and runs the suite on the guest's kernel and base |
 | `just bench-selfhost` | Profile the guest's build of `HEAD` and summarise where the time went (log in `builddir/bench-selfhost.log`) |
 
@@ -264,8 +267,8 @@ base the guest installed survives guest reboots but not the next `just boot`.
 |--------|--------------|
 | `just check-fs-image [--map] [image]` | Hold an image, by default the test image, to `e2fsck -fn` and to being at rest (clean, nothing to replay); with `--map`, or when it names no image, also to the ownership map |
 | `just check-fs-throughput` | Fail if a write costs more transactions or device requests per MiB than recorded |
-| `just check-quota-headroom` | Fail if a resource account nears its cap or anything was denied |
-| `just check-lockdep-headroom` | Fail unless the lock-order checker booted active with room in its pools |
+| `just check-quota-headroom` | Fail if a resource account's peak passes its recorded cap, anything was refused, or charging got slower |
+| `just check-lockdep-headroom` | Fail unless the lock-order checker booted active, reported no violation and stayed within the limits recorded for its pools |
 | `just check-sched-spread` | Fail unless every online CPU can be given tasks |
 
 Each of these but `check-fs-image`, like `check-test-count` above, boots the
@@ -311,7 +314,7 @@ protect.
 | `just debug-bt` | Backtraces of every CPU into `builddir/freeze-gdb.log` |
 | `just debug-monitor` | Connect to the QEMU monitor socket |
 | `just rr-record` | Record a deterministic test run to `builddir/replay.bin` (one CPU, no KVM) |
-| `just rr-replay` | Replay the recording under interactive GDB. Its script's breakpoints on a fault and a panic are not set (GDB wants the functions' full Rust paths), so set them yourself |
+| `just rr-replay` | Replay the recording under interactive GDB. Its script's breakpoints on a program's fault and on a kernel exception are not set (GDB wants the functions' full Rust paths), so set them yourself |
 | `just rr-gdb [<address>]` | Meant to replay to the fault unattended and, given an address, run backwards to the instruction that wrote it. At this commit it does neither: it never stops at the fault, and its script reads the fault's registers in C syntax GDB refuses in Rust code. Do the same steps by hand under `just rr-replay` |
 
 [Debugging with GDB](/docs/development/debugging-gdb-record-replay) shows

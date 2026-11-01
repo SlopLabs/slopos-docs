@@ -105,9 +105,10 @@ the other fault handlers run with rescheduling held off, so SlopOS doesn't
 hand those faults to a handler. In all of these cases the rest of the system
 is unaffected.
 
-Not every fault is handled that way yet. A divide error (dividing by zero,
-or the one division whose result overflows) or a stack fault in user mode is
-treated as a kernel error and stops the whole machine with a panic.
+Not every fault is handled that way yet. A divide error (an integer division
+by zero, or one whose quotient doesn't fit its register) or a stack fault in
+user mode is treated as a kernel error and stops the whole machine with a
+panic.
 [Processes and signals](/docs/architecture/processes) explains signals and
 how a program ends.
 

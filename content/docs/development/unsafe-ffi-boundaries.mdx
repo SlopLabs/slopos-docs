@@ -88,7 +88,7 @@ If the API you need already exists in OSTD, use it and stop here.
    used once, a sealed trait, a slice instead of a pointer and length. They
    are described on [The trusted core](/docs/verification/ostd-trusted-core#how-safety-rules-become-types).
 
-   Don't write a `# Safety` section on a safe function.
+   Don't write a `# Safety` section on a safe `pub` or `pub(crate)` function.
    `just check-framekernel-gates` rejects it:
 
    ```text
@@ -228,7 +228,7 @@ Each command should finish without an error. CI runs all four.
 | A new kernel crate without `#![forbid(unsafe_code)]` | `check_unsafe_outside_ostd.sh` |
 | `#[unsafe(link_section = "...")]` or `#[unsafe(no_mangle)]` by hand outside OSTD | The compiler, through `#![forbid(unsafe_code)]` |
 | A macro from another crate that expands to `unsafe` in a kernel crate, to a `link_section` that isn't a registry's, or to `no_mangle` on any name but the three above | `check_unsafe_expansion.sh` |
-| A safe OSTD function with a `# Safety` section | `check_safe_contract_surface.sh` |
+| A safe `pub` or `pub(crate)` OSTD function with a `# Safety` section | `check_safe_contract_surface.sh` |
 | A crates.io dependency that places data in its own linker section | `check_registry_sections.sh` |
 | A registry entry type whose size changed without updating `ENTRY_SIZE` | `check_registry_sections.sh` |
 | `alloc::` containers in a kernel crate | `check_alloc_dep.sh` |

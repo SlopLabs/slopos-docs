@@ -33,9 +33,10 @@ or a local copy:
 | Source tarballs of the programs ported to SlopOS (e2fsprogs for every base; the rest for `just recipes`) | `third_party/recipes/<name>-<version>.<ext>` | Place the pinned tarball there, or set `<NAME>_URL`, such as `E2FSPROGS_URL` |
 
 A different Limine release in `third_party/limine` is replaced with the
-pinned one, but a different release in a directory `LIMINE_DIR` names stops
-the build, and so does any Limine directory that is only partly filled:
-remove it or complete it.
+pinned one. A `third_party/limine` that holds files but lacks
+`limine-bios.sys` or `BOOTX64.EFI` stops the build instead
+(`Limine directory exists but lacks Limine binaries`): remove it or complete
+it.
 
 ## The build says a host tool is missing
 
@@ -102,8 +103,9 @@ preserve: the image is damaged, or a boot left it dirty (see above)
 ```
 
 The development machine's disk holds whatever you did inside it, so the build
-never deletes it. Before each boot it updates the programs on that disk, and
-it stops when it cannot do that safely: the image is damaged or was not shut
+never deletes it. Before each boot it updates what the host installs there
+(the toolchain and the apps under `/usr/local`), and it stops when it cannot
+do that safely: the image is damaged or was not shut
 down cleanly, it cannot be grown, it falls short of the ext4 features every
 SlopOS volume has, or it carries a kind of integrity trailer the build would
 not keep.
@@ -130,12 +132,15 @@ recovery](/docs/architecture/crash-recovery) explains the journal.
 
 ## Files you write in the guest disappear after a reboot
 
-The root filesystem came up read-only. When the kernel finds a journal on the
-disk that it cannot replay safely, it mounts the disk read-only and leaves the
-repair to `e2fsck`. A read-only disk cannot be the root, so the system runs
-with its root in memory instead, as the live ISO does, and mounts the real
-disk at `/mnt`.
-Everything looks normal, but nothing written to `/` is kept.
+The root filesystem came up read-only. The kernel mounts a disk read-only
+when it cannot write it safely (the last boot ended mid-write and the journal
+could not be replayed, the disk records errors, or it uses a feature this
+kernel does not write), and it leaves the repair to `e2fsck`. The boot log names the reason
+in a line that starts `ext4: mounting read-only` or
+`ext4: MOUNTING READ-ONLY`. A read-only disk cannot be the root, so the
+system runs with its root in memory instead, as the live ISO does, and
+mounts the real disk at `/mnt`. Everything looks normal, but nothing written
+to `/` is kept.
 
 Shut the guest down, then check and repair the disk on the host:
 
@@ -250,8 +255,8 @@ ROULETTE=0 DEBUG=1 just boot-log
 ```
 
 If a running system stops responding, press SysRq (Alt+PrintScreen) in the
-QEMU window, or send a serial BREAK, then a command key: `h` lists the
-commands and `t` prints every task. If even that gets no answer, boot with
+QEMU window, then a command key: `h` lists the commands and `t` prints every
+task. If even that gets no answer, boot with
 `just boot-debug` and run `just debug-bt` in another terminal; it writes every
 CPU's backtrace to `builddir/freeze-gdb.log`. [Diagnosing the
 kernel](/docs/development/diagnostics) covers both, and what a panic leaves
@@ -267,8 +272,9 @@ just test-verbose 'slopos_mm::*'
 just test-raw
 ```
 
-A filtered run whose tests create files must include `'*ext4_aaa*'`, because
-that test mounts the test disk for the tests after it.
+A filtered run whose kernel tests create files must include `'*ext4_aaa*'`,
+because that test sets up the in-memory filesystem they write to (the kernel
+tests run before the boot mounts the root disk).
 
 If a failure looks like memory corruption and still happens on one emulated
 CPU, record the run and replay it under GDB:
