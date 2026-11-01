@@ -49,9 +49,10 @@ pub mod edu;
 ## 2. Say which devices the driver handles
 
 A driver tells the kernel which devices it wants with a *match table*. At
-boot, the kernel walks the PCI bus and offers each device it finds to every
-driver whose table matches. You don't add a boot step or call anything:
-declaring the driver is enough to register it.
+boot, the kernel walks the PCI bus and offers each device it finds to the
+drivers whose table matches it, one at a time in priority order, until one
+takes it. You don't add a boot step or call anything: declaring the driver is
+enough to register it.
 
 ```rust
 //! QEMU's `edu` teaching device: identify it and check that it answers.
@@ -319,18 +320,12 @@ can check who wins a device without having one.
 
 ## 6. Try it on the device
 
-The test machine doesn't include `edu`, so for a local experiment add it to
-the QEMU command line in `scripts/qemu_run.sh`, next to the other `-device`
-lines (and leave that edit out of your commit):
+The test machine doesn't include `edu`. `QEMU_PCI_DEVICES` adds arguments to
+the QEMU command line for one run, so boot with the device and look for the
+driver's line:
 
 ```bash
-QEMU_ARGS+=(-device edu)
-```
-
-Then boot and look for the driver's line:
-
-```bash
-just boot-log
+QEMU_PCI_DEVICES="-device edu" just boot-log
 grep '^edu:' test_output.log
 ```
 
@@ -439,12 +434,13 @@ the device:
 | `descriptors(read)`, `device_descriptor()` | The device's configuration and device descriptors |
 
 To try a USB driver under QEMU, put a USB controller and the device on the
-QEMU command line in `scripts/qemu_run.sh`. QEMU emulates keyboards, mice,
-tablets, sticks and network adapters, and can pass a real device on the host
-through to the guest:
+QEMU command line the same way. QEMU emulates keyboards, mice, tablets,
+sticks and network adapters, and can pass a real device on the host through
+to the guest:
 
 ```bash
-QEMU_ARGS+=(-device qemu-xhci,id=xhci -device usb-host,bus=xhci.0,vendorid=0x1234,productid=0x5678)
+QEMU_PCI_DEVICES="-device qemu-xhci,id=xhci -device usb-host,bus=xhci.0,vendorid=0x1234,productid=0x5678" \
+  ROULETTE=0 just boot-live
 ```
 
 The device's lines in the boot log start with `USB:`, and `kconsole u` lists

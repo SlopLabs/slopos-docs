@@ -324,7 +324,7 @@ Skip this step for a Linux-numbered call that changes no SlopOS structure.
 A base is built against one interface number and a kernel serves a range of
 them, so a private call's number, signature and structures may not change
 while the number stays. Adding `caps_get` changed that surface, and the gate
-says so:
+says so, naming the number the tree is at:
 
 ```bash
 scripts/check_base_interface.sh
@@ -332,7 +332,7 @@ scripts/check_base_interface.sh
 
 ```
 check_base_interface: the private call surface changed under an issued number:
-    interface 12 is recorded as …, but the surface now digests to …
+    interface <n> is recorded as …, but the surface now digests to …
 ```
 
 1. Raise `BASE_INTERFACE` in `abi/src/base_interface.rs` by one.
