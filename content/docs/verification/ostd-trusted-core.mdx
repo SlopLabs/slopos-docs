@@ -186,7 +186,7 @@ kernel has no self-referential types and no `async`, and it has no
 `pin_init!`-style macros, whose per-field captures would build each field's
 value on the caller's stack first.
 
-## How we know it works
+## How it is tested
 
 The trusted core is the part that has to be right, so it gets three kinds of
 checking on top of ordinary tests:

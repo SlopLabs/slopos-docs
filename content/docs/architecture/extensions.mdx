@@ -394,7 +394,7 @@ as [installed software](/docs/architecture/software).
 | Integrity | Verity data optional | A SHA-256 tree always, checked on every read |
 | Compatibility | `extension-release` must match the host's OS identity and version or extension level | Programs must bind only what the running `libc.so` exports |
 
-## How we know it works
+## How it is tested
 
 Three userland tests install extensions end to end through `extctl` and
 privd. `extension_test` covers first and signed installs, both ceilings, the

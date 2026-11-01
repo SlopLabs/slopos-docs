@@ -221,8 +221,9 @@ just test '*ext4_aaa*,slopos_fs::*'                    # the fs tests, with the 
 ```
 
 <Callout type="warning">
-The filter is a positional argument. `just test FILTER='mm::*'` passes the
-text `FILTER=mm::*` through as the pattern, which matches nothing you meant.
+The filter is a positional argument. `just test FILTER='slopos_mm::*'` passes
+the text `FILTER=slopos_mm::*` through as the pattern, which matches nothing
+you meant.
 </Callout>
 
 If your tests create or write files, include `'*ext4_aaa*'` in the filter, so
