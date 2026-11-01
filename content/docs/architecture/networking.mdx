@@ -47,7 +47,9 @@ configuration, what the machine accepts from the wire, and encryption.
    addressed to this machine (see [what the machine
    accepts](#what-the-machine-accepts-from-the-wire)), validates the IPv4
    header, reassembles packets that were split into fragments on the way,
-   answers ARP requests, and hands the rest to TCP, UDP or ICMP.
+   answers ARP requests (ARP is how a machine learns which hardware address
+   on the local network has a given IPv4 address), and hands the rest to TCP,
+   UDP or ICMP.
 4. **The protocol finds the socket.** TCP and UDP look up the socket by the
    addresses and ports in the packet. TCP also acknowledges the data and puts
    out-of-order pieces back in sequence.
@@ -251,8 +253,7 @@ unfragmented UDP packet to the DHCP client port, because some DHCP servers
 send their offer straight to the address they are offering instead of
 broadcasting it.
 
-ARP, the protocol that maps an IPv4 address to a card's hardware address,
-follows the rule its RFC gives: an ARP packet refreshes the entry of any
+ARP follows the rule its RFC gives: an ARP packet refreshes the entry of any
 sender the machine already knows, but creates a new entry only when the ARP
 was aimed at this card's own address, and a card answers ARP requests only
 for its own address. So a neighbour can't fill the table by announcing

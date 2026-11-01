@@ -303,14 +303,14 @@ OpenSSL and `ssh-keygen`, so both must be on your `PATH`.
 
 ## The long-running checks
 
-These recipes boot specially prepared machines, sometimes more than once,
-and take minutes or longer. They are separate from `just test`; run the ones
-that cover what you changed.
+These recipes take minutes or longer, and all but `check-fs-image` boot
+specially prepared machines, sometimes more than once. They are separate
+from `just test`; run the ones that cover what you changed.
 
 | Recipe | Checks |
 |--------|--------|
 | `just test-persist` | A file written and `fsync`ed in one boot is there in the next |
-| `just check-fs-image` | The disk the test suite wrote passes `e2fsck`, was cleanly unmounted, and keeps the ownership map |
+| `just check-fs-image` | The disk the last `just test` wrote passes `e2fsck`, was left at rest (marked clean, with an empty journal), and keeps the ownership map |
 | `just test-rude-exit` | A boot that ends abruptly leaves a journal that the host's `e2fsck` replays correctly. [Crash recovery](/docs/architecture/crash-recovery) explains why this matters |
 | `just test-usb` | Both of QEMU's USB controller models with sticks, a hub, keyboards, a mouse, a tablet and a network adapter, pulled out and plugged back in while the system runs. [USB](/docs/architecture/usb) |
 | `just test-capacity` | A large volume mounts, can be walked, and can be written |
@@ -324,6 +324,9 @@ that cover what you changed.
 `test-install-guest`, `test-selfhost` and (unless you set
 `INSTALLER_PAYLOAD=0`) `test-installer` need the cross-built toolchain from
 `just toolchain`; see [Toolchain](/docs/self-hosting/toolchain).
+`test-install-guest` and `test-selfhost` also refuse to start while the
+working tree has uncommitted changes, because the guest builds `HEAD`:
+commit or stash first.
 
 One more recipe boots the live system but checks nothing: `just ui-shots`
 saves a picture of every screen of the desktop, the installer and each app
@@ -354,9 +357,10 @@ parallel:
   `just check-framekernel-gates`, an offline build from the vendored
   dependencies, a build of the release kernel with its own checks, and the
   codegen-backend and linker checks with the alternatives installed.
-- **toolchain**: builds the tests userland and the libraries the
-  self-hosted tools need, and checks the C library's exports, the C++
-  runtime, the LLVM port and the compiler cross-build against them.
+- **toolchain**: builds the tests userland and the recipes (the C libraries
+  and programs the self-hosted tools need), and checks the C library's
+  exports, the C++ runtime, the LLVM port, the clang driver and the
+  compiler cross-build against them.
 - **ostd-verify**: `just check-miri` and `just verify`.
 
 The checks that follow the test boot hold the line on numbers that should

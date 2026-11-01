@@ -179,8 +179,8 @@ SYSCALL PANIC SMOKE: task died; kernel survived
 wasn't written to handle. If that happens while the kernel is working on a
 program's system call, or in one of its own background threads (other than
 a CPU's idle task), SlopOS doesn't take the whole machine down: it stops the
-system call and kills the program that made it, or ends the thread, releases
-the locks the failed code held, and carries on. Linux calls this an *oops*.
+system call and ends the thread that made it, or ends the kernel thread,
+releases the locks the failed code held, and carries on. Linux calls this an *oops*.
 The line says which kind it was, and gives the task, the source file, line
 and column where the panic happened, the panic message, and how many oopses
 this boot has had.
@@ -261,7 +261,7 @@ the kernel log. Then the next boot saves it as a file.
    machine's boot disk and every installed disk have one; the live ISO does
    not, and a disk that isn't an NVMe drive keeps no records yet, because the
    record is written through the NVMe driver's own polled queue, which needs
-   no interrupts, locks or memory allocation.
+   no interrupts, waits for no lock and allocates no memory.
 2. **At the panic, the kernel writes the record** before it waits or resets,
    and says how it went on serial and on the panic screen:
    `crash record: <n> written to <partition> slot <n>`, or
@@ -323,8 +323,10 @@ prof stop
 
 `prof report <label>` prints the report's lines, which start `PROF[<label>]:`,
 and `scripts/prof_report.py --label slow slow.log` on the host turns them
-into tables. To profile a whole test run instead, boot it with `prof=on` and
-the report comes at the end:
+into tables. To profile one of the self-hosting checks instead, add `prof=on`
+to its command line through `TEST_CMDLINE_EXTRA` (which `test-toolchain` and
+`test-selfhost` read, and `just test` does not), and the report comes at the
+end of its test run:
 
 ```bash
 TEST_CMDLINE_EXTRA=prof=on just test-selfhost
