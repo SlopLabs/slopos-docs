@@ -142,10 +142,10 @@ does not promise every flag of the Linux call.
 | 41 | `socket` | `NoneSelf` | `AF_UNIX` with `SOCK_STREAM`; `AF_INET` with `SOCK_STREAM` (TCP) or `SOCK_DGRAM` (UDP, ICMP) |
 | 42 | `connect` | `NoneFd` | |
 | 43 | `accept` | `NoneFd` | |
-| 44 | `sendto` | `NoneFd` | |
-| 45 | `recvfrom` | `NoneFd` | |
-| 46 | `sendmsg` | `NoneFd` | `SCM_RIGHTS` on `AF_UNIX` |
-| 47 | `recvmsg` | `NoneFd` | `SCM_RIGHTS` on `AF_UNIX` |
+| 44 | `sendto` | `NoneFd` | Every `MSG_*` flag but `MSG_NOSIGNAL` is `EINVAL` |
+| 45 | `recvfrom` | `NoneFd` | Any `MSG_*` flag is `EINVAL` |
+| 46 | `sendmsg` | `NoneFd` | `SCM_RIGHTS` on `AF_UNIX`; every `MSG_*` flag but `MSG_NOSIGNAL` is `EINVAL` |
+| 47 | `recvmsg` | `NoneFd` | `SCM_RIGHTS` on `AF_UNIX`; any `MSG_*` flag is `EINVAL` |
 | 48 | `shutdown` | `NoneFd` | |
 | 49 | `bind` | `NoneFd` | |
 | 50 | `listen` | `NoneFd` | |
