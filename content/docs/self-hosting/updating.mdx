@@ -149,9 +149,9 @@ base installed: interface <i>, build tag <tag>; the system runs it now (generati
 ```
 
 The last line says the new base is running already: programs you start from
-now on are the new ones, privd and any other service the base changed start
-again from it, and anything else you had open keeps running the old version
-until you restart it. [Base system](/docs/architecture/base#what-restarts-after-a-switch)
+now on are the new ones, the services the new base changed (privd, say, when
+its policy changed) start again from it, and anything else you had open keeps
+running the old version until you restart it. [Base system](/docs/architecture/base#what-restarts-after-a-switch)
 lists what restarts by itself. If the compositor or the terminal changed,
 the desktop's system menu offers *Restart desktop…*.
 
@@ -198,7 +198,11 @@ A base runs at once when both of these hold:
 - the running kernel serves the base's interface.
 
 Otherwise it stays installed, and the next boot of a kernel that serves it
-takes it. The last line of the output says which:
+takes it. The kernel can also refuse the switch even then, for instance while
+old generations of the base it has not yet freed fill its room for copies
+([Base system](/docs/architecture/base#when-an-old-generation-is-freed));
+`bootctl` then says the base could not run now, and why, and it too waits
+for the next boot. The last line of the output says which happened:
 
 ```text
 base installed: interface <N+1>, build tag -; slopos-a's kernel serves base interfaces <min>-<N>, so only a boot of one that serves <N+1> takes it
@@ -213,8 +217,8 @@ shows the order to install them in.
 bootctl base rollback
 ```
 
-This swaps the two bases: the previous one becomes current, and the one you
-were running becomes previous, so you can roll forward again the same way. It
+This swaps the two bases: the previous one becomes current, and the current
+one becomes previous, so you can roll forward again the same way. It
 runs at once under the same two conditions as an install, and says so:
 
 ```text
@@ -231,11 +235,11 @@ takes over at the installed system's next boot.
 
 A base is not tried once and committed the way a kernel is. If the new base
 passes every check, installs and then misbehaves, it stays the current base
-for every slot until you roll it back. And the two files are each written
-safely, but not as a pair: if the power goes between the two writes, both
-files hold the same image, and one of the two bases is gone. `bootctl` writes
-them in the order that leaves the default kernel a base it can run in that
-case.
+for every slot until you roll it back. And when an install or a
+rollback writes both files, each is written safely, but not as a pair: if the
+power goes between the two writes, one of the bases is lost (usually the
+partition then holds the same image twice). `bootctl` writes them in the
+order that leaves the default kernel a base it can run in that case.
 
 ## Updating the kernel
 
@@ -390,8 +394,8 @@ These variables are shared by every boot loader on the machine that follows
 the same interface. If another loader left a default that names no entry
 Limine's menu offers, `bootctl install` refuses to go on until `bootctl
 set-default` names one, because it can't tell which slot is safe to
-overwrite. `set-default`
-itself only accepts a slot whose kernel serves a base on the partition.
+overwrite. `set-default` accepts any entry the menu offers, but a slot only
+when its kernel serves a base on the partition.
 
 ## Writing the boot disk safely
 
@@ -485,10 +489,11 @@ shut down ([Development machine](/docs/self-hosting/development-machine)).
   passes over for previous. Afterwards the host checks that the ESP is
   unchanged byte for byte, that each slot holds its kernel alone, and that the
   root partition passes `e2fsck`.
-- `just test-install-guest` does the same with a system the guest built
-  itself: it runs `scripts/selfhost.sh install tests` and `install-kernel
-  tests` as a person would, boots the result, checks that it is the build it
-  just made, has it push a commit the host fetches, and compares the
+- `just test-install-guest` installs a system the guest built itself: it
+  runs `scripts/selfhost.sh install tests` and `install-kernel tests` as a
+  person would, boots the result, checks that it is the build it just made,
+  has it push a commit the host fetches, then commits the slot and falls back
+  from a slot that panics as `test-install` does. The host compares the
   installed kernel and base byte for byte with what the guest built. It needs
   `just toolchain` and a working tree with no uncommitted changes.
 - `just test-remote` installs a base that runs at once and then a kernel into
@@ -522,8 +527,8 @@ User space reaches UEFI variables through two system calls, `efivar_get` and
 GUID (`4a67b082-0a4c-41cf-b6c7-440b29bb8c4f`) and SlopOS's
 (`5a1b0b05-5105-4e57-a11e-0000000000a1`); with `BootEntry` they also reach
 `Boot####`, `BootOrder`, `BootNext` and `BootCurrent` under the EFI global
-GUID, each write held to non-volatile, boot-and-runtime access and the
-variable's format. Firmware runtime services are mapped only in the kernel's
+GUID, `BootCurrent` for reading only, each write held to non-volatile,
+boot-and-runtime access and the variable's format. Firmware runtime services are mapped only in the kernel's
 own address space and are not reentrant, so every call runs on one dedicated
 kernel thread, one request at a time, while the calling task sleeps. On a
 BIOS boot both calls return `ENODEV`.

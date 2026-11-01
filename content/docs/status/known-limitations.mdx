@@ -87,11 +87,11 @@ one is about CI.
   can take an invalid frame from its per-CPU cache and fault while zeroing it.
   The cause is not found, and no path a program drives is known to reach it.
   Open defect.
-- **Some scheduler waits cost latency.** A CPU can briefly spin waiting for
-  another to finish switching a task out, ending a task takes every CPU's
-  queue lock in turn, the memory of finished tasks is freed only when a CPU
-  goes idle, and during boot the scheduler is turned off for every CPU while
-  the other CPUs already run programs. None of these is a correctness problem
+- **Some scheduler waits cost latency.** An idle CPU can briefly spin waiting
+  for another to finish switching a task out, ending a task caught moving
+  between two CPUs' queues takes every CPU's queue lock in turn, and during
+  boot the scheduler is turned off for every CPU while the other CPUs already
+  run programs. None of these is a correctness problem
   ([Scheduling and waiting](/docs/architecture/scheduler-wait-protocol)).
   Open defect.
 
@@ -135,8 +135,8 @@ one is about CI.
 - **A new base gets no trial boot.** A kernel goes into the spare slot and is
   tried once before it becomes the default, but a base that passes its checks
   becomes current for every slot at once, and stays current when it then fails
-  in userland, until the install medium's rescue shell rolls it back or a
-  reinstall writes the medium's ([Updating SlopOS](/docs/self-hosting/updating)).
+  in userland until you roll it back (from the install medium's rescue shell
+  when the system no longer gives you one) or a reinstall writes the medium's ([Updating SlopOS](/docs/self-hosting/updating)).
   Open defect.
 - **Another loader can move SlopOS's default.** Which slot boots by default is
   a firmware variable every loader on the machine can write. Another system's

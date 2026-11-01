@@ -49,9 +49,10 @@ compiler can't check: setting up the CPU, building the tables that decide what
 memory each program can see, switching between programs, copying bytes to and
 from a program's memory, and receiving interrupts from devices. All of these
 need `unsafe` Rust, which is Rust's way of saying "the compiler can't prove this
-is correct; a person has to". SlopOS puts every line of the kernel's own
-`unsafe` code in this one library, called OSTD (the trusted core), and the
-build refuses `unsafe` anywhere else in the kernel.
+is correct; a person has to". SlopOS puts the kernel's own `unsafe` code in
+this one library, called OSTD (the trusted core), bar a few declarations the
+kernel binary itself has to make, and the build refuses `unsafe` anywhere else
+in the kernel.
 
 That changes what a bug can do. A mistake in the rest of the kernel can still
 return a wrong answer, crash a program or even allow something it shouldn't,
@@ -133,7 +134,8 @@ Above the system call line is *userland*:
   [SlopRing](/docs/abi/slopring).
 - **Init and the system's services.** `init`, which the kernel starts first,
   starts privd, the sessions people log in to, and the other services, and
-  starts each again when it exits. See
+  starts the long-running ones again when they exit, at most five times a
+  minute each. See
   [Init and services](/docs/architecture/init) and
   [Privileged actions](/docs/architecture/privd).
 - **The programs**: the shell; the core utilities; network tools such as

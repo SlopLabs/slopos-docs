@@ -144,8 +144,9 @@ the two checks that compile parts of it; `just toolchain` doesn't need it.
 ## The C++ runtime
 
 LLVM needs a C++ standard library, and SlopOS has one: LLVM's own libc++,
-built from the llvm-project release `toolchain/cxx/PIN` names. It ships as a single shared library,
-`libc++.so`, that also contains the part that handles exceptions. Keeping them
+built from the llvm-project release `toolchain/cxx/PIN` names. It ships as a
+single shared library, `libc++.so` (with a static `libc++.a` beside it), that
+also contains the part that handles exceptions. Keeping them
 in one file matters because a C++ exception is matched by comparing type
 information, and two copies of that machinery in one process can leave an
 exception that nobody can catch.
@@ -249,8 +250,9 @@ brought DNS lookups through `<resolv.h>`, `initgroups`, `setitimer` and the
 greeting.
 
 A check (`scripts/check_recipes.sh`) holds patches to that rule mechanically:
-a patch may only add lines, every change must mention SlopOS, and configure
-arguments may not contain code. Today only CMake carries a patch. CMake learns
+a patch may only add (a line it changes must keep its old text at the
+start), every change must mention SlopOS, and configure arguments may not
+contain code. Today only CMake carries a patch. CMake learns
 about SlopOS the way it knows other systems, from a platform description
 (`toolchain/cmake/Platform`) that CMake's own recipe carries, so CMake running
 in the guest knows the platform too. A recipe under a licence this repository
@@ -293,7 +295,9 @@ to link against, the C++ runtime, the recipes, clang and its support files,
 `cc`, `c++` and `ld.lld` links, and every project's licence text. The result
 goes into `builddir/slopos-toolchain/install`, and only once the build has
 finished, so a failed run never leaves a half toolchain that `just boot` would
-pick up. Re-running after a patch reuses every compiler stage already built.
+pick up. Bootstrap's build directory lies outside the patched sources, so
+re-running after a patch keeps what it has already built, the host's LLVM
+among it, and rebuilds only what the patch changes.
 
 It is expensive: hours of CPU, many gigabytes of disk, and a first run that
 downloads the compiler bootstrap starts from. `just check-bootstrap-config` is

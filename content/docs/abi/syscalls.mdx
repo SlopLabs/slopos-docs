@@ -81,7 +81,7 @@ and how a program is given a capability.
 | `NoneSelf` | Anyone. The call acts on the caller, or reports what any process may know |
 | `NoneFd` | Anyone. The call acts on what the caller names by descriptor or path; file permissions still apply to a path (see [Users and file permissions](/docs/architecture/users)) |
 | `NoneRelation` | Anyone. The handler checks the caller's relation to the target itself (parent, session, the signal rule) |
-| `ConsoleIo`, `ClipboardGlobal`, `Fate` | A holder of that capability. These three are universal: every program holds them unless it or its spawner dropped them |
+| `ConsoleIo`, `ClipboardGlobal`, `Fate` | A holder of that capability. These three are universal: a spawned program holds those its spawner holds, so every program holds them unless it, or a process that started it, dropped them |
 | Any other capability (`Power`, `Mount`, `SysInspect`, ...) | A holder of that capability, which only a spawner that holds it can delegate |
 
 Some calls check a further capability, or a seat, inside the handler
@@ -118,7 +118,7 @@ does not promise every flag of the Linux call.
 | 6 | `lstat` | `NoneFd` | |
 | 7 | `poll` | `NoneFd` | `nfds` at most 256 |
 | 8 | `lseek` | `NoneFd` | |
-| 9 | `mmap` | `NoneSelf` | Anonymous, memfd and regular-file mappings, all filled lazily. A private mapping is charged against the commit ceiling and refused with `ENOMEM` past it, except one with `MAP_NORESERVE`, which is charged a page at a time as it is touched ([Memory](/docs/architecture/memory)) |
+| 9 | `mmap` | `NoneSelf` | Anonymous mappings (`MAP_PRIVATE` only) and regular-file mappings (shared or private) are filled as they are touched; a memfd is mapped `MAP_SHARED` at offset 0 with every page present from the call; any other descriptor is `EINVAL`. An anonymous mapping that allows any access, or a writable private file mapping, is charged in full against the commit ceiling when it is made, or when `mprotect` first allows that access, and refused with `ENOMEM` past it; with `MAP_NORESERVE` an anonymous one is charged a page at a time as it is touched ([Memory](/docs/architecture/memory)) |
 | 10 | `mprotect` | `NoneSelf` | |
 | 11 | `munmap` | `NoneSelf` | |
 | 12 | `brk` | `NoneSelf` | |
@@ -142,21 +142,21 @@ does not promise every flag of the Linux call.
 | 41 | `socket` | `NoneSelf` | `AF_UNIX` with `SOCK_STREAM`; `AF_INET` with `SOCK_STREAM` (TCP) or `SOCK_DGRAM` (UDP, ICMP) |
 | 42 | `connect` | `NoneFd` | |
 | 43 | `accept` | `NoneFd` | |
-| 44 | `sendto` | `NoneFd` | Every `MSG_*` flag but `MSG_NOSIGNAL` is `EINVAL` |
-| 45 | `recvfrom` | `NoneFd` | Any `MSG_*` flag is `EINVAL` |
-| 46 | `sendmsg` | `NoneFd` | `SCM_RIGHTS` on `AF_UNIX`; every `MSG_*` flag but `MSG_NOSIGNAL` is `EINVAL` |
-| 47 | `recvmsg` | `NoneFd` | `SCM_RIGHTS` on `AF_UNIX`; any `MSG_*` flag is `EINVAL` |
+| 44 | `sendto` | `NoneFd` | At most 4096 bytes per call; every `MSG_*` flag but `MSG_NOSIGNAL` is `EINVAL`; an address on an `AF_UNIX` socket is `EOPNOTSUPP` |
+| 45 | `recvfrom` | `NoneFd` | At most 4096 bytes per call; any `MSG_*` flag is `EINVAL` |
+| 46 | `sendmsg` | `NoneFd` | `AF_UNIX` only (`ENOTSOCK` otherwise): at most 4096 bytes and 4 descriptors (`SCM_RIGHTS`, the only control message) per call; every `MSG_*` flag but `MSG_NOSIGNAL` is `EINVAL` |
+| 47 | `recvmsg` | `NoneFd` | `AF_UNIX` only (`ENOTSOCK` otherwise): at most 4096 bytes and 4 descriptors per call; any `MSG_*` flag is `EINVAL` |
 | 48 | `shutdown` | `NoneFd` | |
 | 49 | `bind` | `NoneFd` | |
 | 50 | `listen` | `NoneFd` | |
 | 51 | `getsockname` | `NoneFd` | |
 | 52 | `getpeername` | `NoneFd` | |
 | 53 | `socketpair` | `NoneSelf` | `AF_UNIX` stream only; `EOPNOTSUPP` for `AF_INET` |
-| 54 | `setsockopt` | `NoneFd` | |
-| 55 | `getsockopt` | `NoneFd` | Also answers `SO_PEERPROGRAM` and `SO_PEEREXTENSION` at level `SOL_SLOPOS` ([Privileged actions](/docs/architecture/privd)) |
+| 54 | `setsockopt` | `NoneFd` | `AF_INET` only (`ENOTSOCK` on an `AF_UNIX` socket) |
+| 55 | `getsockopt` | `NoneFd` | On an `AF_UNIX` socket only `SO_ERROR`, `SO_PEERCRED`, `SO_PEERPIDFD`, and `SO_PEERPROGRAM` and `SO_PEEREXTENSION` at level `SOL_SLOPOS` ([Privileged actions](/docs/architecture/privd)) |
 | 56 | `clone` | `NoneSelf` | |
 | 57 | `fork` | `NoneSelf` | Copy-on-write; never refused by the commit ceiling |
-| 59 | `execve` | `NoneSelf` | Every thread of the process keeps only the universal capabilities it held. The exception is init re-executing the base's `/sbin/init`, which keeps its whole mask |
+| 59 | `execve` | `NoneSelf` | Every thread of the process keeps only the universal capabilities it held. The exception is init re-executing the base's `/sbin/init` as its only thread, which keeps its whole mask. No set-ID bit is honoured |
 | 60 | `exit` | `NoneSelf` | |
 | 61 | `wait4` | `NoneRelation` | A process-group wait (`pid` 0 or below -1) is `ESRCH` |
 | 62 | `kill` | `NoneRelation` | The sender must hold every capability the target holds, and its real or effective uid must be the target's real or saved uid. `ProcSignal` waives both; `SIGCONT` to the sender's own session needs neither. Init can never be signalled |
@@ -212,13 +212,13 @@ does not promise every flag of the Linux call.
 | 137 | `statfs` | `NoneFd` | `EOPNOTSUPP` from a filesystem that keeps no counters. The base and the install medium report `BASEFS_MAGIC`, an extension's activation `EXTENSION_MAGIC` |
 | 138 | `fstatfs` | `NoneFd` | As `statfs` |
 | 140 | `getpriority` | `NoneRelation` | |
-| 141 | `setpriority` | `NoneRelation` | Only for the caller's own process and tasks it may signal (`EPERM` otherwise). A nice value below both 0 and the task's current one takes `SchedHigh` (`EACCES` otherwise) |
-| 153 | `vhangup` | `ConsoleConfig` | |
+| 141 | `setpriority` | `NoneRelation` | Only for the caller's own process and tasks it may signal (`EPERM` otherwise). A nice value below both 0 and the task's current one takes `SchedHigh` (`EACCES` otherwise). The value is kept and reported; the scheduler does not read it |
+| 153 | `vhangup` | `ConsoleConfig` | `EPERM` without a controlling terminal |
 | 158 | `arch_prctl` | `NoneSelf` | `ARCH_SET_FS` and `ARCH_GET_FS` |
 | 162 | `sync` | `NoneSelf` | |
 | 165 | `mount` | `Mount` | `fstype` `ext2`, `ext3`, `ext4`, `ramfs` or `devfs` (else `ENODEV`); a non-null `data` is `EINVAL`. `EBUSY` at `/` and at a path something is already mounted on; `EPERM` at or beneath a pinned mount (a base directory, the install medium, its payload, an extension's activation) and at, above or beneath a directory the kernel keeps (`KEPT_DIRS`: `/etc`, `/var/lib/slopos` and the stores in it) |
-| 166 | `umount2` | `Mount` | `EBUSY` at `/`, and while a descriptor is open on the mount unless `MNT_DETACH`; `EPERM` for a pinned mount and at, above or beneath a kept directory |
-| 169 | `reboot` | `Power` | `LINUX_REBOOT_CMD_RESTART`, `_POWER_OFF` and `_HALT` |
+| 166 | `umount2` | `Mount` | `EBUSY` at `/`, and, unless `MNT_DETACH`, at the last path a filesystem is mounted at while a descriptor is open on it; `EINVAL` where nothing is mounted; `EPERM` for a pinned mount and at, above or beneath a kept directory |
+| 169 | `reboot` | `Power` | `LINUX_REBOOT_CMD_RESTART`, `_POWER_OFF` and `_HALT`, which does what `_POWER_OFF` does; `_CAD_ON` and `_CAD_OFF` succeed and change nothing |
 | 186 | `gettid` | `NoneSelf` | |
 | 202 | `futex` | `NoneSelf` | `WAIT`, `WAKE`, `REQUEUE`, `CMP_REQUEUE`, `WAIT_BITSET`, `WAKE_BITSET` |
 | 203 | `sched_setaffinity` | `NoneRelation` | |
@@ -248,11 +248,11 @@ does not promise every flag of the Linux call.
 | 292 | `dup3` | `NoneFd` | |
 | 293 | `pipe2` | `NoneSelf` | |
 | 297 | `rt_tgsigqueueinfo` | `NoneRelation` | |
-| 302 | `prlimit64` | `NoneRelation` | `pid` must be 0 or the caller's kernel process id (the `process_id` field `process_list` reports, not the id `getpid` returns); `EPERM` otherwise |
+| 302 | `prlimit64` | `NoneRelation` | `pid` must be 0 or the caller's kernel process id (the `process_id` field `process_list` reports, not the id `getpid` returns); `EPERM` otherwise. `RLIMIT_NOFILE`, `_NPROC`, `_AS`, `_DATA` and `_MEMLOCK` only (`EINVAL` otherwise); the soft and hard limits read the same, and a limit can only be lowered (`EPERM`) |
 | 309 | `getcpu` | `NoneSelf` | `node` is always 0 |
 | 318 | `getrandom` | `NoneSelf` | `GRND_NONBLOCK` and `GRND_RANDOM` are accepted and change nothing; any other flag is `EINVAL` |
-| 319 | `memfd_create` | `NoneSelf` | `MFD_CLOEXEC` is the only flag. At most 64 memfds exist at once on the machine (`ENFILE` past that) |
-| 434 | `pidfd_open` | `NoneSelf` | Any live process, by its leader's id; `flags` must be 0. The descriptor is close-on-exec and polls readable once the process exits; `read` on it is `EINVAL` |
+| 319 | `memfd_create` | `NoneSelf` | `MFD_CLOEXEC` is the only flag. At most 64 memfds exist at once on the machine (`ENFILE` past that). `ftruncate` sizes one once, at most 64 MiB, and allocates its pages then; `read` and `write` on it are `EINVAL`, so it is reached through `mmap` |
+| 434 | `pidfd_open` | `NoneSelf` | Any process not yet reaped, by its leader's id (`EINVAL` for another thread's); `flags` must be 0. The descriptor is close-on-exec and polls readable once the leader thread has exited; `read` on it is `EINVAL` |
 | 439 | `faccessat2` | `NoneFd` | |
 | 452 | `fchmodat2` | `NoneFd` | |
 
@@ -277,14 +277,14 @@ The signature is the one the call's doc comment in `numbers.rs` states.
 | 1036 | `net_resolver_set` | `NetAdmin` | `net_resolver_set(ptr, len)`: sets or clears the static resolver (`UserResolverReq`) |
 | 1037 | `net_monitor` | `NoneSelf` | `net_monitor(mask, flags) -> fd`: a descriptor that turns readable when the network configuration changes and reads `NetEvent` records |
 | 1038 | `fb_info` | `NoneSelf` | `fb_info(out: *mut DisplayInfo)`: the display's geometry and format |
-| 1039 | `fb_flip` | `NoneFd` | `fb_flip(seat_fd, damage: *const DamageRect, count)`: presents the back buffer; the caller must hold the screen seat (`EPERM` otherwise) |
+| 1039 | `fb_flip` | `NoneFd` | `fb_flip(seat_fd, damage: *const DamageRect, count)`: copies the frame in the memfd the first argument names (`EINVAL` for any other descriptor, though `numbers.rs` calls it `seat_fd`) to the screen, the first 8 damage rectangles of it or, with none, all of it. Returns 0, or 1 when the kernel log covers the screen and nothing was shown. Screen seat holder only (`EPERM` otherwise) |
 | 1040 | `cursor_set_image` | `NoneFd` | `cursor_set_image(image, len, hotspot)`: a 64 by 64 BGRA cursor; screen seat holder only |
 | 1041 | `cursor_move` | `NoneFd` | `cursor_move(pos)`: `(x << 16) \| y`; screen seat holder only |
 | 1042 | `set_display_mode` | `NoneFd` | `set_display_mode(width, height)`; screen seat holder only |
-| 1043 | `screen_acquire` | `DisplaySeat` | `screen_acquire(seat_id) -> fd`: takes the screen seat (`SEAT_COMPOSITOR_PRIMARY` 0, `SEAT_VIRTCON` 1); `EBUSY` while a seat of equal or higher rank is held |
+| 1043 | `screen_acquire` | `DisplaySeat` | `screen_acquire(seat_id) -> fd`: takes the screen seat (`SEAT_COMPOSITOR_PRIMARY` 0, `SEAT_VIRTCON` 1, which outranks it); `EBUSY` while another task holds it at equal or higher rank |
 | 1044 | `input_sink_acquire` | `InputSeat` | `input_sink_acquire(seat_id) -> fd`: as `screen_acquire`, for the input stream |
 | 1045 | `input_poll_batch` | `NoneFd` | `input_poll_batch(out: *mut InputEvent, max) -> events written`; input seat holder only |
-| 1046 | `clipboard_copy` | `ClipboardGlobal` | `clipboard_copy(buf, len) -> bytes kept`: into the clipboard of the caller's session (by login tag), at most 4096 bytes; a process of no session keeps nothing |
+| 1046 | `clipboard_copy` | `ClipboardGlobal` | `clipboard_copy(buf, len) -> bytes kept`: into the clipboard of the caller's login tag, at most 4096 bytes. Only a tag of a session a person logs in to (`SESSION_LOGINS`) has one, eight at most, the one copied into longest ago going; any other process, `remoted` and services included, keeps nothing |
 | 1047 | `clipboard_paste` | `ClipboardGlobal` | `clipboard_paste(buf, len) -> bytes written`: from the caller's session's clipboard |
 | 1048 | `font_set` | `ConsoleConfig` | `font_set(data, width, height, glyph_count)`: the console font |
 | 1049 | `keymap_load` | `ConsoleConfig` | `keymap_load(data, len)`: a serialised keyboard layout; `EINVAL` if malformed |
@@ -299,7 +299,7 @@ The signature is the one the call's doc comment in `numbers.rs` states.
 | 1058 | `run_userland_tests` | `TestHarness` | `run_userland_tests() -> 0`: runs the userland test phase |
 | 1059 | `test_panic` | `TestHarness` | `test_panic()`: panics in syscall context; `ENOSYS` unless `panic.recover_smoke=on` |
 | 1060 | `efivar_get` | `Power` | `efivar_get(name, name_len, guid, buf, buf_len) -> len`: reads a UEFI variable of the Boot Loader Interface's namespace or SlopOS's own; `BootEntry` adds `Boot####`, `BootOrder`, `BootNext` and `BootCurrent`. `EPERM` for anything else, `ENOENT` when unset, `ENOBUFS` when `buf` is too small, `ENODEV` without UEFI runtime services |
-| 1061 | `efivar_set` | `Power` | `efivar_set(name, name_len, guid, attributes, data, data_len)`: writes or (empty `data`) deletes one, as `efivar_get` gates it. In the global namespace only non-volatile with boot and runtime access, and only values the firmware can parse; `BootCurrent` is `EPERM` |
+| 1061 | `efivar_set` | `Power` | `efivar_set(name, name_len, guid, attributes, data, data_len)`: writes or (empty `data`) deletes one, as `efivar_get` gates it. In the global namespace only non-volatile with boot and runtime access, and only values the firmware can parse (`EINVAL` otherwise); `BootCurrent` is `EPERM` |
 | 1062 | `cpu_perf` | `NoneSelf` | `cpu_perf(info: *mut UserCpuPerfInfo, cpus: *mut UserCpuPerf, max) -> entries written`: frequency control state and, per CPU, its APERF, MPERF and TSC sample, HWP registers and core type |
 | 1063 | `cpu_perf_ctl` | `Power` | `cpu_perf_ctl(op, value) -> settings generation`: one `CPU_PERF_OP_*` change (HWP, preference, limits, placement), applied by every CPU at its next tick or idle entry |
 | 1064 | `prof_ctl` | `SysInspect` | `prof_ctl(op, label, label_len)`: starts, stops, reports or (`PROF_OP_STATUS`) reads the sampling profiler; a label is 1 to 32 bytes of `[A-Za-z0-9_.-]` |
@@ -348,9 +348,10 @@ interface, and a kernel serves a range of them.
   base calls; an addition leaves it, and so does a call retired to
   `-ENOSYS`.
 
-A program outside the base never makes a private call. It reaches SlopOS
+A program shipped outside the base makes no private call: it reaches SlopOS
 through `libc.so`, whose exported symbols and header structure layouts only
-grow: `scripts/check_libc_exports.sh` holds them to
+grow. `scripts/check_loose_programs.sh` fails an app that is static or holds a
+`syscall` instruction, and `scripts/check_libc_exports.sh` holds `libc.so` to
 `scripts/gates/libc/exports.txt` and `scripts/gates/libc/layouts.txt`.
 
 ## Rules for changing the ABI

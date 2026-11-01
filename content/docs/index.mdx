@@ -7,7 +7,8 @@ SlopOS is an operating system for x86-64 PCs, written from scratch in Rust.
 It has its own kernel, drivers, filesystem, network stack, C library, shell,
 desktop and installer. Several people can have accounts on one machine, each
 with their own desktop, and a program gets power over the machine only when
-it was handed it or the person at the machine allowed it. SlopOS runs
+the program that started it handed that power over, or when the system's
+policy allows it, often after asking the person at the machine. SlopOS runs
 installed on the disk of a real laptop, and there, as in QEMU, it can compile
 a new version of itself, install it beside the running one, and boot into it.
 

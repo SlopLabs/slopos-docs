@@ -20,7 +20,7 @@ paragraph names).
 
 ## Where it runs
 
-QEMU is the main platform: every test runs there, on an emulated PC with
+QEMU is the main platform: the test suite runs there, on an emulated PC with
 UEFI firmware, NVMe, virtio and USB disks, a virtio network card, a virtio
 display and two kinds of USB controller. One real machine, a Lenovo laptop,
 ran the system installed on its own NVMe disk, with our Intel Xe display
@@ -148,8 +148,8 @@ gallery and the installer's window ([Desktop](/docs/architecture/desktop),
 ## Installing and updating
 
 The live ISO is an install medium: written to a USB stick, it boots the
-system from memory, and its installer (a window, or a command with every
-answer as a flag) installs SlopOS onto a whole disk, into free space beside
+system from memory, and its installer (a window, or a command that asks its
+questions or takes every answer as a flag) installs SlopOS onto a whole disk, into free space beside
 another system, or over an existing partition, sharing the disk's EFI system
 partition when it has one. Booted from the same medium, a rescue shell can
 repair an installed system ([Installing SlopOS](/docs/self-hosting/installing)).
@@ -159,8 +159,8 @@ limitations](/docs/status/known-limitations#installing-and-updating)).
 
 An installed system keeps two kernels in two boot slots, so a new kernel that
 fails to boot falls back to the one that worked, and two bases, so a new base
-can be rolled back. A new base runs at once, without a reboot, when the
-system booted from that disk and the running kernel serves it ([Updating
+can be rolled back. A new base can run at once, without a reboot, when
+the system booted from that disk and the running kernel serves it ([Updating
 SlopOS](/docs/self-hosting/updating)).
 Works with limits: unlike a kernel, a new base gets no trial boot before it
 becomes the one every slot boots.
