@@ -322,9 +322,9 @@ must hold:
   session, which holds powers over the screen that your program doesn't.
 
 Two exceptions waive both halves. A holder of the `ProcSignal` capability may
-signal any process but init; privd's task-ending action uses it, which is how the System
-Monitor ends another person's program once an administrator allows it
-([Privileged actions](/docs/architecture/privd)). And `SIGCONT` to a process
+signal any process but init; privd's task-ending action uses it, which is
+how the System Monitor ends another person's program once an administrator
+allows it ([Privileged actions](/docs/architecture/privd)). And `SIGCONT` to a process
 in the sender's own terminal session needs neither, so a shell can always
 resume a job it stopped; Linux makes the same exception to its user-id rule.
 

@@ -303,8 +303,10 @@ checked by booting the laptop.
   the device leaves.
 - **The i8042's lights.** Changing the lock lights is a byte exchange with
   the keyboard, which its own interrupt carries forward: each acknowledgement
-  sends the next byte, and a byte that is refused or left unanswered for
-  250 ms is sent again, twice at most. Nothing masks its interrupt line or
+  sends the next byte. A byte that is refused is sent again at once, and one
+  left unanswered for 250 ms is sent again when the next keyboard byte, lock
+  change or pass of the `usb` thread notices, twice at most. Nothing masks
+  its interrupt line or
   polls its data port after boot: masking the line to poll for the answer
   lost interrupts and could wedge the controller.
 - **ACPI.** `slopos-acpi` parses tables without allocating. The AML

@@ -120,8 +120,8 @@ brings back the risk described next.
 writes to a page (see [Memory](/docs/architecture/memory)). If `fork` had to
 promise that memory again, a 2 GiB build tool running a one-line shell command
 would need another 2 GiB promised for the moment between `fork` and `exec`.
-Unix software assumes `fork` is cheap, so SlopOS never refuses it for lack of
-memory.
+Unix software assumes `fork` is cheap, so SlopOS never refuses it for want of
+promised memory: the commit ceiling doesn't see a fork at all.
 
 Instead the child is charged a page at a time, as it writes a page and gets
 its own copy, so a child that calls `exec` straight away costs almost
@@ -193,8 +193,8 @@ enforcement off or into warnings, for measuring what a workload needs, and
   won't get the program killed, unless it was mapped with `MAP_NORESERVE`.
   Stack the program grows into past what `exec` gave it is charged as it
   grows.
-- **`fork` doesn't fail for lack of memory**, but a child that writes much of
-  its parent's memory can trigger the OOM killer.
+- **`fork` is never refused at the commit ceiling**, but a child that writes
+  much of its parent's memory can trigger the OOM killer.
 - **Limits fail with the errors programs already handle.**
 - **The OOM killer never takes a process holding a capability the writer
   lacks.**
