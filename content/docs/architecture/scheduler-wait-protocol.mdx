@@ -143,7 +143,7 @@ a wake never sees half of a change, and a CPU acting on a stale value finds
 the counter has moved and reads it again. Almost every wait in the kernel goes
 through one wait loop, so this order is written once; futexes and timed
 sleeps block by hand and repeat it, with one more check
-([For contributors](#for-contributors) says which).
+([For contributors](#for-contributors) says what it is).
 
 ### When a wait ends early: kills, signals and timeouts
 
@@ -158,7 +158,7 @@ chooses which of these reasons apply:
   or is restarted if the handler was installed with `SA_RESTART`. A signal
   with no handler takes its default action instead, ending or stopping the
   program, and a call it only stopped starts again when the program
-  continues. Calls with a timeout (`poll`, `nanosleep`, `futex`, SlopRing's
+  continues. Calls that take a timeout (`poll`, `nanosleep`, `futex`, SlopRing's
   `ring_enter`) are never restarted: they fail with `EINTR` in every case (see
   [Processes and signals](/docs/architecture/processes#how-a-signal-is-delivered)).
 - **Time ran out.** A wait can have a deadline, as `poll` with a timeout

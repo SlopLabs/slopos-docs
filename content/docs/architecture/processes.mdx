@@ -85,8 +85,11 @@ the same capabilities and the same login tag. SlopOS has no `vfork`.
 ### Replacing the program: exec
 
 `exec` (the `execve` call) keeps the pid, the open files, the working
-directory and the ids, and replaces the memory with a new program. SlopOS can
-run three kinds of file:
+directory and the ids, and replaces the memory with a new program. Unlike
+Linux, it does not end the process's other threads: they run on in the new
+program, which is a known defect
+([Known limitations](/docs/status/known-limitations)), so call `exec` from a
+process with one thread. SlopOS can run three kinds of file:
 
 - **A static ELF program**, which the kernel maps into memory and starts.
 - **A dynamic ELF program.** The file names the *dynamic loader*
@@ -279,10 +282,11 @@ particular thread. Stopping, continuing and `SIGKILL` always act on the
 whole process.
 
 If the target is in the middle of a slow system call, such as reading from a
-pipe that has nothing in it, a signal with a handler interrupts the call. When
-the handler was installed with `SA_RESTART`, the kernel restarts the call
-afterwards and the program never notices; otherwise the call fails with
-`EINTR`. A program can also wait for signals instead of handling them, with
+pipe that has nothing in it, a signal with a handler interrupts the call. For
+a read or write on a pipe, FIFO, terminal or signalfd, a handler installed
+with `SA_RESTART` has the kernel restart the call afterwards, so the program
+never notices; every other interrupted call fails with `EINTR`, `SA_RESTART`
+or not ([System calls](/docs/architecture/syscalls) has the list). A program can also wait for signals instead of handling them, with
 `sigwait`, `sigtimedwait` or `sigsuspend`.
 
 ### Standard and realtime signals

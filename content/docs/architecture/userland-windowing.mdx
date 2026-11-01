@@ -309,11 +309,11 @@ grid and key encoding (`terminal-core`).
 
 | Path | What is there |
 |---|---|
-| `userland/src/apps/compositor/` | The compositor: `protocol.rs` serves clients, `input.rs` routes input, `renderer.rs` paints |
+| `userland/src/apps/compositor/` | The compositor: `protocol.rs` serves clients, `mod.rs` routes input (with focus, moves and resizes in `input.rs`), `renderer.rs` paints |
 | `slop-protocol/` | The messages, their encoding and both ends of the connection |
 | `windowing/` | Connection, window and double buffers for programs |
 | `chrome-core/src/placement.rs` | Where a new window opens, host-tested |
-| `slopos-ostd/src/seat/`, `core/src/syscall/ui_handlers.rs` | Seat arbitration and the seat system calls |
+| `slopos-ostd/src/seat/`, `core/src/syscall/ui_handlers.rs`, `core/src/seat_file_ops.rs` | Seat arbitration, the seat system calls and the seat's descriptor |
 | `keymap-core/` | Key decoding and layouts, host-tested |
 
 [Window protocol](/docs/abi/window-protocol) lists every message.

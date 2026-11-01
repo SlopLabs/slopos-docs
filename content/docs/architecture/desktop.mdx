@@ -91,9 +91,10 @@ table, with no change to any app.
 Interface text is set in Inter, code and the terminal in JetBrains Mono, and
 icons in Lucide, all loaded at run time from `/usr/share/fonts`. They are
 never compiled into a program, because the text fonts' licence (the SIL Open
-Font License) and SlopOS's own could not both govern one binary. Every glyph in a line sits on one baseline,
-pairs are kerned from the font's own table, and measuring, fitting and
-drawing share one layout, so text that measured as fitting draws as fitting.
+Font License) and SlopOS's own could not both govern one binary. Every glyph
+in a line sits on one baseline, pairs are kerned from the font's own table,
+and measuring, fitting and drawing share one layout, so text that measured
+as fitting draws as fitting.
 
 ## Components
 
@@ -122,7 +123,7 @@ What makes them worth using is what comes with every one of them:
   Enter and Escape that no control took press the confirming and the back or
   cancel button of the page or dialog in front, and Enter never reaches a
   destructive button that way: only one that has focus takes it. A dialog
-  keeps the keyboard and the pointer until it is answered.
+  keeps the keyboard and the pointer until it is answered or dismissed.
 - **Every control and every row is at least 28 px across**, so a pointer can
   find it.
 - **Windows describe themselves.** An app states the size its window opens
@@ -145,7 +146,7 @@ Three kinds of check hold apps to all this, none of which needs anyone to look
 at a screen.
 
 **The theme's own tests.** `theme-core`'s host tests compute WCAG 2.2's
-contrast ratio for every pair the desktop can put together: body and
+contrast ratio for the pairs the desktop puts together: body and
 secondary text against every surface, hovered and selected rows included, at
 4.5:1; status inks on plain surfaces at 4.5:1; white text on every fill in
 every state at 4.5:1; and edges, the focus ring, disabled text and an app
@@ -211,21 +212,21 @@ The compositor draws everything on screen that isn't an app's content.
 <DesktopAnatomy />
 
 - **The desktop** is the theme's wallpaper, a dark gradient lit softly from
-  above, drawn at the screen's size and dithered so it shows no bands. A
-  compositor started by hand with `SLOPOS_WALLPAPER` naming a picture covers
-  it with that picture instead; the desktops init starts are given no such
-  variable.
-- **Window frames** are rounded at all four corners (square once
-  maximised), with a dark hairline just outside and a light one along the
-  top, and a shadow that is half as dark on a window without focus. The
-  close, minimise and zoom buttons are coloured discs that show their glyphs
-  while the pointer is over the three of them, and are grey on a window
-  without focus until the pointer comes over them; a window that can't be
-  resized has a grey zoom button with no glyph. A resize takes a press up to
-  8 px outside the frame. Zoom fills the space between the menu bar and the
-  dock, or gives the window the nearest size its limits allow, centred;
-  pressing it again puts the window back, as long as it is still maximised
-  or still where zoom put it.
+  above, drawn at the screen's size and dithered so it shows no bands. The
+  compositor would cover it with the picture `SLOPOS_WALLPAPER` names, but
+  init starts every desktop without that variable, so the gradient is what
+  you see.
+- **Window frames** are rounded at all four corners, with a dark hairline
+  just outside and a light one along the top, and a shadow that is half as
+  dark on a window without focus; a maximised window is square and has
+  neither hairlines nor shadow. The close, minimise and zoom buttons are
+  coloured discs that show their glyphs while the pointer is over the three
+  of them, and are grey on a window without focus until the pointer comes
+  over them; a window that can't be resized has a grey zoom button with no
+  glyph. A resize takes a press up to 8 px outside the frame. Zoom fills the
+  space between the menu bar and the dock, or gives the window the nearest
+  size its limits allow, centred; pressing it again puts the window back, as
+  long as it is still maximised or still where zoom put it.
 - **The menu bar** is a strip of glass across the top. On the left,
   SlopOS's mark opens the system menu and the focused window's app is named;
   on the right, the network item opens the network panel and the clock shows
@@ -234,8 +235,9 @@ The compositor draws everything on screen that isn't an app's content.
 - **The system menu** names the person and offers *Lock screen*, *Switch
   user…*, *Log out…*, *Restart…* and *Power off…*. Only once a new base has
   changed the desktop's own programs does *Restart desktop…* appear, at the
-  top, under the notice *Restart the desktop to finish updating*. Each entry
-  that ends something asks first, with *Cancel* focused.
+  top, under the notice *Restart the desktop to finish updating*, and the
+  menu then opens by itself to offer it. Each entry that ends something asks
+  first, with *Cancel* focused.
 - **The dock** floats as a pane of glass above the bottom of the screen. It
   holds the pinned apps, then the running apps that no entry names, a dot
   under each app that runs, and each icon grows a little as the pointer
@@ -268,8 +270,10 @@ Every app icon is one white glyph on a rounded tile in one of the theme's
 tile hues, lit slightly from its top-left corner and nothing more: no sheen,
 no rim, no shadow, since the dock casts the shadow. The shipped icons are
 drawn by code (`just icons`, `tools/icons/src/art.rs`) from a few filled
-shapes on a 64-unit grid, each inside a keyline of the same area, with depth
-only from a shape behind at 60% white or detail cut out of a white shape.
+shapes on a 64-unit grid. Each glyph fills a guide rectangle (a *keyline*:
+landscape, portrait or square, all of about the same area), so no icon looks
+bigger than another, and depth comes only from a shape behind at 60% white
+or from detail cut out of a white shape.
 They ship at 64 px and as `<id>@2x.png` at 128 px, and a host test fails when
 a shipped PNG is not what the code draws. An app that ships no icon is shown
 as a glyph of the icon font on a tile whose hue its app id picks.
@@ -305,7 +309,7 @@ why).
 | App | Program | Where | What it is |
 |---|---|---|---|
 | Terminal | `terminal` | base | A shell on a *pseudo-terminal* (a pair of endpoints that look like a serial line to the shell), emulating an xterm closely enough for full-screen programs and mouse reporting. Resizing re-wraps long lines in the scrollback; Ctrl+Shift+PgUp and PgDn scroll it. |
-| System Monitor | `sysmon` | base | A *Performance* tab with a graph of the last minute for the processor, memory, each disk, each network adapter and the graphics adapter, and a *Processes* tab listing every process with its threads folded in, which can end one (through privd when it belongs to someone else). `sysmon --page cpu`, `memory`, `disk`, `network`, `gpu` or `processes` opens on a page. |
+| System Monitor | `sysmon` | base | A *Performance* tab with a graph of the last minute for the processor, memory, each disk, each network adapter and the graphics adapter, and a *Processes* tab listing every process with its threads folded in, which can end one (through privd when it belongs to another person, and saying why when it can't). `sysmon --page cpu`, `memory`, `disk`, `network`, `gpu` or `processes` opens on a page. |
 | Install SlopOS | `installer-ui` | base | The installer's window, shown only when the computer started from the install medium ([Installing SlopOS](/docs/self-hosting/installing)). |
 | Editor | `editor` | `/usr/local` | A text editor with tabs, a file tree, syntax highlighting, find and replace and a command palette. It saves through a synced copy renamed over the file, so a failed save never leaves half a file, and asks before replacing a file that changed since it was opened. Its manual is `share/slopos/doc/editor.md`. |
 | Files | `file_manager` | `/usr/local` | A file manager with places in a sidebar, a toolbar and a table of the folder. |
