@@ -117,8 +117,9 @@ used, and the source there contains no `unsafe` keyword for a search to find.
 So the build expands every kernel crate the way the compiler does
 (`-Zunpretty=expanded`), with each crate's feature combinations, and searches
 the result. The rule is fixed rather than a recorded count: no executable
-`unsafe` at all, and only a short named list of `unsafe` attributes, such as
-the names of the three functions that assembly code calls.
+`unsafe` at all, and `unsafe impl` and `unsafe` attributes only from short
+named lists, such as the traits OSTD's derives implement and the names of the
+three functions that assembly code calls.
 
 **The linked kernel is checked last.** A crate pulled in from crates.io
 expands its own macros where no source scan sees them. The final check reads

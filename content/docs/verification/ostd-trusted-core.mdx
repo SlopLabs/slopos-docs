@@ -33,7 +33,7 @@ up to the memory manager, a safe crate. Roughly:
 | Synchronisation | Spin locks, wait queues, intrusive linked lists, read-copy-update, per-CPU slots |
 | Tasks | The task object, the reference that owns it, putting tasks on and off queues, the context switch, saving floating-point state |
 | Processes | The process object, its user and group ids, its resource accounts, the capability mask described in [Capabilities](/docs/architecture/authority), and the identity a socket records for the process at its other end |
-| Screen and input | Which task holds the screen and the keyboard and pointer input (the *seats*), handed over by the kernel rather than taken |
+| Screen and input | Which task holds the screen and the keyboard and pointer input (the *seats*), which the kernel grants and takes back; drawing a frame never claims one |
 | Devices and firmware | I/O ports and device registers, PCI configuration space, the firmware's ACPI tables, and the UEFI runtime calls that reset the machine and read and write boot variables |
 | Panics | Unwinding a task that hit a kernel panic so the kernel can carry on, through the vendored unwinder; the lockup watchdog; the diagnostic console's command table |
 | User memory | Pointers into a user program's memory, and copying to and from it |
@@ -97,8 +97,9 @@ right. [Task lifetimes](/docs/architecture/task-ownership) covers the rules.
 acceptable, OSTD uses a sealed trait: one that outside crates can name but not
 implement, so the list of types is closed.
 
-**A borrow checked at run time.** Per-CPU data is reached through a slot that
-counts its borrows, like a `RefCell`. A second overlapping borrow gets
+**A borrow checked at run time.** Some per-CPU tables are also reached by
+other CPUs, which name a slot by its CPU number. Those go through a slot that
+counts its borrows, like a `RefCell`, so a second overlapping borrow gets
 `None` back instead of an aliasing reference.
 
 **A slice instead of a pointer and a length.** Copying to or from user memory

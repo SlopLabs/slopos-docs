@@ -241,7 +241,7 @@ base the guest installed survives guest reboots but not the next `just boot`.
 | `just test-quiet ['glob']` | Print only failures and the summary |
 | `just test-raw` | Pass QEMU's output through unchanged, KTAP and kernel log mixed |
 | `just test-json <path>` | Also write one JSON event per line to `<path>`, replacing what it held |
-| `just test-userland-only` | Runs no tests at this commit. It boots the tests ISO with `tests.run=__userland_only__`, a pattern that names no test, and the harness applies `tests.run` to the userland phase as well as the kernel phase, so both plan nothing and the runner exits 2. To run only the userland tests, filter by their module: `just test '*ext4_aaa*,slopos_core::utests::*'` |
+| `just test-userland-only` | Runs no tests at this commit. It boots the tests ISO with `tests.run=__userland_only__`, a pattern that names no test, and the harness applies `tests.run` to the userland phase as well as the kernel phase, so both plan nothing and the runner exits 2. To run the userland tests and only the one kernel test that mounts the disk, filter by module: `just test '*ext4_aaa*,slopos_core::utests::*'` |
 | `just test-elf [ELF=]<kernel> [BASE=<base.cpio>] ['glob']` | Run the suite on a tests kernel and base built elsewhere, such as inside the guest |
 | `just test-host` | Unit tests of the pure-logic crates and of `slopos-ostd`, on the host, no QEMU |
 | `just check-tests-host` | Unit tests of the Go test runner |

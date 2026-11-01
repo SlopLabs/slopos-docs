@@ -137,13 +137,15 @@ a tree of the same name somewhere else is refused too.
 
 ## Who may write `/usr/local`
 
-Every root records which of the first person's trees they hold, in
-`/var/lib/slopos/owners` (see
+Every root records, in `/var/lib/slopos/owners`, which of three directory
+trees the first person owns: their home, the source checkout at `/src`, and
+`/usr/local` (see
 [Users and file permissions](/docs/architecture/users)). On a machine with
 one person, the record says `/usr/local` is theirs: they can copy programs
 there, and init hands them the apps' manifest so `tree-install apps DIR
 /usr/local` works as them. The directory of manifests itself is uid 0's, so
-a tree of a new name goes into their own `~/.local` instead.
+they cannot record a tree of a new name there; such a tree goes into their
+own `~/.local` instead.
 
 ### When a second person joins
 

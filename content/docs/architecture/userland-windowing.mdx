@@ -97,7 +97,7 @@ The compositor runs a pass about every 16 ms and paints only when something
 changed. It draws into a buffer of its own and hands the kernel the damaged
 rectangles, which the display driver copies to the screen. On Intel graphics,
 when the driver can set aside a second buffer for the screen (the boot log
-says `XE-PRESENT: tear-free double-buffered scanout`), it switches to the new
+says `XE-PRESENT: tear-free double-buffered scanout (pipe A)`), it switches to the new
 frame only between screen refreshes, so you never see half of one frame and
 half of another; in QEMU's virtio-gpu the pointer is drawn by the device's
 cursor plane rather than painted into every frame. A program that animates can ask to be told when its last frame reached
@@ -269,7 +269,7 @@ grid and key encoding (`terminal-core`).
 - [*The Wayland Protocol*](https://wayland-book.com/) by Drew DeVault. The
   best introduction to the compositor model; its chapter on
   [shared memory buffers](https://wayland-book.com/surfaces/shared-memory.html)
-  explains the handover this page describes.
+  explains the same handover.
 - [*Wayland architecture*](https://wayland.freedesktop.org/architecture.html)
   on wayland.freedesktop.org. A short comparison with X11 showing why the
   compositor owns both the screen and input.

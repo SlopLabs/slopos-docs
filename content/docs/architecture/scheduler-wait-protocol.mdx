@@ -307,9 +307,10 @@ only writer of `killed`. The syscall exit and every interrupt exit share one
 delivery point that checks it.
 
 **Wake placement and preemption.** A wake for another CPU goes into that
-CPU's remote wake inbox, followed by a reschedule IPI. A woken task preempts
-the running one if its tier is strictly higher. A wake from an interrupt (a
-device completing, a sleep expiring) also preempts at equal tier, but a
+CPU's remote wake inbox, followed by a reschedule IPI, after which that CPU
+picks again. A wake placed on the waker's own CPU preempts the running task
+only if its tier is strictly higher, unless an interrupt delivered it (a
+device completing, a sleep expiring): that preempts at equal tier too. A
 task-to-task wake doesn't, so a futex handoff doesn't bounce two threads on
 one CPU. CPUs switch straight from task to task without passing through the
 idle task; [Task lifetimes](/docs/architecture/task-ownership#who-owns-the-running-task)
