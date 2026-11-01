@@ -58,9 +58,9 @@ Faulting one page at a time would be slow for a program that walks through a
 large buffer, so a fault in the heap or in an ordinary anonymous mapping also
 fills the untouched pages around it, up to 32 at a time, and a fault in a
 mapped file also maps the neighbouring pages already in memory. The stack, a
-`MAP_NORESERVE` mapping and memory a `fork` child still shares with its parent
-are filled one page at a time. Idle processors also zero free frames ahead of
-time, and faults take those first.
+`MAP_NORESERVE` mapping and the memory a `fork` child inherited are filled one
+page at a time. Idle processors also zero free frames ahead of time, and
+faults take those first.
 
 ### How `fork` avoids copying memory
 
@@ -72,10 +72,10 @@ both processes. When either one writes a page, the processor faults, and the
 kernel copies that one frame and gives the writer the copy with write
 permission. The other keeps the original, and when it writes the page in turn
 the frame is no longer shared, so it gets write permission back without a
-copy. This is *copy-on-write*, and even
-`mprotect` won't make a shared copy-on-write page writable. To start a new
-program without copying an address space at all, SlopOS also has
-`posix_spawn` (see [Processes and signals](/docs/architecture/processes)).
+copy. This is *copy-on-write*, and even `mprotect` won't make a shared
+copy-on-write page writable. To start a new program without copying an
+address space at all, SlopOS also has `posix_spawn` (see
+[Processes and signals](/docs/architecture/processes)).
 
 ### Files mapped into memory are shared
 
@@ -151,10 +151,12 @@ call fails with `EFAULT`.
 
 - **Reserving memory is cheap.** A large mapping costs a little bookkeeping
   until you touch it.
-- **If `mmap` or `brk` succeeds, the memory is there.** SlopOS checks that it
-  can back private memory when you ask for it, so a program isn't killed for
-  touching memory it was given. The exceptions (pages a `fork` child writes,
-  stack growth, and mappings made with `MAP_NORESERVE`) are explained on
+- **If `mmap` or `brk` succeeds, the memory is promised.** SlopOS checks that
+  it can back private memory when you ask for it, so touching memory you were
+  given never runs into that limit later. RAM itself can still run out,
+  because the kernel's own memory comes from the same RAM; that case, and the
+  memory with no promise behind it (pages a `fork` child writes, stack growth,
+  and mappings made with `MAP_NORESERVE`), are explained on
   [Resource limits](/docs/architecture/resource-accounting).
 - **New memory reads as zero.** Every frame a program receives was cleared.
 - **`fork` copies no memory.** It copies the parent's page tables, so it

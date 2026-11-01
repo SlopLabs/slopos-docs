@@ -212,7 +212,9 @@ The compositor draws everything on screen that isn't an app's content.
 
 - **The desktop** is the theme's wallpaper, a dark gradient lit softly from
   above, drawn at the screen's size and dithered so it shows no bands. A
-  picture named by `SLOPOS_WALLPAPER` covers it instead.
+  compositor started by hand with `SLOPOS_WALLPAPER` naming a picture covers
+  it with that picture instead; the desktops init starts are given no such
+  variable.
 - **Window frames** are rounded at all four corners (square once
   maximised), with a dark hairline just outside and a light one along the
   top, and a shadow that is half as dark on a window without focus. The

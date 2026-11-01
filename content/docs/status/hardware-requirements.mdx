@@ -4,8 +4,9 @@ description: "What you need to run SlopOS in QEMU, and what has been tried on th
 ---
 
 As of 2026-10-29, SlopOS commit `fa0f8f79`. The laptop results below were
-recorded between 2026-10-03 and 2026-10-11, on builds from that period; the
-source tree records none from the laptop since.
+recorded between 2026-10-03 and 2026-10-11, on builds from that period.
+Since then the source tree records one thing from a real machine: a fix, on
+2026-10-16, for `just remote-install` being refused there.
 
 You run SlopOS in QEMU on a Linux or macOS computer. The only real machine it
 has run on is one Lenovo laptop, where it is installed on the internal disk.
@@ -105,6 +106,6 @@ frequency settings. Every run was held back by the package's power limit.
 
 No Wi-Fi, Bluetooth, audio, suspend or GPU acceleration, and no driver for
 SATA disks, so a disk behind a SATA controller is invisible to SlopOS. Only
-the one laptop has been tried, and the tree records no results from it after
-2026-10-11, so whether a later change works there is not known.
+the one laptop has been tried, and the results above predate 2026-10-12, so
+whether a later change works there is not known.
 [Known limitations](/docs/status/known-limitations) lists the rest.

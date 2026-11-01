@@ -233,8 +233,10 @@ tablet reports a position on its surface (*absolute* motion), which the
 kernel maps onto the screen. A tablet repeats its position in every report,
 so an absolute position is applied only when it changes; otherwise a click on
 a tablet would snap the cursor back from wherever a mouse had moved it. A
-button is down while any device holds it. Up to eight keyboards and eight
-pointing devices can be connected at once.
+button is down while any device holds it. There is room for eight keyboards
+and eight pointing devices at once; the i8042 always takes one of the
+keyboards' places, and the PS/2 mouse and the touchpad two of the pointers',
+so seven USB keyboards and six USB pointing devices fit beside them.
 
 What isn't merged is the stream of key events itself. A keyboard pulled while
 it holds Shift still produces a Shift release event, even though another

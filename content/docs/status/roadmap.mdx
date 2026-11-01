@@ -21,9 +21,8 @@ plan does not exist yet.
 
 Beside its `README.md`, which states those rules, `plans/` now holds two
 files: `ci-latency.md`, the one open plan, and `KNOWN_ISSUES.md`, working
-notes on open defects. Plans can mention file
-paths that have since moved, so check a path against the tree before relying
-on it.
+notes on open defects. Plans can mention file paths that have since moved, so
+check a path against the tree before relying on it.
 
 ## Faster continuous integration
 
@@ -33,12 +32,13 @@ the runner minutes every push costs low. (`plans/ci-latency.md`)
 **Where it stands:** CI runs four jobs side by side, each a chain of steps
 over one set of inputs, each meant to finish near the boot lane: the boot
 lane itself (the tests build, the boot, the checks that read its log, and the
-persistence, crash, USB and self-hosting-root boots), the gates (host tests,
-kernels, the framekernel gates and the offline build), the toolchain (the C++
-runtime, the LLVM port and the cross-build checks), and the proofs (Miri and
-Verus). Compiler output is cached by content, never by timestamp. The gates
-job is the longest today, because its builds run without the cache. Still to
-do:
+persistence, unclean-shutdown, USB and self-hosting-root boots), the gates
+(host tests, kernels, the framekernel gates and the offline build), the
+toolchain (the C++ runtime, the LLVM port and the cross-build checks), and
+the proofs (Miri and Verus). Compiler output is cached by content, never by
+timestamp. The gates job is the longest today, because its framekernel gates
+step runs without the cache, including the builds its `unsafe` expansion
+check makes. Still to do:
 
 1. Split the gates recipe so its expansion builds can use the compiler cache
    and its compiler probes cannot (a cached answer from a probe would prove
@@ -57,8 +57,9 @@ Nothing in the tree plans these, so they are not coming soon:
   Wi-Fi, Bluetooth, audio and SATA ([Hardware](/docs/status/hardware-requirements)).
 - **A compiler that rebuilds itself inside SlopOS.** The self-hosting plan
   considered it and left it uncommitted: it needs Python in the guest, tens
-  of gigabytes and hours of CPU per build. The plan was retired with the compilers still
-  cross-built on the host ([Toolchain](/docs/self-hosting/toolchain)).
+  of gigabytes and hours of CPU per build. The plan was retired with the
+  compilers still cross-built on the host
+  ([Toolchain](/docs/self-hosting/toolchain)).
 - **IPv6, other filesystems, time zones.** See [Known
   limitations](/docs/status/known-limitations).
 

@@ -190,30 +190,37 @@ layout and `keymap de_CH` switches it for everyone;
 
 ## Who may own the screen
 
-The kernel hands out the screen and the raw input queue as two *seats*. A
-program must hold the display seat to put a frame on the screen and the input
-seat to read input, and taking either needs a capability (`DisplaySeat`,
-`InputSeat`) that init delegates to the compositors it starts, and the display
-one also to `/bin/roulette` ([Capabilities](/docs/architecture/authority)). A
-seat is held through a descriptor that can't be duplicated or passed on, and
-the kernel takes it back when its holder exits, so a crashed compositor
-doesn't leave the screen locked.
+The kernel hands out the screen and the raw input queue as two *seats*.
+Asking for either needs a capability (`DisplaySeat`, `InputSeat`) that init
+delegates to the compositors it starts, and the display one also to
+`/bin/roulette` ([Capabilities](/docs/architecture/authority)). The kernel
+records the thread that got a seat as its holder, and the calls that put a
+frame on the screen, move the pointer or read input work only for that
+holder. The program also receives a descriptor that stands for the grant and
+stops working once the seat moves on; it can't be duplicated or passed to
+another process. The kernel takes a seat back when its holder exits, so a
+crashed compositor doesn't leave the screen locked.
+
+A program asks for a seat at one of two ranks: a compositor's, or the
+console's, which outranks every compositor and which in the base only
+`/bin/roulette`, the Wheel of Fate that runs at boot, asks for. Asking for a
+seat that another program holds at the same or a higher rank fails with
+`EBUSY`, so two compositors can't trade the screen back and forth. The
+kernel's own log takes no seat: while it is on screen, the kernel holds back
+every compositor's frames, so it shows even over a stuck compositor. Below
+the seats, the kernel picks which display driver shows the frame: Intel
+graphics, virtio-gpu in QEMU, or the plain framebuffer the firmware left
+behind ([Drivers](/docs/architecture/drivers)).
 
 Several people can be logged in at once, each with a desktop, but only one
-desktop is *in front*. A compositor init starts never takes a seat itself:
-init hands both to it, and later moves them to another compositor, with a
-call only init may make (`seat_switch`), which also routes all input to the
-new holder; the desktop that goes behind stops drawing and locks.
+desktop is *in front*, and all their compositors share one rank. So a
+compositor init starts never asks for a seat itself: init hands both to it,
+and later moves them to another compositor, with a call only init may make
+(`seat_switch`). That call hands both seats over without a descriptor,
+routes all input to the new holder, and refuses with `EBUSY` while the
+console's rank holds either seat; the desktop that goes behind stops drawing
+and locks.
 [Sessions and login](/docs/architecture/sessions) explains switching.
-
-There are two seat ranks. Compositors hold the lower one, and only
-`/bin/roulette`, the Wheel of Fate that runs at boot, takes the higher one.
-Asking for a seat that another program holds at the same or a higher rank
-fails with `EBUSY`. The kernel's own log takes no seat: while it is on
-screen, the kernel holds back every compositor's frames, so it shows even
-over a stuck compositor. Below the seats, the kernel picks which display
-driver shows the frame: Intel graphics, virtio-gpu in QEMU, or the plain
-framebuffer the firmware left behind ([Drivers](/docs/architecture/drivers)).
 
 ## What it means for an app
 

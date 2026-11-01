@@ -419,9 +419,10 @@ just test 'slopos_core::syscall::tests_build_floor_signal::*'
 just test '*libc_abi*'
 ```
 
-The second filter needs nothing else: a userland test runs on the booted
-system, after its disk is mounted. To see the kernel test's own result line, run the first filter with the
-runner's `--raw` flag:
+Neither filter needs another test run beside it: the kernel test creates no
+files, and a userland test runs on the booted system, after its disk is
+mounted. To see the kernel test's own result line, run the first filter with
+the runner's `--raw` flag:
 
 ```bash
 builddir/run_tests --raw --filter 'slopos_core::syscall::tests_build_floor_signal::*'
