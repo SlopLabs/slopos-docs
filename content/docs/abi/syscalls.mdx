@@ -284,7 +284,7 @@ The signature is the one the call's doc comment in `numbers.rs` states.
 | 1043 | `screen_acquire` | `DisplaySeat` | `screen_acquire(seat_id) -> fd`: takes the screen seat (`SEAT_COMPOSITOR_PRIMARY` 0, `SEAT_VIRTCON` 1, which outranks it); `EBUSY` while another task holds it at equal or higher rank |
 | 1044 | `input_sink_acquire` | `InputSeat` | `input_sink_acquire(seat_id) -> fd`: as `screen_acquire`, for the input stream |
 | 1045 | `input_poll_batch` | `NoneFd` | `input_poll_batch(out: *mut InputEvent, max) -> events written`; input seat holder only |
-| 1046 | `clipboard_copy` | `ClipboardGlobal` | `clipboard_copy(buf, len) -> bytes kept`: into the clipboard of the caller's login tag, at most 4096 bytes. Only a tag of a session a person logs in to (`SESSION_LOGINS`) has one, eight at most, the one copied into longest ago going; any other process, `remoted` and services included, keeps nothing |
+| 1046 | `clipboard_copy` | `ClipboardGlobal` | `clipboard_copy(buf, len) -> bytes kept`: into the clipboard of the caller's login tag, at most 4096 bytes. Only a tag in `SESSION_LOGINS`, which init gives the sessions people log in to, has a clipboard; the kernel keeps eight, reusing the one copied into longest ago. Any other process, `remoted` and services included, keeps nothing |
 | 1047 | `clipboard_paste` | `ClipboardGlobal` | `clipboard_paste(buf, len) -> bytes written`: from the caller's session's clipboard |
 | 1048 | `font_set` | `ConsoleConfig` | `font_set(data, width, height, glyph_count)`: the console font |
 | 1049 | `keymap_load` | `ConsoleConfig` | `keymap_load(data, len)`: a serialised keyboard layout; `EINVAL` if malformed |
@@ -350,8 +350,9 @@ interface, and a kernel serves a range of them.
 
 A program shipped outside the base makes no private call: it reaches SlopOS
 through `libc.so`, whose exported symbols and header structure layouts only
-grow. `scripts/check_loose_programs.sh` fails an app that is static or holds a
-`syscall` instruction, and `scripts/check_libc_exports.sh` holds `libc.so` to
+grow. `scripts/check_loose_programs.sh` fails an app that is static, names
+another interpreter, does not need `libc.so` or holds a `syscall`
+instruction, and `scripts/check_libc_exports.sh` holds `libc.so` to
 `scripts/gates/libc/exports.txt` and `scripts/gates/libc/layouts.txt`.
 
 ## Rules for changing the ABI
