@@ -14,9 +14,9 @@ Linux need no changes. RAM is not divided up this way: it has one ceiling for
 the whole machine, so one program can still use most of it. But it is handled
 more strictly than on Linux: SlopOS refuses memory when a program asks for it,
 so a program that runs out almost always gets an error it can handle and is
-not killed. The main exception is `fork`, and when a forked child does run the
-machine out of memory, the kernel ends one process, chosen by a rule
-described below.
+not killed. The main exception is `fork`, and when a forked child (or the
+kernel's own use of RAM) does run the machine out of memory, the kernel ends
+one process, chosen by a rule described below.
 
 The budgets for open files, processes, address space and pinned memory are
 Unix resource limits, read with `getrlimit` as on Linux. Refusing memory at
@@ -50,7 +50,7 @@ root in one process, and an extension's installer stores whole images
 ([Capabilities](/docs/architecture/authority)).
 
 The pinned-memory limit is set at boot to an eighth of the machine's usable
-RAM, the share of the file-mapping cache one program may hold, because a
+RAM (16 MiB at least), the share of the file-mapping cache one program may hold, because a
 compiler's shared libraries already go past a smaller fixed default before it
 starts and a linker maps every input at once.
 
@@ -75,9 +75,10 @@ for everyone else and for the system.
 
 A zombie keeps its thread charged to its person until its parent reaps it,
 rather than to the parent's own budget, so a person who leaves thousands of
-children unreaped spends only their own share. Ending their session ends
-every process that carries its login tag, a fork bomb included, and gives
-back what they held ([Sessions and login](/docs/architecture/sessions)).
+children unreaped spends only their own share. Ending their session signals
+every process that carries its login tag and gives back what they held,
+though a program that forks faster than init can signal may outlive it
+([Init and services](/docs/architecture/init#ending-a-session)).
 The accounts are made as each person first runs something, for the first
 sixteen people in a boot; anyone after that shares the system's account.
 Memory isn't divided this way: it stays the machine's, under the one commit
@@ -133,10 +134,14 @@ program can use more memory than it was promised.
 
 ## What the out-of-memory killer does
 
-When one of those writes finds no memory, because the commit ceiling is
-reached or RAM is full and nothing can be reclaimed, the kernel ends a process
-to make room and retries the write. This is the *out-of-memory killer* (OOM
-killer). It chooses a victim like this:
+When a write finds no memory, the kernel ends a process to make room and
+retries the write. A write finds none in two cases: one of those three kinds
+of write finds the commit ceiling reached, or RAM itself is full and nothing
+can be reclaimed. The second can meet any write, a promised one included,
+because the kernel's own memory (page tables, thread stacks, buffers) comes
+out of the same RAM the ceiling is measured against: at the default ceiling,
+the promises and the kernel together can ask for more than there is. This is
+the *out-of-memory killer* (OOM killer). It chooses a victim like this:
 
 1. It considers only processes that hold no capability the writer lacks,
    the capability half of the test `kill` applies (see
@@ -148,15 +153,19 @@ killer). It chooses a victim like this:
 2. Of those, it picks the one holding the most of what ran out: promised
    memory if the ceiling was reached, RAM if RAM was. Shared memory counts
    against its owner, so mapping someone else's doesn't make you look bigger.
+   A process holding none of it is passed over, since its death would free
+   nothing the write needs.
 3. It ends that process with `SIGKILL`, waits for its memory to be freed, and
    retries the write. Nobody picks another victim while one is dying, and if
    the victim still holds its memory five seconds after the kill, it stops
    holding back the choice of the next one.
 
-If nobody is eligible, the writer itself dies with `SIGKILL` (not the
-`SIGSEGV` of a crash), and the kernel log says it ran out of memory with
-nothing left for the OOM killer to take. Only init's write may take any
-process, because the machine can't run without init.
+If nobody is eligible, a program whose own write it was dies with `SIGKILL`
+(not the `SIGSEGV` of a crash), and the kernel log says it ran out of memory
+with nothing left for the OOM killer to take. When the write was the kernel's,
+copying a system call's result into the program's memory, the call fails with
+`EFAULT` instead. Only init's write may take any process, because the machine
+can't run without init.
 
 ## How a program sees its limits
 
@@ -190,10 +199,12 @@ enforcement off or into warnings, for measuring what a workload needs, and
 
 ## What programs can rely on
 
-- **A successful `mmap`, `brk` or `exec` is backed.** Touching the memory
-  won't get the program killed, unless it was mapped with `MAP_NORESERVE`.
-  Stack the program grows into past what `exec` gave it is charged as it
-  grows.
+- **A successful `mmap`, `brk` or `exec` is promised.** Touching that memory
+  never meets the commit ceiling. It can still meet a full RAM, since the
+  kernel's own memory comes out of the same RAM, and then the OOM killer runs
+  as it does for a fork. Memory mapped with `MAP_NORESERVE` has no promise
+  behind it, and stack the program grows into past what `exec` gave it is
+  charged as it grows.
 - **`fork` is never refused at the commit ceiling**, but a child that writes
   much of its parent's memory can trigger the OOM killer.
 - **Limits fail with the errors programs already handle.**
@@ -262,8 +273,11 @@ page and `ResidentPages` when the frame allocator was empty after reclaim.
 The victim unwinds through the kill flag in its own context (see
 [Scheduling and waiting](/docs/architecture/scheduler-wait-protocol)); a
 writer with nothing to take dies with `TaskFaultReason::UserOom`. Kernel
-writes for a task take the same path where they may block; where they can't,
-a user copy returns `EFAULT` and a failed signal frame push ends in `SIGSEGV`.
+writes for a task (a system call's user copy, the signal frame) take the same
+path where they may block. A copy that cannot block (under a spinlock, in an
+interrupt handler, with interrupts masked) answers `EFAULT` at once; one the
+killer found nothing to free for answers `EFAULT` too, and a signal frame that
+cannot be pushed ends the task with `SIGSEGV`.
 
 ## Further reading
 

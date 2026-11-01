@@ -50,8 +50,9 @@ The handshake, in order:
 A request before the client's `Hello`, or a second `Hello`, is answered with
 `Error { object_id: 0, code: 2 }` and the connection is closed.
 
-`slopos_windowing::connect` tries ten times, 200 ms apart, while no compositor
-listens (`ConnectError::NotRunning`); a version mismatch is not retried
+`slopos_windowing::connect` tries ten times, 200 ms apart, on any failure but a
+version mismatch (most often, no compositor listening yet), then returns
+`ConnectError::NotRunning`. A version mismatch is not retried
 (`ConnectError::VersionMismatch`: "the compositor speaks another protocol
 version: rebuild this program").
 
@@ -69,11 +70,12 @@ version: rebuild this program").
   takes the oldest as it is decoded, so several messages in one read cannot
   swap descriptors. A descriptor past the eighth is closed. A received
   descriptor nobody takes is closed with the connection.
-- A connection's read buffer is 16 KiB; a client that fills it without
-  completing a frame gets error `BufferFull`.
+- A connection reads into a 16 KiB buffer, which always has room for a whole
+  frame once the frames before it are decoded.
 - The compositor queues events in a 4 KiB buffer per client and flushes it
-  every frame. A client whose buffer is still full after a flush is
-  disconnected.
+  every frame. An event that finds the buffer full flushes it at once; a
+  client whose buffer still has no room for the event, or whose socket fails
+  a write, is disconnected without an `Error`.
 
 ## Requests (client to compositor)
 
@@ -148,13 +150,13 @@ Events never carry a descriptor. A tag of 16 or more is a malformed message.
 | `OutputInfo` | In answer to the client's `Hello`. `format` is the screen's `PixelFormat`; `scale` is `1`. |
 | `FrameDone` | After the first frame that reaches the screen following a `SurfaceFrame`, for a surface that is shown. `timestamp_ms` counts from the compositor's start. |
 | `BufferRelease` | When a commit replaces the surface's buffer with the other slot: the compositor reads the named slot no more, and the client may draw into it. |
-| `Configure` | The size the window is to lay itself out at, and its states: when placement shrinks a new window to fit, every 100 ms during an interactive resize and once at its end, and when zoom resizes or restores the window. |
+| `Configure` | The size the window is to lay itself out at, and its states: when placement shrinks a new window to fit, at most every 100 ms while the pointer moves during an interactive resize and once at its end, and when zoom resizes or restores the window. |
 | `Close` | The window's close button was pressed. The client decides whether to close. |
 | `PointerEnter`, `PointerLeave` | The pointer moved onto or off the surface's content, or something (a frame, the lock screen, a question) now covers it. `x`, `y` are surface-local. |
 | `PointerMotion` | The pointer moved while over the surface, or while a press on it holds the pointer. `x`, `y` are surface-local and may lie outside the surface during such a press. |
 | `PointerButton` | A button went down or up. `button` is the button's bit: left `0x01`, right `0x02`, middle `0x04`. |
 | `PointerAxis` | `axis` is `POINTER_AXIS_VERTICAL` (0) or `POINTER_AXIS_HORIZONTAL` (1); `value` is in 120ths of a wheel notch, positive down or right. |
-| `Modifiers` | Before every `Key`; also to the focused client when a key that one of the compositor's own surfaces took is released, so its modifier state stays right. |
+| `Modifiers` | Before every `Key`; also to the focused client when a key that the system menu, a panel or a question took is released, so its modifier state stays right (not while privd's dialog still holds the keyboard, and not for keys the lock or login screen took). |
 | `Key` | A key went down (`pressed`) or up, to the client whose window has keyboard focus. An auto-repeat arrives as another press. |
 | `Error` | Just before the compositor closes the connection; `object_id` is `0`. |
 
@@ -171,9 +173,9 @@ Events never carry a descriptor. A tag of 16 or more is a malformed message.
 
 | Bit | Name | Meaning |
 |---|---|---|
-| 1 | `ACTIVATED` | the window has focus |
+| 1 | `ACTIVATED` | set in every `Configure` the compositor sends; it does not follow focus |
 | 2 | `MAXIMIZED` | zoom filled the area between the menu bar and the dock |
-| 4 | `RESIZING` | sent during an interactive resize |
+| 4 | `RESIZING` | an interactive resize is under way; the `Configure` at its end clears it |
 
 The client answers a `Configure` by drawing at the new size and committing.
 There is no acknowledgement request: until the new buffer arrives, the
@@ -204,7 +206,7 @@ Modifier bits (`slopos_abi::input`):
 | 2 | `MalformedMessage` | an unknown tag, a payload too short for its fields, a frame over 8192 bytes, a request before `Hello`, a second `Hello`, a surface id of `0` or one already in use |
 | 3 | `Timeout` | (raised by a client waiting; not sent) |
 | 4 | `Disconnected` | (the peer closed; not sent) |
-| 5 | `BufferFull` | a full read buffer, or no free surface slot |
+| 5 | `BufferFull` | a `CreateSurface` that finds no free surface slot |
 | 6 | `VersionMismatch` | a client `Hello` naming another version |
 
 Every error the compositor sends ends the connection, as in Wayland: a message

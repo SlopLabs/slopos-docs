@@ -182,6 +182,13 @@ than checked.
   [Miri](/docs/verification/kernmiri), which catches undefined behaviour as it
   happens, and why its most important parts carry machine-checked
   [proofs](/docs/verification/verus-status).
+- **The trusted core's interface has a known hole.** OSTD exports the
+  functions that write the processor's control registers (`write_cr0`,
+  `write_cr3`, `write_cr4`) as safe functions taking any raw value, and the
+  memory manager, which forbids `unsafe`, calls all three. Safe code can
+  therefore load any page-table root or switch off a protection bit. Nothing
+  outside the memory manager calls them today, and no gate catches a safe
+  function like these that carries no written contract.
 - **Some code outside OSTD is trusted too.** The kernel links two vendored
   libraries, a stack unwinder and the debugging-information reader it uses,
   and they contain `unsafe`. They are pinned to an exact upstream version and

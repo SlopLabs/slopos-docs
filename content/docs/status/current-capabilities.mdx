@@ -194,8 +194,8 @@ self-hosting ([Write tests](/docs/development/adding-tests)).
 
 All of the kernel's own `unsafe` Rust sits in one crate, `slopos-ostd` (bar a
 few declarations the kernel binary's own crate has to make), which build gates
-enforce; the two pinned third-party libraries it links, the unwinder and the
-DWARF reader, carry the rest
+enforce; the third-party libraries it links, the two pinned ones (the
+unwinder and the DWARF reader) and a few from crates.io, carry the rest
 ([The framekernel](/docs/verification/framekernel)). Machine-checked proofs
 cover selected parts of its logic and of SlopRing's and TCP's
 ([Proofs](/docs/verification/verus-status)). At this commit:

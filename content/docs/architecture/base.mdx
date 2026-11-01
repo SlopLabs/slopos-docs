@@ -128,11 +128,12 @@ module file is missing, so a disk always holds both files; a fresh install
 writes the same image to each.
 
 Keeping the bases out of the slots is what makes the guarantees at the top of
-this page work. Booting slot `b` instead of slot `a` changes the kernel and
-nothing else. A damaged root disk still boots to a working shell, because
-the programs the system runs don't live on it. And a base can be rolled back
-without touching any kernel. [Updating SlopOS](/docs/self-hosting/updating)
-covers the slots and the rest of the disk.
+this page work. Booting slot `b` instead of slot `a` changes the kernel and,
+as long as both kernels can run the current base, nothing else. A damaged
+root disk still boots to a working shell, because the programs the system
+runs don't live on it. And a base can be rolled back without touching any
+kernel. [Updating SlopOS](/docs/self-hosting/updating) covers the slots and
+the rest of the disk.
 
 ## How a kernel decides whether it can run a base
 

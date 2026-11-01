@@ -77,10 +77,13 @@ programs see the same pixels without copying anything between them.
 
 <WindowBuffers />
 
-A window has two such buffers, so the program never draws into memory the
-compositor might be reading. It draws a frame into one and *commits* it
+A window has two such buffers, so the program can draw the next frame while
+the compositor reads the last one. It draws a frame into one and *commits* it
 ("show this now"); it draws the next frame into the other. When the second is
-committed, the compositor hands the first one back. The windowing library
+committed, the compositor hands the first one back. If the program draws
+again before that hand-back reaches it, the library reuses the buffer it
+committed last, so a program that redraws faster than the compositor answers
+can tear. The windowing library
 also tracks how old each buffer's contents are, so a program that redraws
 only what changed knows what a recycled buffer has missed (its *age*: how
 many frames ago it was last shown).
@@ -112,8 +115,9 @@ the program the new size (a *configure*, in xdg-shell's words) and the program
 draws at that size and commits. Unlike xdg-shell there is no acknowledgement
 step: until the new frame arrives, the compositor draws the frame at the new
 size and fills whatever the old buffer doesn't cover with the theme's surface
-colour. During a drag it sends a new size every 100 ms, so the content keeps
-up with the edge.
+colour. During a drag it sends a new size at most every 100 ms while the
+pointer moves, and once more when you let go, so the content keeps up with
+the edge.
 
 The size limits a program states are enforced, where xdg-shell leaves them
 as hints. A drag stops at them; zoom fills the space between the menu bar and
@@ -137,8 +141,9 @@ The compositor then decides who gets each event, in this order:
 
 1. **The lock and login screens.** Ctrl+Alt+Delete always reaches the
    compositor and locks the desktop (on the login screen, it starts the login
-   screen over), and while the lock or login screen is up it takes every key
-   and the pointer. This is a *secure attention key*: no program can
+   screen over, unless a password is being checked or a desktop is starting),
+   and while the lock or login screen is up it takes every key and the
+   pointer. This is a *secure attention key*: no program can
    intercept it, so the password prompt you get after pressing it is really
    the system's. [Sessions and login](/docs/architecture/sessions) explains
    locking.
@@ -148,7 +153,9 @@ The compositor then decides who gets each event, in this order:
    releases and repeats included. [Privileged actions](/docs/architecture/privd)
    describes how the dialog guards what you type.
 3. **The compositor's own menus.** The system menu and the network and clock
-   panels take the keys while they are open.
+   panels take the keys while they are open. When the system menu opens by
+   itself, to offer a restart after an update, the keys stay with the window
+   you were typing into until the pointer reaches the menu.
 4. **Windows.** Key events go to the window that has *focus*. Pointer events
    go to the window whose content is under the pointer, in coordinates
    relative to that window, with an enter event when the pointer arrives and
@@ -157,11 +164,12 @@ The compositor then decides who gets each event, in this order:
    outside still ends where it started.
 
 Focus follows simple rules. A new window takes focus when it first appears.
-A click on a window raises it and focuses it; a click on the empty desktop
-leaves focus where it was, so the next key still lands. When the focused
-window closes or is minimised, the topmost remaining window gets focus. The
-compositor moves a window when you drag its title bar, or its content while
-holding Super.
+A click on a window's content, title bar or edge raises it and focuses it (a
+click on its close, minimise or zoom button does neither); a click on the
+empty desktop leaves focus where it was, so the next key still lands. When
+the focused window closes or is minimised, the topmost remaining window gets
+focus. The compositor moves a window when you drag its title bar, or its
+content while holding Super unless zoom has maximised it.
 
 The compositor also checks requests that only make sense after the person did
 something. A program that has merely connected can't read the clipboard or
@@ -200,8 +208,8 @@ new holder; the desktop that goes behind stops drawing and locks.
 
 There are two seat ranks. Compositors hold the lower one, and only
 `/bin/roulette`, the Wheel of Fate that runs at boot, takes the higher one.
-Asking for a seat that is held at the same or a higher rank fails with
-`EBUSY`. The kernel's own log takes no seat: while it is on screen, the
+Asking for a seat that another program holds at the same or a higher rank
+fails with `EBUSY`. The kernel's own log takes no seat: while it is on screen, the
 kernel holds back every compositor's frames, so it shows even over a stuck
 compositor. Below the seats, the kernel picks which display driver
 shows the frame: Intel graphics, virtio-gpu in QEMU, or the plain framebuffer
