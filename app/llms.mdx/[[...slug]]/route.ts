@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { getLLMText, getPageMarkdownUrl, source } from '@/lib/source';
+import { docsLlms, getPageMarkdownUrl, source } from '@/lib/source';
 
 export const revalidate = false;
 
@@ -17,7 +17,7 @@ export async function GET(_request: Request, { params }: MarkdownRouteContext) {
     notFound();
   }
 
-  return new Response(await getLLMText(page), {
+  return new Response(await docsLlms.page(page), {
     headers: {
       'Content-Type': 'text/markdown; charset=utf-8',
     },

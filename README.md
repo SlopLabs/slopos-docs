@@ -9,6 +9,9 @@ Pages live in `content/docs/`, one MDX file each; sidebar order is set by the
 a page, and check facts against the SlopOS source rather than other pages.
 Diagrams are React components in `components/diagrams/`.
 
+`SYNCED` holds the SlopOS commit the pages were last checked against. Update
+it only after checking every page the commits since then touch.
+
 ## Development
 
 This site is built with [Fumadocs](https://fumadocs.dev), [Next.js](https://nextjs.org), and [Bun](https://bun.sh).
@@ -33,6 +36,17 @@ Useful checks:
 bun run types:check
 bun run lint
 bun run build
+```
+
+## For AI agents
+
+The site serves itself to agents three ways: an index at `/llms.txt`, each
+page as Markdown at `/llms.mdx/<section>/<page>/content.md`, and an
+[MCP](https://modelcontextprotocol.io) server at `/api/mcp` with the tools
+`list_pages`, `get_page` and `search`:
+
+```json
+{ "mcpServers": { "slopos-docs": { "type": "http", "url": "https://slopos.sloplabs.net/api/mcp" } } }
 ```
 
 ## Publishing
