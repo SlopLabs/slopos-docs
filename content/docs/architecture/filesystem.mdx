@@ -348,7 +348,9 @@ installed the image.
 
 On the [development machine](/docs/self-hosting/development-machine), the
 root disk is the file `fs/assets/ext4-persist.img` on the host. The build
-never deletes it, and grows it when it needs more room. If the image is
+never deletes it (it builds the root with `PRESERVE_FS_IMAGE=1`, which
+refreshes the system's files in an existing image instead of formatting a
+new one), and grows it when it needs more room. If the image is
 damaged, wasn't shut down cleanly, or was built with different settings, the
 build stops and prints the command that fixes it. `just boot` is the
 exception: it boots an image that was closed mid-write without touching it,
@@ -390,8 +392,30 @@ cover mounting and remounting, the protections on base and kept
 directories, seals and their interaction with mappings, and permission
 checks, and userland tests repeat the permission and rename cases through
 real system calls. `just test-persist` writes and `fsync`s a file on one
-boot and reads it back on the next, and `just check-fs-image` runs `e2fsck`
-over a disk that a boot wrote to and checks it against the ownership map.
+boot and reads it back on the next, with no rebuild in between. `just
+check-fs-image` holds a disk that a boot wrote to three things: `e2fsck -fn`
+finds nothing wrong, the disk is at rest (`dumpe2fs` reports
+`Filesystem state: clean`, no `needs_recovery` flag and an empty journal),
+and, for the test disk or with `--map`, every directory has the owner and
+mode the ownership map gives it. `e2fsck` alone isn't enough, because it
+passes a sound disk that is still marked in use, and that mark is what says
+whether the last boot shut down in order. A disk SlopOS wrote that `e2fsck`
+rejects is a bug in SlopOS.
+
+What a write costs is graded too. The test suite writes a known amount
+through the filesystem and the same amount straight to a scratch disk, and
+reports both in an `FSPERF[…]` line (the brackets hold the test phase). The
+`run_tests gate fsperf` gate, which `just check-capture` runs over a
+suite's log, caps the transactions, journal commits, device write requests
+and flushes spent per MiB, which are the same on every machine. The only
+speed it grades is the filesystem's write rate divided by the same run's
+raw device rate, because that ratio doesn't change when the whole machine
+is slower, as it is without hardware virtualisation. `just test-capacity`
+does the same for a large volume: it builds a 16 GiB ext4 disk once and
+keeps it, attaches it as `nvme0n3`, and has the suite mount it, walk it and
+write to it. The guest reports the result in an `FSCAP[…]` line, and counts
+a mount in device reads, not seconds, because reads are the same on every
+run.
 
 ## For contributors
 
@@ -402,11 +426,16 @@ over a disk that a boot wrote to and checks it against the ownership map.
   `Subject::KERNEL`). The ext4 driver lives in `fs/src/ext4`; the on-disk
   format as pure data, with no I/O and no `unsafe`, is in `ext4-core`.
 - **Mount pool and locks.** Disk mounts come from a fixed pool of four
-  driver instances, each with its own lock and its own lock class
-  (`EXT4_POOL_0` to `EXT4_POOL_3`). A path walk that crosses from one mount
+  driver instances (`Ext4Mount`), each with its own lock and its own lock
+  class: four separate `lock_class!` sites, `EXT4_POOL_0` to `EXT4_POOL_3`,
+  not one shared class. A path walk that crosses from one mount
   into another holds the first lock while taking the second, which is why
   the classes must stay separate. Extension activations share one class,
-  because none is ever mounted beneath another.
+  because none is ever mounted beneath another. Unmounting an instance's
+  last mount flushes it, marks the image clean, drops the device and returns
+  the slot, which is what releases the write claim. A claim leaked there
+  makes every later mount of that disk fail as busy, and the remount test
+  exists to catch it.
 - **Caches validate by generation.** Per-mount name and attribute caches
   (`fs/src/ext4_dcache.rs`) answer warm lookups without the mount lock.
   The driver bumps generation counters under the mount lock whenever an inode
@@ -418,15 +447,25 @@ over a disk that a boot wrote to and checks it against the ownership map.
   without going through `Ext4Fs::write_inode_num` or the directory helpers
   must bump the counters itself.
 - **Writeback passes.** Each mount has at most one open writeback pass,
-  driven in bounded chunks by `sync`, the flusher thread or a writer short of
-  journal room, with the mount lock released between chunks. The pass
-  records where it started, so operations between chunks fall wholly outside
-  it and the data, journal, home order holds across the gaps. Mutations are
+  driven through `Ext4Fs::sync_step` by `sync(2)`, the flusher thread or a
+  writer short of journal room, `WRITEBACK_CHUNK` device writes at a time
+  with the mount lock released between chunks. So a path walk or an `exec`
+  queued behind a pass waits for one chunk, and a burst of callers pays for
+  one pass, not one each. The pass
+  records where it started (a dirty epoch, and the journal's head and
+  generation), so operations between chunks fall wholly outside
+  it and the data, journal, home order holds across the gaps. A `sync` that
+  finds a pass open therefore drives it to its end and then drives the next
+  one, as a jbd2 commit waiter does. Mutations are
   serialised per mount; there is no per-inode locking.
 - **Flusher gate.** The flusher writes dirty data with the mount lock
   released, behind a per-mount gate that every other request to the device
   waits on, so no read sees a home block the cache already counts as
   written.
+- **Block cache.** Each mount's cache is sized from memory when it mounts
+  (`cache_entries_for`): an eighth of the usable page frames, no more than
+  the volume has blocks, no fewer than its allocation working set, and
+  capped at `CACHE_ENTRIES_MAX`. It grows a chunk at a time as it fills.
 - **Journal.** jbd2 format, `data=ordered` only. The write ordering a change
   must keep is the one described in
   [Crash recovery](/docs/architecture/crash-recovery#how-the-journal-prevents-it).
@@ -450,11 +489,15 @@ over a disk that a boot wrote to and checks it against the ownership map.
   refusal. A new store the system trusts belongs there.
 - **Seals.** The seal is checked under the inode's stripe of the file map,
   so a write racing a seal either lands before it or is refused, and
-  `seal_unmapped` refuses a file a writable shared mapping holds.
+  `seal_unmapped` refuses a file a writable shared mapping holds. A
+  `write(2)` through a descriptor opened before the seal is refused where
+  the file's pages are taken for writing, as the filesystem itself would
+  refuse it. Both are what make a sealer's read-back final.
 - **Compatibility rules.** Block-mapped files keep their map; new files get
   extents where the volume has them. Directories are linear: an htree index
   is read and dropped on the first change, so a directory holds at most
-  64998 subdirectories. A block group left uninitialised is initialised on
+  64998 subdirectories. A block group left uninitialised (flagged
+  `BLOCK_UNINIT` or `INODE_UNINIT`) is initialised on
   first use. Block numbers are 32-bit, so volumes past 16 TiB are refused.
   Extended attributes are not exposed to programs; deleting a file still
   releases its attribute block.
@@ -462,6 +505,27 @@ over a disk that a boot wrote to and checks it against the ownership map.
   protected trailer write-protects the device; an attested one keeps a
   per-block attested bitmap that writes clear. A present but invalid trailer
   refuses the mount. CRC-32 detects corruption; it does not authenticate.
+  The hash array and the bitmap are kept in chunks, and a trailer that
+  would hold more than a set share of usable memory is refused, so how
+  large a verified disk can be depends on the machine's RAM, not on the
+  largest single allocation.
+- **Preserved images.** `scripts/build_fs_image.sh` never deletes an image
+  built with `PRESERVE_FS_IMAGE=1`. One that is damaged, not at rest, short
+  of `ext4-core/profile` or built under a different `VERITY` stops the build
+  with the command that repairs it, and only `just reset root` discards one.
+  The image size is a minimum: a larger one, or free space under the floor,
+  grows the image with `resize2fs`. A block the guest wrote must stay
+  un-attested across rebuilds, so the build records which blocks were
+  allocated and unattested once it has grown the image and before it
+  installs anything, and leaves those, and every block a later resize
+  allocates, out of the new trailer.
+- **The cost gate's floors.** `scripts/gates/fsperf/<variant>.txt` holds
+  the caps and also floors (`min-bytes`, `min-volume-gib`, `min-dirents`),
+  because a measurement that stopped happening looks exactly like one that
+  became free. A run without the capacity volume reports no `FSCAP[…]` line
+  and its capacity rows are skipped; `--require-capacity`, which
+  `just test-capacity` passes, makes a missing line a failure. Don't raise a
+  per-MiB cap to pass: those counts are properties of the code.
 - **Disk quota.** Block allocations are charged to the allocating process's
   [resource account](/docs/architecture/resource-accounting) in memory, not
   persisted, and refunded to the account that was charged. A holder of
@@ -516,3 +580,6 @@ over a disk that a boot wrote to and checks it against the ownership map.
 | `boot/src/boot_services.rs` | Choosing the root, mounting the base, keeping directories at boot |
 | `abi/src/fs.rs` | `BASE_DIRS`, `KEPT_DIRS`, the root layout |
 | `scripts/build_fs_image.sh` | Building disk images on the host |
+| `scripts/check_fs_image.sh` | `just check-fs-image`: `e2fsck`, at rest, the ownership map |
+| `fs/src/tests/fsperf.rs`, `fs/src/fsreport.rs` | The cost measurements and their report lines |
+| `tools/run_tests/gates/fsperf.go`, `scripts/gates/fsperf/` | The cost gate and its tracked caps and floors |

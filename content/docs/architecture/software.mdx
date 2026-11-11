@@ -140,6 +140,11 @@ goes further and refuses outright to replace a tree whose manifest is anyone
 else's, uid 0's included. And because the manifest records where the tree
 went, installing a tree of the same name somewhere else is refused too.
 
+The two trees every root holds have fixed names, which key their manifests:
+`usr_local` for the toolchain and `apps` for the apps
+(`tree-core::{TOOLCHAIN, APPS}`). The toolchain's manifest is uid 0's. The
+apps' belongs to whoever holds `/usr/local`, as the next section explains.
+
 ## Who may write `/usr/local`
 
 Every root records, in `/var/lib/slopos/owners`, which of three directory
@@ -156,7 +161,9 @@ own `~/.local` instead.
 
 The `users add` that creates a second person (see
 [Users and file permissions](/docs/architecture/users)) first hands
-`/usr/local` to the system, and adds nobody if that fails:
+`/usr/local` to the system, and adds nobody if that fails, or if the root's
+owners record is absent or cannot be read. The hand-over takes the
+capability `DacOverride`, which the command holds:
 
 1. It writes a mark, `/var/lib/slopos/owners.sharing`, saying a hand-over has
    begun.
@@ -166,14 +173,18 @@ The `users add` that creates a second person (see
    first person's that is still running cannot slip a new name in behind the
    walk. A file that has another name elsewhere, held by someone else, loses
    only its name in `/usr/local`, since taking it would take another
-   person's file. A symbolic link stays only if following it passes through
+   person's file. Each entry's mode is read again once uid 0 holds the
+   entry, so its former owner cannot change it in between. A symbolic link
+   stays only if following it passes through
    directories only uid 0 may change and ends at something only uid 0 may
    change, and at a directory only if that directory is inside `/usr/local`.
 4. It records that the first person no longer holds `/usr/local`, then
    removes the mark.
 
 If the machine stops partway, init finds the mark at the next boot and
-finishes the hand-over before anything runs as a person.
+finishes the hand-over before anything runs as a person. A hand-over is
+never undone. A manifest the first person wrote stays theirs, and uid 0
+installs over it without believing it.
 
 Owners change in place, as `chown` does on any Unix, so a file the first
 person opened for writing before the hand-over stays writable through that
@@ -204,9 +215,17 @@ tree into `/var/lib/slopos/tree-install`, a directory only uid 0 enters:
   nothing installed can lead outside `/usr/local`.
 
 Then it installs from that copy by the rules above, and the result is uid
-0's. Because the copy and the install both count against one process's disk
-quota (256 MiB by default), a tree installed through privd can be at most
-half of that. One install runs at a time.
+0's. Because the copy and the install both count against the disk quota of
+the one process privd started (its `DiskBlocks` ceiling), a tree installed
+through privd can be at most half of that. One install runs at a time.
+
+uid 0 running `tree-install` itself installs from such a copy too, whatever
+the destination. uid 0 can read what the tree's owner may not, and the owner
+can change the tree while it is being read, so reading the tree in place
+would let its owner swap a file for a link to something only uid 0 reads and
+have it installed. The copies take turns under a lock,
+`/var/lib/slopos/tree-install.lock`, and a copy that a run cut short left
+behind is removed by the next run before it makes its own.
 
 ## The apps outside the base
 
@@ -218,11 +237,11 @@ entries, icons and the editor's manual they form the tree `apps`, which every
 root holds at `/usr/local` beside the toolchain.
 
 Two checks keep them honest. After every userland build on the host,
-`check_loose_programs.sh` fails an app that is statically linked, names a
+`xtask programs` fails an app that is statically linked, names a
 loader other than `/lib/ld-slopos.so.1`, does not list `libc.so` among the
 libraries it needs, or contains a `syscall` instruction of its own, since a
 system call made in place would bypass the one contract the base keeps. And
-`check_app_deps.sh` fails a crate under `apps/` that depends on anything but
+`xtask lint app-deps` fails a crate under `apps/` that depends on anything but
 the toolkit (`slopos-appkit`), the editor's core and the image decoder, so no
 app reaches past the toolkit into the kernel's interface. The toolkit itself
 reaches the system only through `slopos-cabi`, a thin layer over functions
@@ -241,8 +260,9 @@ icon=org.slopos.editor.png
 ```
 
 `id` must match the file name, `exec` is an absolute path, and `icon` names a
-PNG in the same share's `slopos/icons/`, beside which an `@2x` copy waits for
-displays that need one. `boot=medium` marks an app shown only when the system
+PNG in the same share's `slopos/icons/`, beside which a copy at twice the
+size, `<icon>@2x.png`, waits for displays that need one. `boot=medium` marks
+an app shown only when the system
 booted from the install medium. The dock reads the entries at the start of a
 session from each extension's share, then `/usr/share` (the base),
 `/usr/local/share` and `~/.local/share`, in that order, and an entry with the
@@ -256,7 +276,7 @@ them.
 | Way | Who installs | When |
 |---|---|---|
 | The host's image builders | `scripts/build_fs_image.sh`, as a host tree | Every `just boot` and test image |
-| The installer | `/bin/installer`, from the medium's `apps/` (and the toolchain from its payload) | Installing SlopOS onto a disk |
+| The installer | `/bin/installer`, from the medium's `apps/` (`layout::MEDIUM_APPS`), and the toolchain from its payload | Installing SlopOS onto a disk |
 | Init on a live boot | init, into the RAM root's `/usr/local` | Booting the install medium |
 | `scripts/selfhost.sh install` | `tree-install apps builddir/apps /usr/local`, as the person running it or through privd | Building the system in the guest |
 
@@ -264,6 +284,11 @@ The last one installs the apps only when the running `libc.so` is the one
 they were just built against. Otherwise it prints the command to run once the
 new base is running, since a freshly built app may call a function the
 running library does not export yet.
+
+The two trees get their manifests differently. The apps' manifest is
+computed from the tree where it is installed, its identity a digest of every
+entry (`slopos_userland::tree::scan`). The toolchain's comes with the
+payload, written by the host that built it.
 
 ## How programs and libraries are found
 
@@ -299,7 +324,9 @@ always tries `LD_LIBRARY_PATH` first.
 `AT_SECURE` is a flag the kernel sets for a program that starts holding any
 gated [capability](/docs/architecture/authority), or running as other ids
 than its starter's real ones, and for a program `exec` loads while the
-caller's effective ids differ from its real ones. Skipping the last two
+caller's effective ids differ from its real ones. Every program of an
+[extension](/docs/architecture/extensions) starts with it too, however it
+was started, so it never loads a library from either place. Skipping the last two
 directories for such a program, and for uid 0, means a library a person can
 write never ends up inside a program that holds more than that person does.
 The loader reads `HOME` from the environment the process started with and
@@ -342,6 +369,9 @@ image's ownership with `check_fs_image.sh --map`.
 - **A program outside the base talks to `libc.so` alone.** If an app needs
   something new from the system, export it from `libc.so` (and record it with
   `check_libc_exports.sh --record`) and wrap it in `slopos-cabi`.
+- **uid 0 never installs from a tree in place.** It installs from the copy
+  `tree::stage` makes, through privd or not, because the tree's owner can
+  change the tree while uid 0 reads it.
 - **Never trust a manifest you did not write.** Code that installs trees
   must keep the rule that only uid 0's manifest, or the installing user's
   own, is believed.
@@ -372,11 +402,11 @@ image's ownership with `check_fs_image.sh --map`.
 | Path | What is there |
 |---|---|
 | `tree-core/` | Manifests and the install plan, host-tested |
-| `userland/src/tree.rs` | Scanning, staging and installing a tree in the guest |
+| `userland/src/tree.rs` | `slopos_userland::tree`: scanning, staging and installing a tree in the guest |
 | `userland/src/apps/tree_install.rs` | `/bin/tree-install` |
-| `userland/src/root_layout.rs` | The owners record, the hand-over of `/usr/local`, the person's `PATH` |
+| `userland/src/root_layout.rs` | The owners record, the hand-over of `/usr/local` (`slopos_userland::root_layout::share`), whether this boot began with it the system's (`root_layout::settled`), the person's `PATH` |
 | `apps/` | The apps outside the base, their entries and icons |
-| `userland/src/app_entry.rs` | Reading app entries |
+| `userland/src/app_entry.rs` | `slopos_userland::app_entry`: reading app entries |
 | `slibc/src/ld_so/mod.rs` | The loader's search order |
 | `cabi/` | How the toolkit reaches `libc.so` |
-| `scripts/check_loose_programs.sh`, `scripts/check_app_deps.sh` | The two checks on apps |
+| `tools/xtask/src/elf/loose_programs.rs`, `tools/xtask/src/lint/app_deps.rs` | The two checks on apps, `xtask programs` and `xtask lint app-deps` |

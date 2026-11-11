@@ -419,8 +419,8 @@ fn gadget_probe(bound: &mut BoundUsbDevice<'_>) -> Result<ProbeOutcome, ProbeErr
 }
 ```
 
-The handle (`drivers/src/usb/bus.rs`) has one method per way of talking to
-the device:
+The handle (`BoundUsbDevice`, which is `BoundDevice<UsbBus>`, in
+`drivers/src/usb/bus.rs`) has one method per way of talking to the device:
 
 | Method | Gives you |
 |--------|-----------|
@@ -430,7 +430,7 @@ the device:
 | `posted()` | Control requests for a thread that may not wait, collected later |
 | `queue(address, buffers, pages)` | A bulk endpoint you keep transfers on without waiting; the USB core recovers it when it stalls |
 | `stream(bulk_in, bulk_out)` | Both bulk endpoints, recovered by the driver itself, as Bulk-Only needs |
-| `select(interface, alternate)` | Moves an interface to another alternate setting |
+| `select(interface, alternate)` | Moves an interface to another alternate setting: the controller swaps the old setting's endpoints for the new one's, then the device is sent `SET_INTERFACE` |
 | `descriptors(read)`, `device_descriptor()` | The device's configuration and device descriptors |
 
 To try a USB driver under QEMU, put a USB controller and the device on the

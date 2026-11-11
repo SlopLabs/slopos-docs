@@ -58,7 +58,13 @@ to the root disk can replace a system program by accident.
 
 Your search path is `/bin:/sbin:/home/user/.local/bin:/usr/local/bin:/opt/bin`.
 The system's tools come first, so a program in your home or in `/usr/local`
-never shadows one of them.
+never shadows one of them. A process with no `PATH` at all gets the same list
+without your home, `/bin:/sbin:/usr/local/bin:/opt/bin`: the shell exports it
+when it starts with none and searches it for `command -p`, the C library's
+`execvp` and the coreutils fall back to it, and remote control runs its
+commands with it. `/opt/bin` comes last because it holds the commands the
+machine's owner let [extensions](/docs/architecture/extensions) add, which so
+shadow neither the system's tools nor the toolchain.
 
 The toolchain is cross-built on the host by `just toolchain`, which takes
 hours; [Toolchain](/docs/self-hosting/toolchain) explains what it builds. You
@@ -112,9 +118,10 @@ Source moves through git, over QEMU's built-in network. The clone in
 | `origin` | `git://10.0.2.4/slopos` | Your host checkout, read-only |
 | `host` | `git://10.0.2.4:9419/slopos` | `fs/assets/guest-push.git` on the host, a bare repository that accepts pushes. `git push` uses it by default |
 
-`10.0.2.4` isn't a real machine. QEMU's user-mode network intercepts
-connections to that address and, for each one, starts a `git daemon` on the
-host that serves exactly one repository. So nothing listens on a host port,
+`10.0.2.4` isn't a real machine. QEMU's user-mode network (SLIRP) has a rule
+for each of the two ports (a `guestfwd`): it intercepts a connection to that
+address and, for each one, starts a `git daemon --inetd` on the host that
+serves exactly one repository. So nothing listens on a host port,
 and the guest can reach these two repositories and nothing else on your disk.
 
 The clone takes your host's `user.name` and `user.email`, so commits made in
@@ -280,7 +287,7 @@ this:
 
 `just boot-fast` is the same machine without the Wheel of Fate, and
 `just boot-debug` boots it on the debug kernel, without the wheel, with
-QEMU's debugger stub listening (see
+QEMU's debugger stub and monitor on Unix sockets in `builddir/` (see
 [Debugging with GDB](/docs/development/debugging-gdb-record-replay)).
 [QEMU options](/docs/getting-started/qemu-options) lists the rest.
 
@@ -305,7 +312,8 @@ a vendored copy of every crate, so no build reads the network. They run their
 work as `user`, as you would, because git refuses to work in a clone that
 belongs to someone else.
 
-- `just test-toolchain` boots that root twice and climbs a ladder of builds:
+- `just test-toolchain` boots that root twice, with no rebuild between, and
+  on each boot `toolchain_test` climbs a ladder of builds:
   `rustc` alone, then cargo with build scripts and procedural macros, a git
   dependency, a crate fetched over TLS, C and C++ with clang, git against the
   host's checkout, `ssh` and git over SSH, a clone of the GitHub repository,
@@ -313,13 +321,17 @@ belongs to someone else.
   rung the host runs `sshd` for each connection the guest opens to
   `10.0.2.4:22`, accepting one key and forcing every session into
   `git-upload-pack` or `git-receive-pack` on two fixed repositories, so the
-  guest fetches the checkout and pushes a commit the host then checks. A git
-  repository committed on the first boot must pass `git fsck --strict` on the
-  second.
+  guest fetches the checkout and pushes a commit the host then checks. A
+  second test, `reboot_clone_test`, clones the workspace to
+  `/home/user/clone` and commits there on the first boot, and on the second
+  the clone must pass `git fsck --strict` and read back unchanged. The host
+  checks the disk with `e2fsck` after each boot.
 - `just test-selfhost` has the guest fetch the host's `HEAD` and build the dev
-  and tests systems. The host then checks the disk with `e2fsck`, copies the
-  guest's kernels and tests base out, and runs the kernel checks and the full
-  test suite on what the guest built.
+  and tests systems (`selfhost_test`). The host then checks the disk with
+  `e2fsck`, copies the guest's kernels and tests base out, and runs the
+  kernel checks and the full test suite on what the guest built
+  (`just test-elf ELF=… BASE=…` runs the suite on a kernel and base built
+  elsewhere).
 - `just test-install-guest` runs the whole session above: build, install the
   base and the kernel, boot them, push a commit the host fetches, commit the
   slot, and roll back from slots that crash.
@@ -329,41 +341,255 @@ The last two need a built toolchain and a clean working tree (the guest builds
 checks only the seeded clone, its vendored crates and the root's free space.
 The SSH rung needs `sshd` on the host, and the crates.io and GitHub rungs need
 the host to be online. `just bench-selfhost` runs the guest's build
-under the kernel's profiler and prints where the time went.
+under the kernel's profiler and prints where the time went; it grades
+nothing, so it runs on an uncommitted tree too.
 
 ## For contributors
 
-The host writes into the root image with `debugfs` on every `just boot` but
-one that finds the image closed mid-write, and it treats two kinds of
-directory differently:
+### Host trees and seed trees
+
+The host writes into the root image on every `just boot` but
+one that finds the image closed mid-write. `scripts/build_fs_image.sh` takes
+two kinds of directory and installs both through one `debugfs` session
+(`scripts/fs_tree.py`):
 
 - A **host tree** stays the host's. The toolchain and the apps in `/usr/local`
-  are two. The host records the files it installed in a manifest beside the
-  image (with a copy under `/var/lib/slopos/trees` for the guest to read), and
-  gives them the owner the root's ownership map names, here `user`. When the
-  host's build changes, the next boot removes exactly the files the old
-  manifest named and installs the new ones, leaving anything the guest added.
-  If a new file would overwrite one the guest created, the host refuses,
-  warns, leaves the tree alone and tries again next time.
-- A **seed tree** becomes the guest's once copied. `/src/slopos` is one: the
-  host copies it only onto a root that has no `/src`.
+  are two. `FS_HOST_TREES` lists them, each as
+  `<host dir>:<guest dir>[:<name>]`. The host records the files it installed
+  in a manifest beside the image, `<image>.host/trees/<name>`, where the guest
+  cannot edit it, with a copy under `/var/lib/slopos/trees` for the guest to
+  read. When the host's build changes, the next boot removes exactly the
+  files the old manifest named and installs the new ones, leaving anything
+  the guest added. If a new file would overwrite one the guest created, or
+  one of another kind than the manifest names (a directory where it recorded
+  a file), the host refuses before it writes anything, warns, leaves the tree
+  alone and tries again next time.
+- A **seed tree** (`FS_SEED_TREES`) becomes the guest's once copied.
+  `/src/slopos` is one: the host copies it only onto a root that has no
+  `/src`.
 
-On every boot the host also measures the root image's free space and grows
-the image with `resize2fs` whenever less than `ROOT_FREE_FLOOR` (6G by
-default) is free, which is enough for a clean build of the dev and tests
-systems.
+A change to either must keep three rules:
+
+- **The owner comes from the root's ownership map, never from the host's
+  files.** A tree inside a directory the image's owners record gives the
+  first person is theirs (uid 1000, here `user`); anywhere else it is uid
+  0's. Each entry is writable by that owner alone, whatever modes the host
+  directory has.
+- **Nothing on the image is trusted.** The guest wrote it. The host reads it
+  only through `ls -l` listings of directories, each bound to the file
+  record (inode) its parent's listing gave, so a symlink the guest made
+  can't redirect an install somewhere else.
+- **The manifest on the host is the authority.** The copy on the image is
+  for the guest to read, and the guest can rewrite it.
+
+On every boot, not only one that changed a tree, the host also measures the
+root image's free space and grows the image with `resize2fs` whenever less
+than the floor is free (`FS_FREE_FLOOR`, which the justfile sets from
+`ROOT_FREE_FLOOR`, 6G by default), which is enough for a clean build of the
+dev and tests systems. Both roots get a log (journal) sized for the volume
+the floor grows them into, not for the size they start at.
+
+### The checksums on a writable root
+
+The root image ends in a trailer of per-block checksums
+([Checksummed disk images](/docs/architecture/filesystem#checksummed-disk-images))
+of the *attested* kind: the host vouches for the blocks it wrote, and a
+write by the guest withdraws the claim for the blocks it touches.
+`scripts/gen_verity.py` writes the trailer as the last step of every build.
+A change there must keep these rules:
+
+- **What the host attested is kept on the host**, in `<image>.host/verity`:
+  the bitmap of attested blocks and each block's checksum. The guest can
+  write every byte of the image, the trailer included, so the trailer alone
+  proves nothing about who wrote a block.
+- **The guest's blocks stay un-attested.** Before a kept image is grown or
+  refreshed, the host works out which blocks the guest owns: the allocated
+  ones that the record doesn't attest with the recorded content still in
+  place. Those stay un-attested through the grow and the refresh, and so do
+  the blocks `resize2fs` moves them onto.
+- **A trailer counts only past the end of the filesystem**, and only when it
+  describes exactly that filesystem. Bytes inside the filesystem that look
+  like a trailer are the guest's data.
+- **Only attested blocks are read.** The script streams the image, so
+  sealing a grown root costs what the host wrote and not the image's size.
+
+`just reset root` deletes the image together with its `.host` directory, and
+keeps `fs/assets/guest-push.git`.
+
+### The clone and the git peer
+
+`scripts/stage_workspace.sh` makes the clone with `git clone --no-local`
+and checks out the branch `HEAD` is on. `--no-local` matters: the clone's
+history is then what the checkout's branches and tags reach and nothing
+else, so objects you abandoned never reach the guest.
+
+With `--vendored` the script adds three things, so a build in the guest
+reads no network: the vendored crates in the clone's ignored
+`third_party/vendor`, the LLVM source archive the C++ runtime is built from,
+and cargo's offline configuration at `/src/.cargo/config.toml`. That file
+sits one directory above the clone on purpose. Cargo reads it for any
+directory below `/src`, and the clone's own `.cargo/config.toml` stays as
+committed, so `git status` there stays clean. The development root is
+seeded without `--vendored`; the tests' root with it.
+
+`scripts/qemu_run.sh` adds the forwarding rules when `GIT_PUSH_REPO` names a
+bare repository: one daemon serves the checkout read-only, the other serves
+`GIT_PUSH_REPO` and accepts pushes (`receive-pack`). Each daemon is pinned
+to its git directory twice, and a change must keep both pins.
+`--interpolated-path` answers a request that names a host, which every git
+client sends. `--strict-paths` with that one directory as the whole
+allowlist refuses a hand-made request that names no host and so never
+reaches the template.
+
+`just boot` passes `fs/assets/guest-push.git`. Each test passes a scratch
+repository under `builddir/`. `test-toolchain` gives its scratch repository
+the checkout's objects as an alternate, so the host offers the checkout's
+commits as ones it already has and the guest's push sends one commit, not
+the history.
+
+When `GIT_SSH_PEER` also names a directory, a third rule runs
+`sshd -i -E <it>/sshd.log -f <it>/sshd_config` for each connection to
+`10.0.2.4:22`, as your own host account. Only `test-toolchain` sets it. The
+directory is `builddir/ladder-sshd`, the host's half of the SSH fixture
+that `scripts/stage_ladder_fixtures.sh` makes fresh for each run. The
+configuration there is what keeps this server from being a way onto your
+machine, so a change must keep all of it:
+
+- Public-key login only, for the one guest key in its `authorized_keys`,
+  with a host key the guest's `known_hosts` names. No passwords, no PAM, no
+  forwarding, no terminal.
+- A `ForceCommand` that runs `git-upload-pack` on the checkout for
+  `ssh://10.0.2.4/checkout`, `git-receive-pack` on `GIT_PUSH_REPO` for
+  `ssh://10.0.2.4/push`, and refuses anything else.
+- The log goes to the file `-E` names. QEMU hands the command the connection
+  as its standard input, output and error, so a line on standard error
+  would land in the SSH stream.
+
+### The tests' root and its fixtures
+
+`just test-toolchain`, `test-selfhost`, `test-install-guest` and
+`bench-selfhost` boot `fs/assets/ext4-selfhost.img`, which
+`just _fs-image-selfhost` rebuilds on every run. It has the development
+root's shape and boots with the tests base: the toolchain at `/usr/local`,
+the clone seeded `--vendored`, and at `/home/user/ladder` the fixtures the
+ladder fetches from. Those are a bare git repository holding one crate, a
+registry of one crate with a freshly made certificate authority and server
+identity, and the guest's half of the SSH key pair. Because these checks
+bring their own root, `just test` never depends on `just toolchain`: there
+the same tests pass by reporting that the root carries no toolchain.
+
+`toolchain_test`, `selfhost_test` and `reboot_clone_test` run as the
+session does, uid 1000 holding no gated capability, because git refuses a
+repository another uid owns. A test that must run as uid 0, such as
+`install_test`, still runs git and `selfhost.sh` in the clone as the
+session, through the helpers in `slopos_userland::selfhost`. Use them for
+any new test that touches the clone.
+
+### What each check holds
+
+`toolchain_test` first holds the toolchain to the manifest the host
+installed it from: every entry must be there, of the kind recorded, and
+every file at the size recorded. So a toolchain that arrived
+short says so there and not as a link error hours later. It then checks
+that the clone's vendored crates are the ones its lockfile names. The
+ladder follows, each rung using more of the system than the last:
+
+| Rung | What must work |
+|------|----------------|
+| 1 | `rustc --version` under `LD_DEBUG=statistics`, which makes the loader report what starting a program of the compiler's size cost |
+| 2 | `rustc` linking a program through `cc`, and the program running |
+| 3 | cargo building a crate with a build script and a procedural macro |
+| 4 | cargo fetching a `git = "file:///home/user/ladder/git/greeting.git"` dependency through libgit2 |
+| 5 | cargo fetching a crate through libcurl and Mbed TLS from the fixture registry, which the test serves over TLS on loopback. The image's own CA bundle must refuse that server first, or accepting it under the fixture's root proves nothing |
+| 6 | clang compiling and linking C and C++ |
+| 7 | git reading the seeded clone, where `git status` must be clean since nobody has edited that tree, and `git ls-remote` reaching the host's checkout |
+| 8 | `ssh -V`, `ssh-keygen` deriving the fixture key's public half, then git over SSH: `ls-remote` and a fetch of the checkout, a commit on the fetched `HEAD` pushed to the scratch repository, and a command the forced command refuses. The host then holds the pushed ref to the commit the guest printed and that commit's parent to its own `HEAD` |
+| 9 | git cloning `https://github.com/SlopLabs/slopos` at depth 1 with the image's CA bundle, after a certificate authority made in the guest has been refused |
+| 10 | cargo downloading from crates.io, into an empty cache, every crate the clone's lockfile and the standard library's lockfile pin. The first fetch names no target, because a crate needed only under a condition no target meets is otherwise never downloaded |
+| 11 | bash running a script with a pipeline, a background job and a here-document |
+| 12 | Ninja running a build graph, then finding nothing left to do |
+| 13 | CMake configuring a C project for SlopOS, generating for Ninja and building a program that finds a shared library by its run path |
+| 14 | The toolchain's standard library being the fork the clone pins (see [below](#building-in-the-guest)) |
+
+Rungs 9 and 10 are the only ones that need the host's internet connection,
+as `dns_resolve_test` in the ordinary suite does.
+
+`reboot_clone_test` checks its clone on the second boot with
+`git fsck --strict` and then with a status taken over an index whose cached
+file times were dropped, which makes git hash every file again. A clean
+status is therefore the whole working tree read back from the disk.
+
+`just test-selfhost` boots the optimized tests kernel, the `release-tests`
+variant, which has its own allowlists under `scripts/gates/{stack,vector}/`.
+`selfhost_test` fetches the host's `HEAD` into the clone and checks it out,
+refusing a tree with uncommitted edits because they would be built too. It
+runs `scripts/selfhost.sh build` for `dev` and for `tests`, and checks the
+clone's own branch out again. The kernel builds run with cargo's
+`--timings`, so a report is left under the clone's
+`builddir/target/cargo-timings`. The host holds the commit the guest printed
+to its own `HEAD` before it grades anything.
+
+`just test-install-guest` puts the optimized tests kernel in slot a.
+`install_test` finds the clone, takes the host's `HEAD` the same way and
+runs `selfhost.sh install tests` and `install-kernel tests` under a fresh
+build tag. The host then compares slot b's kernel and the current base on
+the boot disk, byte for byte, with the files the guest built on the root,
+and fetches the commit the guest pushed.
+
+`just bench-selfhost` is the guest half of `test-selfhost` with the kernel's
+profiler on (`prof=on`; `BENCH_PROF=` with an empty value turns it off). It
+runs only `selfhost_test` and hands the log to `scripts/prof_report.py`. The
+recipe keeps a copy of the C library the boot ran as
+`builddir/bench-libc.so`, because time spent in user programs is resolved to
+function names against the exact files that ran. Every number in the report
+is wall time, so run it with nothing else loading the host.
+
+### Building in the guest
 
 The whole build runs in the guest with the same scripts the host uses.
-`scripts/build_kernel.sh` is POSIX `sh`; the userland and C++ runtime builds
+`scripts/build_kernel.sh` is POSIX `sh` and needs only `/bin/sh` and the
+coreutils; the userland and C++ runtime builds
 are bash scripts that call cargo, clang, CMake and Ninja. Steps that only make
-sense on the host (preparing the [owned sysroot](/docs/self-hosting/toolchain)
-and running the kernel binary checks) live in the justfile, so the guest skips
-them. The list of programs in a base comes from `scripts/lib/base.sh`, which
+sense on the host live in the justfile's `_kernel` and `_build-userland`
+recipes, so the guest skips them: preparing the
+[owned sysroot](/docs/self-hosting/toolchain) before the build and passing
+`cargo +slopos`, and the checks on the built binaries after it (`xtask elf`
+on a kernel, `xtask programs` on the apps). Keep it that way: a step added
+to a build script must run with what the guest has.
+
+The list of programs in a base comes from `scripts/lib/base.sh`, which
 both sides read, so host and guest pack the same base. The e2fsprogs programs
 the base carries come from the recipes' build on the host and from
 `/usr/local` in the guest. A machine whose base is paired for
 [remote control](/docs/self-hosting/remote-control) stays paired: the base
 `selfhost.sh` builds there carries the running base's pairing.
+
+A few details of the build exist because of the guest, or break it when
+changed:
+
+- **The standard library is checked by a stamp.** Cargo doesn't notice when
+  the standard library's sources change under the same compiler version. So
+  `build_userland.sh` reads `library/.slopos-std-stamp` from the sysroot it
+  runs under and refuses one that isn't the fork this tree pins. The owned
+  sysroot on the host carries the stamp, and so does the source the
+  installed toolchain keeps under `/usr/local/lib/rustlib/src`.
+- **Panic locations differ.** The guest's cargo reads the standard library
+  from that directory, so the paths in a guest kernel's panic messages
+  differ from a host build's. Nothing grades them.
+- **`compiler_builtins` is built one function per object file.** The
+  userland build takes its profile from this workspace, not from the
+  standard library's own manifest, so `build_userland.sh` sets this
+  explicitly. In fewer objects, linking one function drags in the math
+  routines beside it, which are hidden, and their visibility wins over the
+  `floor` that `libc.so` exports.
+- **The kernel's symbol table comes from `tools/kallsyms`**, a small ELF
+  reader built for whichever machine runs the build. It lists what `llvm-nm`
+  would, less the `.llvm.<hash>` suffix LLVM adds to a function it shares
+  between compilation units. The hash changes with every build, so with the
+  suffix kept the embedded table would never settle.
+- **The kernel build writes its own empty SafeStack runtime archive**, since
+  no toolchain ships one for this target, and passes cargo's `trim-paths`,
+  which keeps every absolute path of the checkout out of the image.
 
 ## Further reading
 
@@ -385,10 +611,17 @@ the base carries come from the recipes' build on the host and from
 
 | Where | What |
 |-------|------|
-| `justfile` (`boot`, `reset`, `export-file`, `test-toolchain`, `test-selfhost`) | The recipes on this page |
+| `justfile` (`boot`, `reset`, `export-file`, `test-toolchain`, `test-selfhost`, `test-install-guest`, `bench-selfhost`, `test-elf`) | The recipes on this page |
 | `scripts/selfhost.sh` | The guest's build and install command |
 | `scripts/stage_workspace.sh` | Seeding the clone and its two remotes |
+| `scripts/stage_ladder_fixtures.sh` | The ladder's git, registry and SSH fixtures |
 | `scripts/qemu_run.sh` | QEMU's network, including the per-connection `git daemon` and `sshd` |
 | `scripts/build_fs_image.sh`, `scripts/fs_tree.py` | Host trees, seed trees and growing the root |
+| `scripts/gen_verity.py` | The checksum trailer and the host's record of what it attested |
 | `scripts/lib/base.sh` | Which programs a base carries |
+| `scripts/build_kernel.sh`, `scripts/build_userland.sh`, `tools/kallsyms` | The builds both sides run |
+| `abi/src/fs.rs` (`DEFAULT_PATH`), `slopos_userland::root_layout::search_path` | The default search path and a person's |
+| `userland/src/selfhost.rs` | What a test uses to run git and `selfhost.sh` in the clone |
 | `userland/src/bin/tests/toolchain_test.rs` | The toolchain ladder |
+| `userland/src/bin/tests/selfhost_test.rs`, `reboot_clone_test.rs` | The guest's build of `HEAD`, and the clone that must survive a power-off |
+| `scripts/prof_report.py` | The report `just bench-selfhost` prints |

@@ -144,7 +144,8 @@ it picks the idle CPU the same way.
 A task that is already running is never moved to a better CPU; it moves the
 next time it wakes up. On a processor whose CPUs are all alike and don't share
 cores, which is what QEMU gives you, ranking changes nothing and is skipped.
-`sched.hybrid=off` turns ranking off on any machine.
+`sched.hybrid=on` is the default, and `sched.hybrid=off` turns ranking off on
+any machine.
 
 ## What QEMU shows
 
@@ -231,6 +232,24 @@ and ranked.
   placement is exactly what it was before ranking existed.
 - **Placement never migrates a running task.** It ranks idle CPUs at wake,
   at fork and when choosing a CPU to steal work.
+- **A warm CPU wins a tie.** A wake hands the ranking the task's `last_cpu`,
+  which is kept when it scores as well as the best idle CPU. A new task and
+  the choice of a CPU to steal work pass none.
+
+The registers, by the names Intel's manual gives them. Each is per logical
+CPU except where noted:
+
+| Register | What SlopOS does with it |
+|---|---|
+| `IA32_PM_ENABLE` | Read first, to record whether the firmware enabled HWP; written to enable it. The processor accepts the write once until reset |
+| `IA32_HWP_CAPABILITIES` | Read for the four performance levels, which is possible only once HWP is on |
+| `IA32_HWP_REQUEST` | Written with the limits and the preference. A request the firmware left is recorded first, on a boot where the firmware enabled HWP |
+| `IA32_HWP_INTERRUPT` | Cleared before HWP is enabled, where the CPU has it, to keep notifications off |
+| `IA32_MISC_ENABLE` | Read on Intel only, for the firmware's turbo-disable bit |
+| `MSR_PLATFORM_INFO` | Read on Intel and bare metal only, for the highest speed without turbo. One per package |
+| `IA32_PERF_CTL` | Read on Intel only, to record each CPU's legacy speed request as the firmware left it. Never written |
+| `IA32_APERF`, `IA32_MPERF` | Sampled with the TSC at every tick and idle entry |
+| `IA32_THERM_STATUS` | Sampled with them on bare metal; the first CPU also samples `IA32_PACKAGE_THERM_STATUS` for the package |
 
 ## Further reading
 

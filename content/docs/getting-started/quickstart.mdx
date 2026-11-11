@@ -89,7 +89,8 @@ on first use into `third_party/`, each checked against a pinned SHA-256 sum.
 just setup
 ```
 
-This installs the exact Rust nightly the repository pins, then builds a copy of
+This installs the exact Rust nightly the repository pins in
+`rust-toolchain.toml`, then builds a copy of
 it named `slopos` whose standard library carries SlopOS's own changes. Both the
 kernel and the programs that run on it build with that copy. The command also
 checks your Go version and fetches the Go modules of the test runner. When

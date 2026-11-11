@@ -257,7 +257,7 @@ The rules any change to this boundary must keep:
   entries 256 to 511) with the kernel master table, supervisor-only and
   global. The user half is changed only through VM-space cursor operations,
   and the kernel half has one writer outside the trusted core,
-  `slopos_mm::kernel_mappings` (`scripts/check_kernel_pml4_writer.sh` holds
+  `slopos_mm::kernel_mappings` (the `kernel-pml4-writer` gate of `xtask lint` holds
   that). PCID 0 is kernel-only loads; PCIDs 1 to 16 are per-CPU slots.
   `INVPCID` is used where the CPU has it.
 - **No user-reachable gate.** Every IDT gate is installed at descriptor

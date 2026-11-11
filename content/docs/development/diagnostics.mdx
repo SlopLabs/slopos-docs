@@ -433,8 +433,17 @@ line at boot and after each test phase:
 LOCKDEP[boot]: ACTIVE classes=<n>/<max> (<n>%) edges=<n>/<max> chains=<n>/<max> declared=<n>/<n> held_max=<n>/<max> held_drops=0 chain_hit=<n> chain_miss=<n> violations=0 reports=0 collisions=0 leaked=0 mode=Panic
 ```
 
-CI reads those lines and fails if there's a violation or the tables grow past
-their recorded limits; see [Write tests](/docs/development/adding-tests#what-ci-runs).
+CI reads those lines and fails if there's a violation, if a table is fuller
+than the recorded share, or if the checker recorded too little to have been
+measuring; see [Write tests](/docs/development/adding-tests#what-ci-runs). On
+a test boot each summary is followed by `LOCKDEP-CLASS[<phase>]:` lines that
+name the kinds of lock registered since the last one, so a run whose count
+moved says which lock moved it.
+
+To measure what the checker itself costs, boot with `lockdep=off`. It runs no
+ordering checks but still tracks which locks each CPU holds, which panic
+recovery and the watchdog need, so the same kernel serves for both
+measurements.
 
 A hang where a CPU is spinning on a lock shows up as a watchdog report
 instead, with the lock and its holder named; see
@@ -451,6 +460,54 @@ instead, with the lock and its holder named; see
   covers the rest.
 - `LD_DEBUG`, an environment variable rather than a boot option, makes the
   dynamic loader trace what it loads; see [Userland](/docs/architecture/userland).
+
+## For contributors: the diagnostic console
+
+The console is `slopos_ostd::kconsole`. A command is one `kcommand!`
+registration, placed by the linker in the `.kconsole_registry` section, so
+the crate that owns a subsystem's data owns the command that prints it (`mm`,
+`sched`, `core`, `boot`, `net`, the USB driver). The trusted core defines the
+registry and names no entry. Register a command only in a crate that the
+kernel alone links: the trusted core is linked into userland programs too,
+and their linker script has no such section.
+
+A change must keep three properties:
+
+- **Only the physical console reaches a command that changes the machine.**
+  The keyboard hook sits ahead of layout resolution and consumes its keys, so
+  they reach neither the terminal nor the focused app. The PS/2 controller
+  feeds it from its interrupt handler and a USB keyboard from wherever the
+  xHCI event ring is drained. The serial trigger is a BREAK condition, which
+  no byte a program writes can forge. The one other caller of
+  `kconsole::request` is `request_informational`, which refuses any key a
+  `KCMD_DESTRUCTIVE` command takes. It is reached only through the `kconsole`
+  system call, which needs the `SysInspect` capability: `/bin/kconsole t`
+  queues `t` that way, waits for it to run and prints what it added to the
+  kernel log.
+- **Every command runs in one context.** That is the bottom-half point (the
+  moment after an interrupt handler returns when deferred work runs), with
+  interrupts and preemption on. No command runs inside an NMI handler and
+  none may assume it can. A handler that returns from an NMI must not fault,
+  and the walk up the stack that a backtrace needs can fault, though it
+  recovers. That is why the all-CPU probe asks each CPU to describe itself
+  from its own NMI handler instead of walking another CPU's stack.
+- **A trigger only queues.** `request` is one atomic `fetch_or` on the
+  pending set and one call to `bh::raise`, which is all that is allowed in an
+  interrupt handler or under a lock that masks interrupts. The pending set is
+  global, not per CPU, because `bh::raise` marks only the calling CPU and
+  that CPU may be the stuck one; every CPU's timer tick checks the set while
+  anything is queued.
+
+A `KCMD_DESTRUCTIVE` command is registered whatever the policy, so `h` can
+list it, and refused unless the mask names its bit (`kconsole=0x3`).
+
+| Where | What |
+|---|---|
+| `slopos-ostd/src/kconsole/mod.rs` | The registry, `kcommand!`, `request`, `request_informational` and the drain |
+| `slopos-ostd/src/kconsole/config.rs` | The `kconsole=` and `kconsole.*` options |
+| `slopos-ostd/src/kconsole/probe.rs` | The all-CPU probe |
+| `drivers/src/keyboard.rs`, `drivers/src/serial.rs` | The keyboard and serial triggers |
+| `core/src/kconsole.rs`, `sched/src/kconsole.rs`, `mm/src/kconsole.rs`, `boot/src/kconsole.rs`, `net/src/kconsole.rs`, `drivers/src/usb/kconsole.rs`, `sched/src/quota_console.rs` | The commands |
 
 Read next: [Debugging with GDB](/docs/development/debugging-gdb-record-replay)
 for stopping the kernel and inspecting it, and the Linux documentation on

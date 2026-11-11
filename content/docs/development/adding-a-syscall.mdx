@@ -63,15 +63,14 @@ its signature and anything that differs from Linux:
 pub const SYSCALL_RT_SIGPENDING: u64 = 127;
 ```
 
-Check it against Linux's table:
+Check it against Linux's table with the `syscall-abi` gate:
 
 ```bash
-scripts/check_syscall_abi.sh
+cargo run -p slopos-xtask -- lint syscall-abi
 ```
 
 ```
-check_syscall_abi: OK — every Linux-numbered constant matches Linux x86-64's
-check_syscall_abi: own allocation, and the private range is contiguous
+syscall-abi: OK — joined <n> Linux-numbered and <n> private constants in abi/src/syscall/numbers.rs against <n> rows of the Linux x86-64 table
 ```
 
 A typo in either the name or the number fails here and names both sides:
@@ -92,7 +91,7 @@ carries no `name(...)` span. This is `caps_get`:
 pub const SYSCALL_CAPS_GET: u64 = SYSCALL_PRIVATE_BASE + 50;
 ```
 
-If its name is also the name of a Linux call, `check_syscall_abi.sh` asks you
+If its name is also the name of a Linux call, the `syscall-abi` gate asks you
 to say why in `scripts/gates/syscall/private-allowlist.txt`.
 
 If the call passes a structure between the program and the kernel, define it
@@ -314,8 +313,9 @@ pub fn caps_get(pid: u32) -> super::error::SyscallResult<u64> {
 
 slibc makes a private call only to implement a C function; `getlogin` reads
 `login_tag` that way. The apps outside the base never make one:
-`scripts/check_loose_programs.sh` fails any of them that holds a `syscall`
-instruction, so a function they need goes into `libc.so` as above.
+`xtask programs`, which every userland build on the host runs over them,
+fails any that holds a `syscall` instruction, so a function they need goes
+into `libc.so` as above.
 
 ## 6. Take the next base interface number
 
@@ -446,21 +446,23 @@ just build
 just check-framekernel-gates
 ```
 
-`check-framekernel-gates` runs the number check from step 2, the base
-interface gate from step 6 and the `libc.so` gate from step 5 (on
-`builddir/libc.so`), and one more that matters for a new call: it reads the
-compiled kernel and follows every function call from every handler. If yours
-can reach a function that powers off or restarts the machine, the gate fails
-unless the call is in the `Power` class or the list in
-`scripts/gates/authority/` records why. To run only that check:
+`check-framekernel-gates` runs the number check from step 2 (with every
+other source gate, as `xtask lint`), the base interface gate from step 6 and
+the `libc.so` gate from step 5 (on `builddir/libc.so`), and one more that
+matters for a new call: the `authority` gate reads the compiled kernel and
+follows every function call from every handler. If yours can reach a
+function that powers off or restarts the machine, the gate fails unless the
+call is in the `Power` class or the list in `scripts/gates/authority/`
+records why. To run only that check:
 
 ```bash
-scripts/check_authority_reachability.sh --variant dev builddir/kernel-dev.elf
+cargo run -p slopos-xtask -- elf --variant dev builddir/kernel-dev.elf authority
 ```
 
-The repository's own instructions (`AGENTS.md`, "Pre-commit") list the rest of
-what CI runs, including `scripts/check_libc_exports.sh --require
-builddir/libc.so` after a test build.
+CI runs more than this. Before you hand the change over, run `just ci`,
+which runs every lane CI does on your machine;
+[Building and testing](/docs/getting-started/build-test-recipes) says what
+each lane holds.
 
 Finally, add the call to [System call ABI](/docs/abi/syscalls).
 

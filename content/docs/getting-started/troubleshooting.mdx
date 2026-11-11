@@ -273,9 +273,11 @@ just test-verbose 'slopos_mm::*'
 just test-raw
 ```
 
-A filtered run whose kernel tests create files must include `'*ext4_aaa*'`,
-because that test sets up the in-memory filesystem they write to (the kernel
-tests run before the boot mounts the root disk).
+A test that passes in the full suite and fails under a filter, or the other
+way round, reads what another test left behind. Shared setup belongs in a
+fixture, which runs whatever the filter, and a test that must follow others
+in its module declares a `rank`; [Write
+tests](/docs/development/adding-tests#1-write-a-kernel-test) shows both.
 
 If a failure looks like memory corruption and still happens on one emulated
 CPU, record the run and replay it under GDB:

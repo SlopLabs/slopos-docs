@@ -27,7 +27,8 @@ things, and how it ends sessions and replaces itself.
 Almost every rule here is systemd's, chosen deliberately and kept small.
 The restart limit counts starts the way systemd's start limit does, the way
 a session ends (`SIGTERM`, `SIGCONT`, then `SIGKILL` after a timeout) is
-systemd's stop sequence, and init re-executes itself carrying its state
+systemd's stop sequence for a unit whose `KillMode` is the default (every
+process of the unit, not only its main one), and init re-executes itself carrying its state
 across the exec as `systemctl daemon-reexec` does. Restarting only the
 services a new base changed is what NixOS does when it switches to a new
 system configuration. Asterinas NixOS, the distribution built on the
@@ -66,8 +67,10 @@ privileged actions everything else asks for. Init waits until privd says it
 is listening, because almost every later step may need it. Next comes
 `remoted`, but only on a base that carries a pairing with a host (see
 [Remote control](/docs/self-hosting/remote-control)), so that a machine whose
-desktop never comes up can still be reached. Then the keyboard layout saved
-in `/etc/keymap` is applied, and the Wheel of Fate runs; init waits for it
+desktop never comes up can still be reached. Alongside these, without waiting
+for it, init has `netctl apply` carry out the network settings `/bin/netctl`
+keeps. Then the computer's keyboard layout, saved
+in `/etc/keymap`, is loaded, and the Wheel of Fate runs; init waits for it
 too, unless the command line said `roulette=skip`.
 
 After that, init starts the console's login prompt (`/bin/login`, on init's
@@ -89,6 +92,7 @@ at because init holds `SchedHigh`:
 |---|---|---|---|
 | `bootctl collect` | uid 0 | `RawBlock`, `Power` | No: runs once at boot |
 | `users sync` | uid 0 | `Seal` | No: runs once at boot |
+| `netctl apply` | uid 0 | `NetAdmin` | No: runs at start and for each network adapter as it appears, one at a time |
 | `extctl activate-all` | uid 0 | `ExtensionUpdate`, `Seal` | No: runs once at boot |
 | `/sbin/privd` | uid 0 | every capability an action may name, and `SetId` | Yes |
 | `/bin/remoted` | the person the accounts record names for it, else the first administrator | none | Yes |
@@ -105,8 +109,9 @@ at because init holds `SchedHigh`:
 
 Init is one thread waiting in one `poll`: on its socket, on a *pidfd* for
 each child (a descriptor that becomes readable when that process exits), on
-the readiness pipes of programs that are starting, and on the kernel's base
-monitor. Once privd is listening and the Wheel of Fate has finished, it never
+the readiness pipes of programs that are starting, on the kernel's base
+monitor, and on its network monitor, which says when an adapter appears so
+that init can apply that adapter's saved settings. Once privd is listening and the Wheel of Fate has finished, it never
 blocks on a single child again, so a service that hangs holds up nothing but
 itself.
 
@@ -150,10 +155,13 @@ Other programs ask init for things through the socket `/run/init`, one
 request line per connection, answered with `ok` or a line starting
 `refused:`. Each uid may have four connections waiting to finish their
 line, which must arrive within two seconds, so one person cannot crowd out
-init's other callers. The socket is open to everyone (mode 0666) because init judges
+init's other callers; a desktop's compositor has four of its own beside its
+person's, so the person's other programs cannot keep it from saying it
+locked. The socket is open to everyone (mode 0666) because init judges
 each connection by who made it: its uid, as the kernel recorded it at
 `connect` (`SO_PEERCRED`), and whether it still runs a program of the base
-when its request arrives (`SO_PEERPROGRAM`). Only uid 0 and people may ask
+when its request arrives (`SO_PEERPROGRAM`, read through
+`peer_base_program`). Only uid 0 and people may ask
 anything at all. uid 0 on its own is not enough, since being uid 0 grants no
 power in SlopOS: system requests come only from uid 0 running a base program,
 which in practice means a mechanism privd started.
@@ -165,6 +173,7 @@ program is attested.
 | `restart-session` | a person, for the session their process belongs to | Ends that session and starts it again |
 | `end-session` | a person, for their session | Ends it, which logs the person out |
 | `lock` | a person, for their desktop | The compositor shows its lock screen |
+| `keymap` | a person | Init loads the keyboard layout wanted now: that of the person whose desktop is in front, else the computer's. `keymap` and `prefs` send it after saving a person's choice |
 | `greeter` | a person at the desktop in front, or uid 0 | Brings the login screen in front, so someone else can log in |
 | `locked`, `unlocked` | a desktop's compositor only | Records whether that desktop is locked; a desktop behind stays locked |
 | `restart-session`, `end-session` from outside every session | uid 0 | Ends every session but remoted's. `restart-session` then starts the boot's own session again (the automatic login's desktop, or the login screen); after `end-session` none starts until uid 0 restarts them |
@@ -211,6 +220,15 @@ To end a session, init then:
 4. after ten seconds, stops waiting, and answers the request with how many
    processes would not end:
    `refused: 3 processes of the session would not end`.
+
+A request to end or restart a session is answered only once the session has
+ended, so init holds its connection open meanwhile. It holds eight such
+connections at most, not counting uid 0's, and refuses the next with
+`refused: too many requests wait on the sessions`.
+
+The login request is the last step of privd's `org.slopos.login`, whose
+mechanism sends `login desktop|console <name>` once the password has passed
+([Sessions and login](/docs/architecture/sessions#logging-in-at-the-login-screen)).
 
 Because the tag decides, ending a person's desktop spares remoted and the
 programs it runs (they carry remoted's tag), privd's mechanisms, and anything
@@ -350,7 +368,10 @@ cover the sessions and the extensions' services.
   makes the running init end the sessions first rather than hand them to an
   image that cannot read them.
 - **`/run/init` judges by attested identity.** A new request names who may
-  send it in `judge`; never treat uid 0 alone as authority.
+  send it in `judge`; never treat uid 0 alone as authority. Whether the peer
+  runs a base program is asked when its request line arrives
+  (`peer_base_program`), not at `connect`, since a process can `exec` in
+  between.
 
 ## Further reading
 
@@ -382,6 +403,7 @@ cover the sessions and the extensions' services.
 | `userland/src/apps/init/control.rs` | `/run/init`: who may ask for what |
 | `userland/src/apps/init/reexec.rs` | Re-execution and the state it carries |
 | `userland/src/apps/init/extensions.rs` | Extensions' services |
+| `userland/src/apps/init/network.rs` | Applying saved network settings as adapters appear |
 | `userland/src/init_control.rs` | The request grammar, the login tags and the descriptor layout |
 | `userland/src/apps/session.rs` | `/bin/session` |
 | `userland/src/bin/tests/supervision_test.rs` | The supervision test |

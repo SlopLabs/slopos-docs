@@ -14,8 +14,8 @@ explains what privd is for and how it works.
 ## How to read the tables
 
 - **Runs** is the mechanism's program and the argument shapes it accepts, one
-  per line of the policy. Words are matched exactly; `*` matches any further
-  arguments, none included.
+  per line of the policy. Words are matched exactly; `?` matches exactly one
+  argument of any kind, and `*` matches any further arguments, none included.
 - **Capabilities** are what the mechanism holds besides the universal ones
   (`ConsoleIo`, `ClipboardGlobal`, `Fate`); *none* means only those.
 - **Settings** are the action's `cwd`, `exclusive`, `keep` and `medium`
@@ -71,6 +71,7 @@ no action: init runs it at boot, handing it `ExtensionUpdate` and `Seal`.
 |---|---|---|---|---|
 | `org.slopos.software.install` | `/bin/tree-install *` | none | `cwd`, `exclusive software` | `root`, `admin confirm`, `paired` |
 | `org.slopos.accounts.password` | `/bin/users passwd` | `Seal` | `exclusive accounts` | `root`, `user confirm` |
+| `org.slopos.accounts.list` | `/bin/users list --porcelain` | none | | `root`, `user` |
 | `org.slopos.accounts.manage` | `/bin/users add *`, `remove *`, `rename *`, `passwd *`, `promote *`, `demote *`, `autologin *`, `remote *` | `Seal`, `DacOverride` | `exclusive accounts` | `root`, `admin confirm` |
 
 `users sync` has no action: init runs it at every boot, handing it `Seal`.
@@ -100,10 +101,17 @@ themselves, which is why they may be asked for unasked.
 | `org.slopos.console.keymap` | `/bin/keymap *` | `ConsoleConfig` | | `root`, `user alone`, `admin`, `paired` |
 | `org.slopos.net.toggle` | `/bin/ip net on`, `/bin/ip net off` | `NetAdmin` | | `root`, `admin` |
 | `org.slopos.net.configure` | `/bin/ip *` | `NetAdmin` | | `root`, `admin confirm` |
+| `org.slopos.network.switch` | `/bin/netctl networking on`, `networking off`, `set ? on`, `set ? off` | `NetAdmin` | | `root`, `admin` |
+| `org.slopos.network.settings` | `/bin/netctl set *`, `dns *`, `forget *`, `apply *`, `load` | `NetAdmin` | `exclusive network` | `root`, `admin confirm` |
 
 `ip net on` and `ip net off` ask for `org.slopos.net.toggle`; every other
 `ip` command that changes something asks for `org.slopos.net.configure`, and
 one that only reads asks for nothing.
+`netctl` asks for `org.slopos.network.switch` to turn networking or one
+adapter on or off, and for `org.slopos.network.settings` for every other
+change to the network settings the computer keeps. `netctl apply` also runs
+without an action: init runs it at every start and as each adapter appears,
+handing it `NetAdmin`.
 
 ## Install medium
 
@@ -124,7 +132,7 @@ its requester may hold.
 
 ## What each action says
 
-A question's headline is *App* wants to *describe*., where *App* names the
+A question's headline is `<App> wants to <describe>.`, where *App* names the
 program that asked (see [Privileged actions](/docs/architecture/privd#what-the-dialog-shows)).
 The detail is a sentence under it, and the allowing button says the verb, or
 *Allow* when the action names none. Only `org.slopos.install` is
@@ -152,6 +160,7 @@ The detail is a sentence under it, and the allowing button says the verb, or
 | `org.slopos.extension.config-signed` | change an extension's settings, signed by the key that installed it | | Change |
 | `org.slopos.software.install` | install software for everyone on this computer | It replaces what its last install put there. | Install |
 | `org.slopos.accounts.password` | change your password | | Change |
+| `org.slopos.accounts.list` | see who uses this computer and how each of them logs in | | Allow |
 | `org.slopos.accounts.manage` | add, remove or change the users of this computer | | Allow |
 | `org.slopos.login` | log a user in | | Allow |
 | `org.slopos.session.unlock` | unlock the screen | | Allow |
@@ -159,9 +168,11 @@ The detail is a sentence under it, and the allowing button says the verb, or
 | `org.slopos.kconsole` | read the kernel's diagnostic information | | Allow |
 | `org.slopos.prof` | measure where the computer spends its time | | Allow |
 | `org.slopos.task.end` | end another user's task | Anything it hasn't saved will be lost. | Allow |
-| `org.slopos.console.keymap` | change the keyboard layout | | Change |
+| `org.slopos.console.keymap` | change the login screen's keyboard layout | Everyone who hasn't chosen a layout of their own types in it too. | Change |
 | `org.slopos.net.toggle` | turn networking on or off | | Allow |
 | `org.slopos.net.configure` | change the network settings | | Change |
+| `org.slopos.network.switch` | turn networking or a network adapter on or off | It stays that way each time the computer starts. | Allow |
+| `org.slopos.network.settings` | change the network settings this computer keeps | They take effect now and every time the computer starts. | Change |
 | `org.slopos.install` | install SlopOS on a disk | It can delete everything on the disk you choose. | Install |
 | `org.slopos.rescue` | open a rescue shell that can read and change every disk | Anything typed into it can change anything on this computer. | Open |
 | `org.slopos.priv` | run a command that can read and change every file | It can also mount disks and change the network and the clock. | Run |
@@ -216,7 +227,7 @@ bytes, and each name occurs once.
 | Setting | Value | Required | Meaning |
 |---|---|---|---|
 | `program` | one path | yes, once | The mechanism. A canonical path under `/bin/`, `/sbin/` or `/usr/bin/`, at most 255 bytes, with no empty, `.` or `..` component. |
-| `args` | words, then optionally `*` | at least one, repeatable | One argument shape. Each word is printable ASCII without `"` or `*`, at most 64 bytes; `*` may only come last. A shape with no `*` matches exactly that many arguments, so a bare `args` line matches only a request with no arguments. The same shape may not appear twice. |
+| `args` | words and `?`, then optionally `*` | at least one, repeatable | One argument shape. Each word is printable ASCII without `"` or `*`, at most 64 bytes, and matches itself; `?` stands for any one argument; `*` may only come last. A shape with no `*` matches exactly that many arguments, so a bare `args` line matches only a request with no arguments. The same shape may not appear twice. The mechanism holds what `?` and `*` take to its own grammar. |
 | `caps` | capability names, possibly none | yes, once | What the mechanism holds. Each name once, from `Power`, `ProcSignal`, `Mount`, `RawBlock`, `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `Seal`, `BootEntry`, `DacOverride`, `BaseUpdate`, `ExtensionUpdate`. |
 | `uid` | `0` or `requester` | yes, once | Whom the mechanism runs as. `requester` runs it as whoever asked, in their own group, `admin` (gid 10) while the record names them an administrator, and their session's login tag. Its `caps` must stay within `REQUESTER_CEILING` and its `allow` lines name only `root`, `user` and `admin`. |
 | `allow` | a principal, then a level | at least one, repeatable | Who may ask, and what they must do. Each principal at most once. |
@@ -227,7 +238,7 @@ bytes, and each name occurs once.
 | `detail` | a quoted line | no, once | A sentence on what follows from allowing it. |
 | `verb` | a quoted word or phrase | no, once | The allowing button; one of the verbs listed below. *Allow* when absent. |
 | `destructive` | none | no | The allowing button takes the danger tone, and Enter in the password field moves to it rather than pressing it. |
-| `medium` | none | no | The action exists only on a boot the kernel says served the install medium (`BOOT_FLAG_MEDIUM`); on any other boot privd and every requester treat it as no action at all. |
+| `medium` | none | no | The action exists only on a boot the kernel says served the install medium (`BOOT_FLAG_MEDIUM`); on any other boot privd and every requester (reading the policy through `slopos_userland::privd::policy`) treat it as no action at all. |
 
 A quoted value is one line of printable ASCII between `"` and `"`, not
 empty, with no `"` inside, at most 160 bytes.
@@ -369,6 +380,12 @@ The requester prints privd's reason after its own name, for example
 screen.
 
 ## Refusals
+
+The sentences are stated in the source, so a requester prints them unchanged
+after its own name: `policy::Refused` for what the policy decides,
+`consent::Refusal` for a question that got no allowing answer,
+`consent::WRONG_PASSWORD`, and the constants of `words::privd` for the rest.
+A priv-core test holds every one of them to the rules for the words.
 
 | Reason printed | Cause |
 |---|---|

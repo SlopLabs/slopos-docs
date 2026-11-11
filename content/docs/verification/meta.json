@@ -1,4 +1,4 @@
 {
   "title": "Safety and verification",
-  "pages": ["framekernel", "ostd-trusted-core", "verus-status", "kernmiri", "tcb-discipline"]
+  "pages": ["framekernel", "ostd-trusted-core", "verus-status", "kernmiri", "tcb-discipline", "toolchain-gates"]
 }

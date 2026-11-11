@@ -123,12 +123,16 @@ over a chosen subset explicitly. The one exception is init re-executing its
 own program from the base, which keeps everything it held
 ([Init and services](/docs/architecture/init)).
 
-When a process's effective ids differ from its real ones, the new program
+When a process's effective ids differ from its real ones, or the new program
+belongs to an [extension](/docs/architecture/extensions), the new program
 starts with `AT_SECURE` set. That is a flag in the startup information the
 kernel gives every program (the *auxiliary vector*), and it tells the C library and the loader not to
 trust the environment the caller left: the loader ignores `LD_LIBRARY_PATH`
 and `$ORIGIN` and skips the libraries under `/usr/local/lib` and
-`~/.local/lib`, and `secure_getenv` returns nothing.
+`~/.local/lib`, and `secure_getenv` returns nothing. An extension's program
+is marked whoever starts it, because it speaks as its extension, which its
+starter does not: a library taken from where the starter points would act
+under the extension's name.
 
 `exec` also records which program the process now runs, and whether that
 file came from the [base](/docs/architecture/base) or from an installed
@@ -163,7 +167,7 @@ the caller doesn't hold fails with `EPERM`. The child runs as the caller
 unless the caller asks for user or group ids it doesn't hold itself, a list
 of supplementary groups or a login tag, all of which take `SetId`. A child that
 holds a gated capability, or runs with ids other than its spawner's real
-ones, starts with `AT_SECURE` set. This is how init starts each service with exactly what
+ones, starts with `AT_SECURE` set, and so does every program of an extension. This is how init starts each service with exactly what
 its service table names, and how privd starts a program it has been asked to
 run ([Capabilities](/docs/architecture/authority)).
 
@@ -460,7 +464,11 @@ must be a subset of the spawner's mask, and `uid`, `gid`, `groups` and
 `login` take effect only under their `set` bits, with ids the spawner doesn't
 hold, any groups and any login tag needing `SetId`. The
 spawned ids are saved as an `exec` saves them. The checks live in
-`Endowment::check` in `core/src/exec/mod.rs`.
+`Endowment::check` in `core/src/exec/mod.rs`. `AT_SECURE` is decided in one
+place, `exec_image` in the same file, which both `execve` and spawn reach:
+it sets the flag when its caller asks and whenever the image it loaded is an
+extension's, so a new road into a program can't start an extension's
+program without it.
 
 **Signals.** The rule is `signal_permitted` in `core/src/syscall/signal.rs`:
 init first, then `ProcSignal`, then the `SIGCONT` exception, then the uid

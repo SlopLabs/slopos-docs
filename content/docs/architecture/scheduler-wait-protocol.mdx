@@ -253,8 +253,9 @@ running. In userland, `spin_signal_test` kills a
 program spinning in a loop, `ctrlc_flood_test` interrupts a job blocked in a
 write, and `exit_stress_test` ends processes whose threads are on their way
 into `futex_wait`, hundreds of times on every CPU, and checks that none
-outlives its process. `just check-sched-spread` boots the system and fails if
-any online CPU can't run tasks. The ranking of cores is tested with
+outlives its process. A gate over the test run's boot log (`run_tests gate
+sched`, which `just check-capture` runs) fails if any online CPU isn't
+eligible to be given tasks. The ranking of cores is tested with
 [CPU frequency](/docs/architecture/cpu-frequency#how-it-is-tested).
 
 ## For contributors
@@ -314,8 +315,14 @@ spurious wake and waits again. Left `Blocked`, a task still on its CPU fails
 every later `Running -> Blocked` compare-and-swap and spins forever.
 
 **The kill flag.** `task_kill_and_wake` (`slopos-ostd/src/task/ops.rs`) is the
-only writer of `killed`. The syscall exit and every interrupt exit share one
-delivery point that checks it.
+only writer of `killed`. Every blocking primitive but the uninterruptible one
+above then returns `Err(WaitAbort::Killed)`, and the task unwinds by
+returning, so its destructors run on its own stack at a point it chose. That
+is why an owning task handle may live in a stack frame that blocks. The
+syscall exit and every interrupt exit share one delivery point that checks
+the flag. `task_terminate` on another task is not a way to kill: its remote
+branch serves only the bounded fallback at shutdown, and its self branch the
+kill delivered on the way out of an interrupt.
 
 **Wake placement and preemption.** A wake for another CPU goes into that
 CPU's remote wake inbox, followed by a reschedule IPI, after which that CPU

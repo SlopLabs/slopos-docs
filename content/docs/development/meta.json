@@ -9,6 +9,7 @@
     "diagnostics",
     "debugging-gdb-record-replay",
     "unsafe-ffi-boundaries",
-    "security-cvss"
+    "security-cvss",
+    "licensing"
   ]
 }

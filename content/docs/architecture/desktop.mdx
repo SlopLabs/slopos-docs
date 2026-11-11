@@ -63,7 +63,11 @@ palette.
   *ink* for text on a surface, and a deep *fill* for white text on it, which
   is how a filled button or a danger button is drawn. Hover and pressed are
   derived from the role, never listed per control: a filled control lightens
-  under the pointer and darkens while pressed.
+  under the pointer and darkens while pressed. The fills are roles of their
+  own (`AccentFill`, `DangerFill` and so on), and `Tone::fill` gives the fill
+  that goes with a tone. Every control is filled (a secondary button in the
+  control colour, a field sunken inside a quiet edge), so none reads as an
+  outline.
 - **Text has roles too.** Each role is a size, a weight and a line height:
 
   | Role | Size and weight | Used for |
@@ -88,6 +92,12 @@ palette.
 There is one table, a dark graphite one. A light theme would be a second
 table, with no change to any app.
 
+Code reaches the theme in one of two ways. appkit hands every widget the
+theme through its style sheet (`StyleSheet::theme`), so an app only names
+what it wants: a `Tone`, a `Surface`, a `TextRole` for any text, or
+`SegmentFill::Series` for one segment of a chart. Code that draws itself, as
+the compositor's frames and dock do, reads the table with `theme::current()`.
+
 Interface text is set in Inter, code and the terminal in JetBrains Mono, and
 icons in Lucide, all loaded at run time from `/usr/share/fonts`. They are
 never compiled into a program, because the text fonts' licence (the SIL Open
@@ -106,8 +116,11 @@ it, content that scrolls and a row of buttons under a separator), a
 `SearchField`, a `StatusBar`, a `Tag`, an `EmptyState`, a `Disclosure`, a
 `Dialog`, a `Graph`, and `Text` in a role and a tone. For lists of many
 things and documents there are tables, trees, a code view, tabs, menus and a
-zoomable picture. The appkit guide in the source tree, `appkit/GUIDE.md`,
-says which to use when.
+zoomable picture. A page of settings is a `Group`, a box of rows with a
+hairline between each: a `Switch` for what turns on and off, a `PropertyList`
+of how things stand now, and `ActionRow`s, each ending in the control that
+changes what the row names, such as *Edit…*. The appkit guide in the source
+tree, `appkit/GUIDE.md`, says which to use when.
 
 What makes them worth using is what comes with every one of them:
 
@@ -118,14 +131,38 @@ What makes them worth using is what comes with every one of them:
 - **Every control has its states.** It lights under the pointer, shows when
   pressed, can be disabled and shows that too. Focus is one ring around the
   control, or around the row the keyboard is on in a list, table, tree or
-  menu.
+  menu. A field thickens its own edge in the focus colour instead. A click
+  gives focus to a field, a list or a table but leaves it where it was for a
+  button, so a toolbar button never takes the keyboard from a search field.
 - **The keyboard works the same everywhere.** Tab and Shift+Tab move focus.
   Enter and Escape that no control took press the confirming and the back or
   cancel button of the page or dialog in front, and Enter never reaches a
   destructive button that way: only one that has focus takes it. A dialog
-  keeps the keyboard and the pointer until it is answered or dismissed.
+  keeps the keyboard and the pointer until it is answered or dismissed. It
+  opens with the keyboard in its first field, so what you type goes there at
+  once, and gives focus back to where it was when it closes. Left and Right
+  move along a row of buttons. A key held down types and moves again as it
+  repeats, but presses the focused control only once.
 - **Every control and every row is at least 28 px across**, so a pointer can
   find it.
+- **A change the system makes shows at once.** A `Switch` acts the moment it
+  is turned, with no button after it. While the system is still making the
+  change the switch is *pending*, never disabled: its knob is where you
+  turned it, its track still shows what the system does, and it stays a
+  control you can press again. GTK's switch separates the same two things
+  as `active` and `state`. An app keeps what it asked for in an
+  `appkit::Pending` and builds each control from the value that says to
+  show, so a second press while the first is pending is one more change
+  asked, and the answers come back in the order asked.
+- **A rebuild keeps your place.** The app rebuilds its whole view after
+  every change, yet a scroll view and a table stay scrolled where they were
+  and a menu keeps the row the arrows reached, as long as the new view shows
+  the same thing. A page counts as the same while its title is the same, so
+  a notice that comes and goes moves nothing you scrolled to.
+- **Scrolling goes where it can.** The wheel moves the innermost view under
+  the pointer that can still move, the rows of a table or a tree lie beside
+  the scrollbar rather than under it, and a scroll view is a stop for Tab
+  only while it has something to scroll.
 - **Windows describe themselves.** An app states the size its window opens
   at, the least it can be laid out at, and whether it resizes, and the
   compositor holds it to that. A window showing a document is titled
@@ -165,14 +202,26 @@ after first planting each kind of mistake to see that the audit finds it. The
 consent dialog, the installer's pages, the System Monitor and the compositor's
 own screens are audited the same way.
 
-**Gates on the source.** `scripts/check_ui_literals.sh` fails an app that
-constructs a colour or gives a spacing or an inset a number. A file whose
-colours are its content, such as the editor's syntax palette, is exempt by a
-line in `scripts/gates/ui-literals.txt` that says why.
-`scripts/check_app_deps.sh` fails an app under `apps/` that depends on
-anything but appkit, the editor's core and the image decoder, so no app
-reaches past the toolkit into the kernel's interface or the toolkit's
-internals.
+One view passing the audit says nothing about what happens between two. So
+the audit also compares views: `audit::audit_transition` takes a page before
+and after a control was used and reports what the change costs whoever just
+used it (the control gone or somewhere else, or the keyboard no longer on
+it), and `audit::audit_moved` reports every control both views show that
+moved. A page that asks the system for a change holds each step, from the
+press to the answer, to them in a test.
+
+**Gates on the source.** The `ui-literals` gate (`xtask lint ui-literals`,
+which `just check-framekernel-gates` runs) fails an app that constructs or
+derives a colour, or gives a spacing or an inset a number. An app here is
+any file under `apps/`, a Settings panel in `settings-app/`, or a module of
+`userland/src/apps/` that implements `App` or calls `run_app`; appkit itself
+is held to constructing no colour. A file whose colours are its content,
+such as the editor's syntax palette, is exempt from the colour check by a
+line in `scripts/gates/ui-literals.txt` that says why, and a line that
+exempts nothing fails the gate. The `app-deps` gate (`xtask lint app-deps`)
+fails a crate under `apps/` that depends on anything but appkit, the
+editor's core and the image decoder, so no app reaches past the toolkit into
+the kernel's interface or the toolkit's internals.
 
 ## Words
 
@@ -202,8 +251,9 @@ three dots. Buttons are verbs, and an ellipsis marks one that asks something
 further (*Restart…*). Everything uses sentence case, unlike GNOME's
 guidelines, which capitalise headings and buttons. Memory and file sizes are
 binary (`512 bytes`, `1.5 KiB`, `8 MiB`), and disk sizes decimal, as a
-drive's label gives them. Host tests hold privd's policy, every page of the
-installer and the compositor's menus and screens to these rules.
+drive's label gives them. Host tests hold privd's policy (its words are
+`priv-core::words`), every page of the installer and the compositor's menus
+and screens to these rules.
 
 ## What the compositor draws
 
@@ -213,9 +263,12 @@ The compositor draws everything on screen that isn't an app's content.
 
 - **The desktop** is the theme's wallpaper, a dark gradient lit softly from
   above, drawn at the screen's size and dithered so it shows no bands. The
-  compositor would cover it with the picture `SLOPOS_WALLPAPER` names, but
-  init starts every desktop without that variable, so the gradient is what
-  you see.
+  theme has several such gradients, its own graphite one first, and a
+  person's preferences choose one and, optionally, a picture to lay over it,
+  filled, fitted, centred, stretched or tiled
+  ([Settings and preferences](/docs/architecture/settings)). The picture is
+  decoded on a thread of its own, and the last one stays on screen until the
+  new one is ready. The login screen is nobody's, so it shows the defaults.
 - **Window frames** are rounded at all four corners, with a dark hairline
   just outside and a light one along the top, and a shadow that is half as
   dark on a window without focus; a maximised window is square and has
@@ -227,17 +280,30 @@ The compositor draws everything on screen that isn't an app's content.
   space between the menu bar and the dock, or gives the window the nearest
   size its limits allow, centred; pressing it again puts the window back, as
   long as it is still maximised or still where zoom put it.
+- **A new window** opens centred between the menu bar and the dock when it
+  is its app's first. A later one of the same app opens down and to the
+  right of the app's latest by the height of a title bar, and goes back to
+  the top of the area before its frame would cross the dock. A window that
+  asks for more room than there is gets the whole area, or its own least
+  size if that is larger.
 - **The menu bar** is a strip of glass across the top. On the left,
   SlopOS's mark opens the system menu and the focused window's app is named;
   on the right, the network item opens the network panel and the clock shows
-  the time as `HH:MM`, in UTC, since SlopOS has no time zones, with the date
-  a click away.
+  the time as `HH:MM`, or as `2:05 PM` when the person's preferences ask for
+  a twelve-hour clock, in UTC, since SlopOS has no time zones, with the date
+  a click away. The app is named by its dock entry, or by the window's title
+  when no entry has its app id.
 - **The system menu** names the person and offers *Lock screen*, *Switch
   user…*, *Log out…*, *Restart…* and *Power off…*. Only once a new base has
   changed the desktop's own programs does *Restart desktop…* appear, at the
   top, under the notice *Restart the desktop to finish updating*, and the
   menu then opens by itself to offer it. Each entry that ends something asks
-  first, with *Cancel* focused.
+  first, with *Cancel* focused, so Enter alone never ends anything. Logging
+  out and restarting the desktop are init's to carry out; restarting and
+  powering off the computer are privd's (`org.slopos.power.reboot` and
+  `.poweroff`). When one of them doesn't happen, the question's place says
+  so, unless you declined privd's own question, and the reason goes to the
+  log.
 - **The dock** floats as a pane of glass above the bottom of the screen. It
   holds the pinned apps, then the running apps that no entry names, a dot
   under each app that runs, and each icon grows a little as the pointer
@@ -245,7 +311,15 @@ The compositor draws everything on screen that isn't an app's content.
 - **The lock and login screens** dim the wallpaper and show the time and
   date, the person's initial in a circle and their name (or, on the login
   screen, the people as rows, five at a time), a password field and *Unlock*
-  (beside *Switch user…*) or *Log in*.
+  (beside *Switch user…*) or *Log in*. Either screen comes up with the
+  password field focused, so the person chosen types their password at once,
+  as LightDM's and SDDM's greeters do. On the login screen the wheel moves
+  the choice of person; so do the arrows, and typing, once Tab has reached
+  the list, and typing chooses the first person whose name starts with what
+  was typed. What the screen says back, such as a wrong password, sits on a
+  notice. Once a password has passed the login screen takes nothing more,
+  and it starts over each time it comes in front, or after half a minute if
+  the desktop it was starting never does.
 - **Questions** are drawn over everything: the ones the system menu asks
   before it ends something, and privd's consent dialog. The consent dialog is
   a card centred over the window of the app that asks, when it has one, with
@@ -260,6 +334,17 @@ compositor's other surfaces (the lock and login screens, the system menu, the
 panels and the questions) are appkit trees like any app's, laid out and
 painted into the compositor's own buffer (`appkit::embed`), so they are built
 from the same components and audited the same way.
+
+They differ from an app in who decides what a key does. `appkit::embed`
+takes the pointer, but on the lock and login screens, in the system menu and
+in a question every key goes to a small model that knows what has focus
+(`chrome-core::gate`, `::menu` and `::key`, with the trees that show them in
+`compositor::views`). Those models are plain code with no screen, so their
+tests run on the build machine, and Tab, the arrows, Space and Enter work in
+them as in any form. The network and clock panels answer the pointer alone
+and take a key only to close on Escape. While the lock or login screen or a
+question is up no window hears the pointer, and a button's release goes only
+to the surface its press reached.
 
 [Sessions and login](/docs/architecture/sessions) covers what locking,
 switching user and logging out do.
@@ -276,7 +361,10 @@ bigger than another, and depth comes only from a shape behind at 60% white
 or from detail cut out of a white shape.
 They ship at 64 px and as `<id>@2x.png` at 128 px, and a host test fails when
 a shipped PNG is not what the code draws. An app that ships no icon is shown
-as a glyph of the icon font on a tile whose hue its app id picks.
+as a glyph of the icon font on a tile whose hue its app id picks
+(`AppTile::of`, which never picks graphite: that hue is kept for tools).
+`appkit::app_icon` draws the tile for both, so a shipped icon and a
+stand-in look alike.
 
 ## How the dock uses app entries
 
@@ -316,6 +404,37 @@ why).
 | Image Viewer | `image_viewer` | `/usr/local` | Shows a PNG fitted to the window, zoomed with the wheel or `+` and `-`, `f` to fit again and `0` for actual size. |
 | Widget Gallery | `widget_gallery` | `/usr/local` | Every appkit component in each of its states. It has no dock entry; start it from a terminal. |
 
+## What the System Monitor measures
+
+The System Monitor (`/bin/sysmon`, `apps::sysmon` in the source) samples the
+kernel once a second and keeps the last minute of each figure. Its
+*Performance* tab is a wide sidebar of resources, each led by a thumbnail of
+its own graph, beside the chosen one's page of graphs, figures and details.
+Its *Processes* tab names each process by its first thread's id, which is
+what `getpid` returns (the kernel's own process ids number a different
+space), and filters by name, user or id.
+`sysmon --page cpu|memory|disk|network|gpu|processes` opens on one page,
+which is how `just ui-shots` photographs each.
+
+A share, such as processor load, is graphed from 0 to 100%, so its height
+means the same from one minute to the next. A rate, such as bytes a second
+to a disk, has no top of its own, so the graph's top is `nice_ceiling` of
+the highest sample: a round value in steps of 1, 2 and 5, never under a
+floor that keeps an idle graph flat.
+
+The figures come from counters the kernel keeps and three calls any program
+may make, none of which needs privilege:
+
+| Call | What it reports |
+|---|---|
+| `process_memory` | For each live process, once: the user pages its address space holds now (`VmSpace::resident_pages`) and the most it has held |
+| `block_stats` | For each whole disk, in the order the disks were registered: name, capacity, logical block size, transport (NVMe, virtio or USB), read-only and removable flags and, since it was registered, the bytes and requests served each way, the flushes sent and the busy time |
+| `display_stats` | What drives the screen (the kernel's `ScanoutId`), its geometry and size and, since boot, the frames the adapter took from the compositor, the bytes copied to the screen, the time spent copying and the time spent in the adapter's present hook |
+
+Busy time is what Linux calls `io_ticks`: wall time with at least one of the
+disk's requests in flight, an asynchronous write counting until it
+completes. Frames the kernel suppressed are not counted as taken.
+
 ## Looking at it
 
 `just ui-shots` boots the live ISO under QEMU, plays scenes of keys, clicks
@@ -344,6 +463,74 @@ before and after a change. The audit and the tests are the gate.
 - **A new icon is a glyph of the shipped font.** Add an `Icon` variant naming
   Lucide's codepoint; the font test fails on one the font lacks. An app icon
   is a new `Art` in `tools/icons`, rendered with `just icons`.
+- **A control is at least `style::MIN_TARGET` across**, and so is every row
+  of a list, table, tree or menu. A pane's divider is the one exception: it
+  is a divider, not a control. Sizes an app must count with come from
+  appkit, never from a number of its own.
+- **Enter and Escape have one route.** One that no control took goes to the
+  `ButtonRow` ending the modal layer's `Page` or dialog (its confirming
+  button, never a destructive one, and its back or cancel one) before the
+  app's `on_key`. A `Page` opened from another takes `Page::back`, an arrow
+  before its title which Escape presses ahead of the footer, and the row
+  that opened it ends in an arrow (`ListRow::opens`). A table's chosen row
+  opens on Enter or a second click (`on_activate`). A list or a table
+  leaves an Alt chord to the app.
+- **A layer over the page says what it covers.** `Widget::covers` stops the
+  pointer and tooltips reaching what is beneath, `Widget::is_modal` stops
+  Tab as well, and an event the layer stopped comes back as
+  `EventResponse::Blocked`, not as unhandled, so the app never acts on a key
+  meant for a dialog.
+- **Focus is kept by place, not by widget.** Every widget is new after a
+  rebuild, so `FocusManager` remembers where in the Tab order the keyboard
+  was. A focused control that is disabled for a moment keeps its place:
+  nothing has focus meanwhile, the rebuild that enables it focuses it again,
+  and Tab goes on from where it was, unless a press, Tab or another page
+  came first. Don't work around a lost focus by disabling less; keep what
+  was asked in an `appkit::Pending` and leave the control enabled.
+- **What a widget keeps across a rebuild it declares.** A widget whose
+  position the app does not keep (a scroll offset, a menu's keyboard row)
+  returns it from `Widget::kept`, and appkit hands it to the widget built in
+  its place when that shows the same.
+- **The window protocol says nothing of key repeats.** `run_app` tells a
+  repeat from a press by the keys it has seen go down and not up
+  (`run::Held`). A new control gets "types again, presses once" from that,
+  and must not track held keys itself.
+- **Text that is cut says so.** A line too long ends, or for a path starts,
+  with `…` (`ListRow::detail_tail` is the detail cut at its start) and shows
+  whole in a tooltip. A view onto content that goes on past it, as a scroll
+  view or a field is, paints through `PaintContext::with_viewport`, which
+  tells the audit that what its edge cuts is not cut short.
+- **An app reads its window once and its title often.** `App::window` (a
+  `WindowSpec`) is read when the app starts and sent to the compositor;
+  `App::title` is read again after every rebuild and sent when it changes.
+- **A refusal is read from the kernel.** `appkit::Refusal` works out why a
+  file was refused from `statfs` and `FS_IOC_GETFLAGS`. A path says nothing
+  reliable about which filesystem a file is on, so never decide from it.
+- **Icons are named, never embedded.** `theme-core::Icon` names each glyph
+  of `/usr/share/fonts/Lucide.ttf`, and the UI text renderer draws it at a
+  text role's size.
+- **Frames and the dock are drawn by hand, from the same tokens.** They are
+  painted every frame, so they use the compositor's own drawing code. A
+  frame's rounded edge takes its coverage from the signed distance
+  `gfx::rounded` computes, which is why the shadow follows the corners. The
+  wallpaper is shaded by `theme-core::Shading`, one per screen size, over
+  the theme's `GRADIENTS` (`compositor::wallpaper`), and a picture is placed
+  by `settings-core::background::places`. The dock draws the 64 px icon and
+  never larger, because its filter samples two pixels a side; the 128 px
+  one waits for a scale factor.
+- **Where a window opens is decided off screen.** `chrome-core::placement`
+  takes the area, the window's size and least size and the app's latest
+  window, and its tests run on the build machine. An app's windows are
+  known by app id, or by client when a window has none. A window shrunk to
+  fit hears its new size as a configure, and is never made smaller than the
+  floor a resize keeps. `chrome-core::clock` formats the time and keeps the
+  menu bar's width for the widest time, so the bar doesn't shift each
+  minute.
+- **The System Monitor's arithmetic is separate from its sampling.** The
+  histories and rates live in a `Monitor` (`monitor.rs`) that makes no
+  system call, so a test feeds it samples of its own. Each disk counts its
+  own activity for `block_stats`, apart from the machine-wide counters in
+  `slopos_fs::blockdev::stats`, which tests reset.
 
 ## Further reading
 
@@ -370,9 +557,10 @@ before and after a change. The audit and the tests are the gate.
 | Path | What is there |
 |---|---|
 | `theme-core/` | Colours, text roles, spacing, icons and the words, host-tested |
-| `appkit/` | The toolkit: components, the audit, the gallery, `GUIDE.md` |
+| `appkit/` | The toolkit: components (`appkit/src/components.rs`), the audit, the gallery, `GUIDE.md` |
 | `userland/src/apps/compositor/` | Frames, dock, menu bar, wallpaper; `views.rs` for its appkit surfaces |
-| `chrome-core/` | The models behind the lock screen, the system menu, the clock and placement, host-tested |
+| `chrome-core/` | The models behind the lock screen, the system menu, the clock, placement and which pointer shows (the display's overlay or a painted one), host-tested |
+| `userland/src/apps/sysmon/` | The System Monitor; `monitor.rs` holds its histories |
 | `apps/` | The apps outside the base, their entries and icons |
 | `tools/icons/` | The app icons' artwork and its tests |
-| `scripts/ui_shots.py` | `just ui-shots` |
+| `scripts/ui_shots.py`, `scripts/lib/qmp.py` | `just ui-shots`: the scenes, and the QEMU monitor client that sends keys and clicks and saves the screen |

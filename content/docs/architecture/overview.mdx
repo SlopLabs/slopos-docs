@@ -246,6 +246,15 @@ of the trusted code base as named exceptions. In the kernel they serve OSTD's
 panic unwinding and nothing else; the C library carries the same unwinder for
 userland programs.
 
+Cargo finds the crates through the workspace, so a change to how SlopOS is
+built usually belongs in `justfile`, `scripts/`, `Cargo.toml` or one of the
+two target specifications (`targets/*.json`: one for the kernel, one for
+programs), not in a crate. The kernel is `no_std` and linked by `rust-lld`,
+the linker that ships with the Rust toolchain. The kernel's linker script,
+`link.ld`, places every section by name; when you add a section, place it
+there on purpose. Limine enters the kernel at `_start`, a short assembly
+routine (`boot/limine_entry.s`) that calls `kernel_main`.
+
 Rules a change must keep:
 
 - **No `unsafe` outside `slopos-ostd`.** If a subsystem needs something only
@@ -293,7 +302,8 @@ Rules a change must keep:
 | `core/src/syscall/handlers.rs` | The system call tables |
 | `abi/src/caps.rs` | The capabilities |
 | `userland/src/apps/init/` | Init, its services and the sessions |
-| `scripts/check_unsafe_outside_ostd.sh`, `scripts/check_no_kernel_async.sh` | Two of the build's rule checks |
+| `tools/xtask/src/lint/unsafe_outside_ostd.rs`, `tools/xtask/src/lint/no_kernel_async.rs` | Two of the build's rule checks (`xtask lint unsafe-outside-ostd`, `xtask lint no-kernel-async`) |
+| `justfile`, `scripts/`, `targets/*.json`, `link.ld` | The build: recipes, the scripts they run, the two target specifications and the kernel's linker script |
 
 [Safety gates](/docs/verification/tcb-discipline) lists every check the build
 runs.

@@ -191,13 +191,29 @@ kernel tests. See [Proofs](/docs/verification/verus-status) and
 
 ## For contributors
 
-The invariants a change must keep, and why.
+The invariants a change must keep, and why. The source and its comments name
+them I1 to I8:
+
+| Name | Invariant |
+|---|---|
+| I1 | Raw task pointers exist only on the sanctioned surfaces: the placement and link primitives, the per-CPU control region and the pre-heap boot stubs. Everything else binds `&Task`, a guard or a `TaskRef` |
+| I2 | Linked implies owned: a task on a queue, inbox or wait map has its owning reference held by that container |
+| I3 | The final drop never runs on the dying task's own stack, with interrupts off, or under a lock. `task_put` is the only release |
+| I4 | Wake and enqueue allocate nothing; cloning a `KArc` is one atomic operation |
+| I5 | The current task is a borrow (`CurrentTask`), never an owned handle; the CPU holds the one owning reference |
+| I6 | Lookup only upgrades a weak reference. Nothing makes a strong reference from a raw pointer |
+| I7 | `KArc` is fallible everywhere, and its count saturates on overflow: the task leaks and is never freed early |
+| I8 | A task exits only from its own context. Kill is a flag ([Scheduling and waiting](/docs/architecture/scheduler-wait-protocol#for-contributors)) |
+
+The paragraphs below give the reasons.
 
 **Only the final strong reference frees a task.** Outside OSTD a task
 (`KArc<Task>`) is held only through `TaskRef`, and every drop goes through
 `task_put`. Raw task pointers exist only in the placement and link
 primitives, the per-CPU control region and the pre-heap boot stubs;
-`scripts/check_task_ownership.sh` enforces this.
+`xtask lint task-ownership` enforces this, as one of the gates
+`just check-framekernel-gates` runs. The comment at the top of
+`tools/xtask/src/lint/task_ownership.rs` states each of its checks.
 
 **Finality comes from the decrement, deferral from the context.** The
 one-to-zero winner in `task_put` gets a `ParkedTask` token that graveyard
@@ -218,8 +234,8 @@ decrement under a lock with interrupts off.
 **A container owns what it links.** The ready queue, the remote-wake inbox,
 the futex wait table and the deferred previous-task slot each hold a member
 by an intrusive link (or the slot itself) plus one strong reference parked as
-a raw pointer, and the
-placement state machine (`slopos-ostd/src/task/placement.rs`) is the only way
+a raw pointer, and the placement state machine
+(`slopos_ostd::task::placement`) is the only way
 in or out:
 
 | Operation | Effect on the strong count |
@@ -242,7 +258,14 @@ verifying, because its model sees only the atomic step.
 **No owning reference crosses a switch in a stack frame.** The incoming
 task's reference goes into `current_task_ref` and the outgoing one into the
 deferred previous-task slot before the register switch; the successor
-releases it.
+releases it. A reference kept in the dispatching frame would be owned by a
+stack the successor can outlive. The control region's current-task pointer
+itself (`PCR.current_task`, at offset 40) stays a raw borrow, because its
+offset is frozen: the SafeStack runtime (`__safestack_pointer_address`) reads
+it from assembly in the prologue of every instrumented function, so it must
+always name a valid task. The owning reference sits beside it in
+`PCR.current_task_ref`. The idle task has none and is kept by the gate's
+third disjunct.
 
 **Fields written after publication need a witness.** The saved register
 context, FPU area and user-mode round-trip slots live in `TaskOwnCell`, and
@@ -263,7 +286,12 @@ harmless.
 
 The proof (`verification/proofs/task_ownership.rs`) models each operation as
 one atomic step, so a change to memory ordering, the intrusive links or the
-weak count also needs KernMiri and targeted tests.
+weak count also needs KernMiri and targeted tests. It names its properties
+T1 to T7, not I1 to I8, and `verification/STATUS.md` records what the model
+doesn't reach: weak-memory ordering, the intrusive links and where the raw
+pointers come from are audited, not proved. Read that file's header before
+changing `task_is_dispatch_pinned`. (The I1 to I4 that `STATUS.md` lists for
+`mm::frame` are the frame reference count's invariants, a different set.)
 
 ## Further reading
 
@@ -293,5 +321,5 @@ weak count also needs KernMiri and targeted tests.
 | `slopos-ostd/src/task/placement.rs` | Moving references into and out of queues |
 | `slopos-ostd/src/task/cell.rs` | Exclusive-access witnesses for task fields |
 | `slopos-ostd/src/task/fpu_owner.rs` | The FPU owner tag |
-| `scripts/check_task_ownership.sh` | The build check for raw task pointers |
+| `tools/xtask/src/lint/task_ownership.rs` | The build check for raw task pointers (`xtask lint task-ownership`) |
 | `verification/proofs/task_ownership.rs` | The Verus proof |

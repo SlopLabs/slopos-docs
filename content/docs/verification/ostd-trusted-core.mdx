@@ -52,9 +52,10 @@ the caller doesn't need `unsafe`, and the rule is written down.
 But if a caller breaks the rule, memory gets corrupted inside OSTD while the
 mistake sits in a safe crate that nobody thought to audit, which defeats the
 point of keeping `unsafe` in one place ([The framekernel](/docs/verification/framekernel)
-calls the property OSTD needs *soundness*). So no safe `pub` or `pub(crate)`
-function in OSTD may carry a `# Safety` section in its documentation, and a
-gate fails if one appears. Every condition a caller has to meet must be
+calls the property OSTD needs *soundness*). So no safe function in OSTD,
+`pub`, `pub(crate)` or private, may carry a `# Safety` section in its
+documentation, and clippy fails the build if one appears
+(`unnecessary_safety_doc`). Every condition a caller has to meet must be
 something the compiler checks.
 
 ## How safety rules become types
@@ -69,8 +70,10 @@ while something is true, such as interrupts being off. OSTD gives out a token
 holds, and the operation takes the token as an argument. The interrupt token
 can only be obtained inside a helper that turns interrupts off for the
 duration of a closure, and it can't be sent to another CPU, because interrupt
-state is per CPU. A similar token proves that code is running on the first
-CPU, inside boot initialisation.
+state is per CPU (`&IrqDisabled`). A similar token proves that code is
+running on the first CPU, inside boot initialisation (`&BspToken`), and
+another that this CPU has switched on the extended register save the
+operation needs (`Osxsave`).
 
 ```rust
 // Safe code, in the real-time clock driver:
@@ -80,12 +83,14 @@ IrqDisabled::with(|irq| cmos.read(irq, reg))
 **A value that was checked when it was built.** Writing a bad value to some
 CPU registers makes the CPU raise a fault. Instead of taking a plain integer, OSTD's
 function takes a type whose constructor rejects values this CPU doesn't
-support, so every value that exists is a good one.
+support, so every value that exists is a good one (`Xcr0Mask`, for the
+register that selects which vector state the CPU saves).
 
 **A handle that can be used once.** Some memory is handed out at boot to last
 for the whole run. Giving out two mutable references to it would break Rust's
 rules, so OSTD hands out a handle that is consumed when it is turned into the
-reference. You can't use it twice because you no longer have it.
+reference (`ptr_buf::OneShotBuf`). You can't use it twice because you no
+longer have it.
 
 **A reference that owns what it points at.** Tasks are shared between run
 queues, wait queues and the task table. OSTD's reference-counted pointer
@@ -95,12 +100,13 @@ right. [Task lifetimes](/docs/architecture/task-ownership) covers the rules.
 
 **A trait nobody else can implement.** When only a few specific types are
 acceptable, OSTD uses a sealed trait: one that outside crates can name but not
-implement, so the list of types is closed.
+implement, so the list of types is closed (`ApTrampolineAbi`, the two
+function-pointer shapes a newly started CPU may be told to jump to).
 
 **A borrow checked at run time.** Some per-CPU tables are also reached by
 other CPUs, which name a slot by its CPU number. Those go through a slot that
-counts its borrows, like a `RefCell`, so a second overlapping borrow gets
-`None` back instead of an aliasing reference.
+counts its borrows, like a `RefCell` (`sync::PerCpuSlot`), so a second
+overlapping borrow gets `None` back instead of an aliasing reference.
 
 **A slice instead of a pointer and a length.** Copying to or from user memory
 takes a slice, so the length and the buffer can't disagree.
@@ -124,6 +130,10 @@ When you write a safe kernel crate, a few habits follow from the above:
   (`VmSpace`), which keeps the tables consistent. The kernel's own tables
   take a cursor in one module only (`mm/src/kernel_mappings.rs`), which a
   gate enforces.
+- **Let destructors run.** A kernel object's destructor gives back what it
+  owns (a frame, a charge, a registration, a reference), so clippy denies
+  `mem::forget` and `ManuallyDrop::new` in kernel crates. Hand ownership on
+  through the type's own API.
 - **Hold tasks by their owning reference** and move them onto queues only
   through OSTD's placement functions.
 - **Declare entry points, linker symbols and registered items** with OSTD's
@@ -229,7 +239,7 @@ tool has no model of how different CPUs see each other's memory writes.
 | `slopos-ostd/src/mm/heap.rs` | The kernel's containers and their `try_init` constructors |
 | `slopos-ostd/src/mm/init.rs`, `slopos-ostd-derive/` | In-place construction and the `SlotFields` derive |
 | `slopos-ostd/src/user/ptr.rs` | User pointers and slices |
-| `scripts/check_safe_contract_surface.sh` | The check that keeps prose contracts out of safe functions |
+| `Cargo.toml` (`[workspace.lints.clippy]`), `kernel/clippy.toml` | The lints that keep prose contracts out of safe functions and destructors from being skipped |
 
 [Safety gates](/docs/verification/tcb-discipline) lists every check that
 applies to OSTD.

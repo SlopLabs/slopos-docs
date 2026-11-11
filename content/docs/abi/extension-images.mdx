@@ -17,7 +17,7 @@ how images are installed and run, and
 |---|---|---|
 | `<name>.ext` | The image: an ext4 volume followed by its hash tree | `just extension`, `extctl build` |
 | `<name>.meta` | The sidecar: the image's name, version and root | `just extension`, `extctl build` |
-| `<name>.meta.sig` | An SSH signature over the sidecar | `ssh-keygen -Y sign`, which `just extension` runs when `EXTENSION_KEY` is set |
+| `<name>.meta.sig` | An SSH signature over the sidecar | `ssh-keygen -Y sign -n extension@slopos`, which `just extension` runs when `EXTENSION_KEY` is set |
 
 `extctl install-signed <image>` looks for the sidecar and signature beside
 the image, at the image's path with `.ext` replaced by `.meta` and
@@ -294,7 +294,7 @@ installed and at every activation:
 | At most 1 GiB | Every ELF file |
 
 Relocatable objects and core files are not checked. `just extension` also
-runs `scripts/check_loose_programs.sh` over every ELF file outside `lib/`,
+runs `xtask programs` over every ELF file outside `lib/`,
 which refuses one containing a `syscall` instruction.
 
 ## What a service runs with
@@ -409,11 +409,25 @@ sidecar is, under the namespace `extension-config@slopos`, into
 `<file>.meta.sig`, by the key that installed the extension, which the owner
 must still trust.
 
+| Command | Who runs it | What it installs |
+|---|---|---|
+| `extctl config edit <name> <file>` | A person | Opens a copy of the file in the person's editor (as uid 0, only an editor in `/bin` or `/sbin`), then asks for the next row when the copy changed |
+| `config install <name> <file> <sha256>` | The mechanism of `org.slopos.extension.config`, holding `Seal` alone, once the person approves | Its standard input, which the requester opened, when it hashes to `<sha256>`. The mechanism opens no path for it, so only what the requester could read goes in |
+| `extctl config apply <from>` | The mechanism of `org.slopos.extension.config-signed`, unasked | `<from>`, under the sidecar `<from>.meta` and signature `<from>.meta.sig` beside it unless both are named on the command line |
+
+`/etc/<name>` is a sealed directory of mode 0755, owned by uid 0, laid out
+empty before the extension's first activation. At each install and
+activation `extctl` removes a write's temporary file and anything unsealed
+that a write cut short left in a sealed directory, and refuses a directory
+that holds anything else unsealed, which may be the owner's. A file another
+process changes while it is being written is removed rather than left
+unsealed.
+
 ## Store files
 
-The store, `/var/lib/slopos/extensions`, keeps each file as numbered
-generations (`keys.<n>`, `<name>/record.<n>`); the newest sealed one is
-believed.
+The store, `/var/lib/slopos/extensions` (`slopos_abi::fs::EXTENSION_STORE`),
+keeps each file as numbered generations (`keys.<n>`, `<name>/record.<n>`);
+the newest sealed one is believed.
 
 A line of `keys.<n>`, one per trusted key, at most 64 keys:
 
@@ -449,7 +463,7 @@ image current
 | `floor` | The version floor and its image's root: the highest version installed, or after a rollback the version it made current. An older version is refused, and so is this version with other bytes |
 | `refused` | Versions a rollback left, refused to signed installs; `-` for none |
 | `uids` | Every uid ever given the extension, kept after removal; the uid of its own name is its number |
-| `config` | The last serial of a signed settings file, when there has been one |
+| `config <n>` | The last serial of a signed settings file, when there has been one. It is written before the file goes in |
 | `why` | Why a check stopped it, when one did |
 | `image current`, `image previous` | Each image kept: its version, root, signer and grant |
 

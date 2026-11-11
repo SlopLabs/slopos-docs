@@ -7,9 +7,12 @@ When SlopOS boots with `tests=on`, the kernel test harness prints its results
 on the serial console in KTAP, the Linux kernel's test output format. The host
 runner (`tools/run_tests/`, built to `builddir/run_tests` and run by
 `just test`) reads that stream, shows progress, and can write the results as
-JSON lines. This page lists both formats and the runner's exit codes. The
-emitter is the `ktesting` crate; the parser is `tools/run_tests/parser.go` and
-the JSON writer `tools/run_tests/jsonl.go`. The options that control the
+JSON lines. A second mode of the same program, `run_tests gate`, grades a
+saved copy of the stream. This page lists both formats, the runner's exit
+codes and the gates. The
+emitter is the `ktesting` crate; the parser is `tools/run_tests/parser.go`,
+the JSON writer `tools/run_tests/jsonl.go` and the gates
+`tools/run_tests/gates/`. The options that control the
 harness (`tests.run`, `tests.verbosity` and the rest) are listed in
 [Boot options](/docs/abi/boot-options#tests).
 
@@ -22,6 +25,9 @@ harness (`tests.run`, `tests.verbosity` and the rest) are listed in
 
 Each phase prints its own header. The runner names phases by order: the first
 `TAP version 14` header is the kernel phase, the second the userland phase.
+Within a phase the harness sorts the registrations by order (`first`, then
+the default, then `last`), module path, rank and name, and runs them in that
+sequence.
 
 ## Line prefix
 
@@ -41,6 +47,19 @@ KTAP	1..N
 are applied. A test registered as explicit (`FLAG_EXPLICIT`, `utest!(...,
 explicit)`) counts only when a `tests.run` pattern is its full name. A filter
 that matches nothing gives `1..0`.
+
+## Fixtures
+
+```text
+KTAP	# fixture slopos_fs::tests::vfs_ready ok
+```
+
+When the plan holds at least one test, every `fixture!` of the phase runs
+after the header and before the first result, whatever the filter. A fixture
+is not in the plan and has no result line: one that succeeded prints
+`KTAP\t# fixture <path> ok`, where `\t` is the tab and `<path>` its module
+path and name, and one that failed prints a bail-out (below). A fixture's log
+is not captured, so what it logs on the way to failing is on the console.
 
 ## Result lines
 
@@ -130,9 +149,11 @@ KTAP	# elapsed_ms=14238 pass=2391 fail=1 skip=0 over_time=14
 ```
 
 - Each phase ends with a footer holding its time and counters.
-- If a test whose name starts with `bootstrap_` fails, the harness prints
+- If a test registered with `order = first` fails, the harness prints
   `KTAP	Bail out! <name>`, the test's name without its module path, and runs
-  no more tests in that phase.
+  no more tests in that phase. A fixture that returns `false` or panics
+  prints `KTAP	Bail out! fixture <module>::<name> failed` and the phase runs
+  no test at all.
 - The format-free abort a lockup or a broken unwind takes prints
   `=== KERNEL ABORT ===` and a reason line, which the runner records as a
   kernel abort. The other CPUs may go on producing results, so the runner
@@ -208,6 +229,103 @@ naming the event. Every field is always present; a missing value is `null`.
 ```json
 {"expected_panic":false,"fail_file":null,"fail_outcome_kind":null,"idx":17,"log":null,"name":"slopos_mm::tests::tests::test_heap_kmalloc_zeroed","outcome":"pass","over_time":false,"phase":"kernel","phase_idx":1,"pre_fail_klog_tail":null,"skip_reason":null,"subtests":[],"t":"test","time_ms":3}
 ```
+
+## Log gates
+
+`run_tests gate NAME... --log FILE [--log FILE...]` grades raw captures
+(`run_tests --raw --no-color`), one `--log` for each boot, each a whole run of
+the suite. A gate never boots QEMU. Each reads its data from
+`scripts/gates/<gate>/<variant>.txt`; `--variant` defaults to `tests`. `just
+ci-suite` runs `tests`, `lockdep` and `sched` over `builddir/ci-test.log`, and
+`just check-capture [LOG...]` runs all five over the captures named, by
+default that one.
+
+| Gate | Reads | Fails when |
+|---|---|---|
+| `tests` | Top-level result lines, by phase | The names in a log differ from `scripts/gates/tests/<variant>.txt`: a listed test is absent, a test is unlisted, or a name appears twice in one phase of one log. A skipped test counts as present; subtests and explicit tests are not listed |
+| `lockdep` | `LOCKDEP[<phase>]:` lines | A required phase is absent or not `ACTIVE`, `violations=` is not zero, a pool (classes, edges, chains) is fuller than `max-fill-pct`, or a count is under `min-classes`, `min-edges` or `min-chains` |
+| `sched` | `SCHEDCPU[<phase>]:` lines | More online CPUs are ineligible for placement than `eligible-lag` allows, an ineligible CPU is outside the `allow-ineligible` mask, a CPU dispatched nothing where `require-dispatch` is `1`, or fewer than `min-online` CPUs are online |
+| `quota` | `QUOTA[<phase>]:` and `QUOTACOST:` lines | An account's peak passes its cap, a denial is recorded beyond the `expect-denials` counts, a listed kind was never reached, or a cost ratio leaves its bound |
+| `fsperf` | `FSPERF[<phase>]:` and `FSCAP[<phase>]:` lines | A write costs more transactions, commits, device requests or barriers per MiB than its cap, the filesystem's write rate falls under its floor as a share of the same run's raw device rate, or a measurement floor is not met |
+
+The phases of the report lines are `boot`, `post-kernel-tests` and
+`post-userland-tests`.
+
+| Flag | Effect |
+|---|---|
+| `--log FILE` | A capture to grade; repeatable |
+| `--variant V` | Which gate file to read; default `tests` |
+| `--emit-allowlist` | Print a fresh gate file measured from the logs instead of grading; names exactly one gate |
+| `--require-capacity` | `fsperf`: fail when no log carries the `FSCAP` rows |
+
+The exit code is `0` when every gate passed, `1` when one failed, and `2` for
+a bad command line or a gate file that is missing, malformed or holds a
+directive the gate does not know.
+
+Several logs are graded as follows. `tests`, `lockdep` and `sched` grade each
+log on its own. `quota` takes each cap against the largest peak in any log,
+and grades denials and cost in each log, never summed. `fsperf` grades each
+row against the worst value any log reported.
+
+### Lines of the lockdep gate file
+
+| Line | Meaning |
+|---|---|
+| `max-fill-pct <n>` | The most a pool may be full, in percent of its size |
+| `min-classes <n>`, `min-edges <n>`, `min-chains <n>` | Floors on what each phase recorded, set far under every observation, so that a checker that stopped recording fails |
+| `require-phase <phase>` | A phase every log must report |
+
+The gate grades violations and capacity, not counts. The class, edge and
+chain counts move between runs of the same code, so a line that caps one or
+gives it a band is refused as a file the gate cannot apply. On a test boot
+each report is followed by `LOCKDEP-CLASS[<phase>]:` lines naming the lock
+classes registered since the last report. They are for reading; no gate
+grades them.
+
+### Lines of the sched gate file
+
+| Line | Meaning |
+|---|---|
+| `eligible-lag <phase> <n>` | How many online CPUs may not yet be eligible for placement |
+| `allow-ineligible <phase> <mask>` | Which CPUs that lag may name, as a hexadecimal mask. A count alone would accept any CPU dropping out |
+| `require-dispatch <phase> <0 or 1>` | Whether every online CPU must have switched tasks at least once. It is a flag, never a volume, because how often a CPU switches depends on the machine |
+| `min-online <n>` | Floor on the number of online CPUs |
+
+The lag is `1` at `boot` and at `post-kernel-tests` and names the boot CPU,
+which runs the boot steps, the kernel tests among them, before it enters its
+scheduler loop (`enter_scheduler(0)`, at the end of boot initialisation). It
+is `0` afterwards. The gate exists because the failure it catches is
+otherwise invisible: every placement decision filters its candidates through
+one eligibility test (`is_schedulable_cpu`), so a CPU that is online but not
+eligible receives no new or woken task and still runs what it steals from
+other CPUs. The machine boots and the suite passes while one CPU does nearly
+all the work.
+
+### Lines of the quota gate file
+
+| Line | Meaning |
+|---|---|
+| `<phase>`, tab, `<kind>`, tab, `<cap>` | The highest peak any account reached for that kind of resource in that phase |
+| `min-kinds <n>`, `min-kinds-for <phase> <n>` | How many kinds a phase must have exercised |
+| `max-denials <n>` | Refused charges allowed in total |
+| `expect-denials <phase> <kind> <n>` | The exact number of refusals the suite provokes on purpose; accepted only for `commitpages`, `process` and `task` |
+| `min-charge-over-reference <depth> <ratio>` | Floor on the cost of one charge and refund, at that depth of the account tree, over the cost of a bare compare-and-swap measured in the same run |
+| `max-depth-cost-ratio <depth> <ratio>` | Cap on the cost at that depth over the cost at depth 1 |
+| `min-reference-cycles <n>` | Floor on the reference's own cycle count |
+| `require-phase <phase>` | A phase every log must report |
+
+Ratios are written times 100. The cost check is one cap and two floors and
+never a cycle count, because a cycle count on that path measures the
+accelerator (KVM or emulation) rather than the kernel. The depth ratio is
+the one quantity that does not move with the accelerator, so it is the cap.
+The two floors prove the measurement happened. A slowdown that scales every
+depth alike passes all three; catching it would take an absolute cap, which
+would fail the unchanged tree on a machine without KVM. `--emit-allowlist`
+writes the depth cap a quarter above what it observed.
+
+The caps are measured maxima. The rows the file's header names as moving
+between runs carry the largest peak over several captures; the others are
+exact.
 
 ## See also
 

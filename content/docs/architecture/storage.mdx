@@ -125,9 +125,10 @@ Disks are named the way Linux names them:
 |------|------------|
 | `nvme0n1` | Namespace 1 of the first NVMe drive found |
 | `nvme1n2` | Namespace 2 of the second NVMe drive found |
+| `nvme<C>n<N>` | The general form: namespace `N` of NVMe drive `C`, drives counted from 0 in the order they were found |
 | `vda`, `vdb`, ... | virtio disks, in the order they were found |
 | `sda`, `sdb`, ... | USB disks, each taking the lowest letter free when it arrives |
-| `vda1`, `sda1`, `nvme0n1p2` | Partitions. When the disk name ends in a digit, a `p` separates the partition number |
+| `vda1`, `vda2`, `sda1`, `nvme0n1p2` | Partitions. When the disk name ends in a digit, a `p` separates the partition number |
 
 "The order they were found" depends on the machine and on what is plugged
 in, so `nvme0n1` on one machine can be a different disk from `nvme0n1` on
@@ -142,16 +143,22 @@ the disk itself carries:
 | `/dev/disk/by-uuid/<uuid>` | The ID the filesystem was formatted with (ext2/3/4, btrfs, or a FAT volume serial) |
 | `/dev/disk/by-label/<label>` | The name the filesystem was given when formatted |
 
-Each of these is a symbolic link to the real node, as on Linux. The
+Each of these is a symbolic link to the real node, as on Linux, and reads
+`../../<node>` (`../../nvme0n1p2`, say). The
 `by-id` names are built the way systemd's udev rules build them, so a disk
 has the same name there on SlopOS as on a Linux machine: the bus, then the
-drive's own description, with any unusual character written as `_`. The NVMe
+drive's own description, with any unusual character written as `_`. The one
+place SlopOS departs from udev is that a `/` or a `\` in the description
+becomes `_` too, where udev keeps it. An NVMe namespace is
+`nvme-<model>_<serial>_<nsid>`, so the NVMe
 drive QEMU attaches as the root disk is
 `/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_slopos-root_1` (model, serial,
-namespace), and its second partition is the same name with `-part2` on the
-end. Namespace 1 also gets the shorter name without the `_1`. A virtio disk
+namespace). A partition is its disk's name with `-part<N>` on the end, so
+that disk's second partition ends in `-part2`. Namespace 1 also gets the
+shorter name `nvme-<model>_<serial>`, without the `_1`. A virtio disk
 is `virtio-<serial>` and a USB stick
-`usb-<vendor>_<product>_<serial>-0:<unit>`, without the serial part when the
+`usb-<vendor>_<product>_<serial>-0:<lun>`, where the last number is the
+logical unit, without the serial part when the
 stick has none. An NVMe or virtio disk that reports an empty model or serial
 gets no `by-id` name at all. A label with a space or other
 unusual character in it appears in `by-label` escaped the way udev escapes
@@ -347,7 +354,11 @@ stick, each with a serial number so the `/dev/disk/by-id` names can be checked
 on all three transports. The request engine's rules for slots, timeouts,
 quarantine and ordering are tested against a simulated device, and host
 tests in `boot-core` spell out the `by-id` names systemd's rules would give
-for awkward model and serial strings. A kernel test registers a
+for awkward model and serial strings. Two kernel tests
+(`test_block_by_id_names` and `test_block_by_id_partition_names`) then look
+up the names of QEMU's own disks and of a partition on a virtio disk and on
+the stick, which is why every test disk is attached with a `serial=` value.
+A kernel test registers a
 write-protected USB disk, removes it, and registers another under the same
 name, checking that the departed disk's claim releases nothing of its
 successor's. `just test-usb` goes further on real QEMU USB
@@ -364,13 +375,16 @@ QEMU attaches are listed in [QEMU options](/docs/getting-started/qemu-options).
   stay in `block/engine.rs`, so their tests cover every transport.
 - **No allocation on the request path.** Each slot's DMA pages are allocated
   at probe, including one page for the driver's own use. A timed-out slot's
-  replacement pages are allocated before the engine lock is taken.
+  replacement pages are allocated before the engine lock is taken. The NVMe
+  host memory buffer is the one large allocation, made once at probe in
+  `DmaCoherent` chunks, and handed back only at shutdown.
 - **Quarantined pages and tags belong to the device** until it completes
   them. Freeing them early lets the device write into reused memory.
 - **The write fence** blocks every later write and flush that could reorder
   the medium behind an abandoned write, including the read half of a
-  read-modify-write. An identify request (virtio-blk's `GET_ID`) is not
-  fenced.
+  read-modify-write. An identify request (`Op::Identify`, which virtio-blk
+  sends as `VIRTIO_BLK_T_GET_ID` to read the disk's serial) is a read, so no
+  abandoned write fences it.
 - **Block size.** The ext4 driver refuses a volume whose block is smaller
   than the device's logical block, because a read-modify-write torn by a
   crash would damage bytes outside the transaction.
@@ -383,18 +397,46 @@ QEMU attaches are listed in [QEMU options](/docs/getting-started/qemu-options).
 - **Device nodes.** A block node's inode is never reused, so a descriptor
   left open across a `BLKRRPART` or an unplug fails instead of reaching
   whatever now has its name.
-- **A claim carries its disk's generation.** Releasing it after the disk has
-  left touches nothing on a disk registered since under the same name.
+- **A claim carries its disk's generation.** `unregister_disk` takes a disk
+  and its nodes out while claims on it may still be held. Releasing one
+  after the disk has left touches nothing on a disk registered since under
+  the same name.
 - **Identity reads are bounded.** A volume's UUID and label are read when
   something first names the node by one, and again only after a write claim
   that wrote is released, which no unprivileged task can cause. A probe the
   disk didn't answer is retried after five seconds, not on every lookup.
 - **A transport hands over its `by-id` identity** when it registers the disk
   (`EngineDisk::identified`), and partitions share it. The names are built in
-  `boot_core::disk_id`, never in a driver.
+  `boot_core::disk_id`, never in a driver, by the rules in the table below.
 - **Write protection is the device's word.** A driver marks the disk
   (`EngineDisk::protected`), partitions forward it, and ext4 decides
   read-only from it at mount.
+- **The panic queue never waits.** The NVMe driver's second I/O pair
+  (`PanicQueue`) is created at probe with interrupts off and its pages
+  already allocated, and is driven by polling. A panic takes it with
+  `try_lock` and gives up if it is in use, because the holder it would wait
+  for may be the code that panicked.
+- **NVMe flush and shutdown.** The driver sends a flush only to a controller
+  that reports a volatile write cache. At power off and restart its
+  `driver_core::shutdown` hook takes the host memory buffer back, deletes
+  the queues and waits for the controller to report the shutdown complete.
+  The register, command and identify layouts and the host memory sizing are
+  in `nvme-core` and tested on the host, because QEMU's NVMe model never
+  asks for host memory.
+
+The `by-id` names follow systemd's `60-persistent-storage` rules and its
+`usb_id` helper. Each part is cut at its first NUL byte, then cleaned:
+
+| Rule | What `boot_core::disk_id` does |
+|------|--------------------------------|
+| Characters kept | ASCII letters and digits, the punctuation `#+-.:=@_`, and any non-ASCII character systemd's `unichar_is_valid` accepts. Every other byte is written `_` |
+| NVMe model and serial | From Identify Controller. Trailing spaces, tabs, carriage returns and line feeds are dropped; every other whitespace byte becomes an `_` of its own |
+| virtio serial | What `VIRTIO_BLK_T_GET_ID` answers, trimmed at both ends, each run of whitespace one `_` |
+| USB vendor and product | The SCSI INQUIRY fields. A blank one falls back to the device's manufacturer or product string, decoded as Linux decodes it and cut at the length `usb_id` reads, then to the vendor or product ID in hex when that string is absent, unreadable or empty (`usb_core::storage::usb_id`). Trimmed, each run of whitespace one `_` |
+| USB serial | The device's serial string as `usb_id` takes it (`usb_core::device::string::identity`), left out when there is none |
+| Partitions | The disk's names, the shorter NVMe one included, with `-part<N>` |
+| No link | An NVMe or virtio disk with an empty part, and any name longer than `DISK_ID_MAX` |
+| Shared name | The first node published under a name keeps it, whichever of its names it is |
 
 ## Further reading
 
@@ -433,12 +475,15 @@ QEMU attaches are listed in [QEMU options](/docs/getting-started/qemu-options).
 | `drivers/src/block/engine.rs` | The shared request engine |
 | `drivers/src/block/disk.rs` | A disk over the engine: spans, write protection, the counters `block_stats` reads |
 | `drivers/src/nvme/`, `nvme-core/` | The NVMe driver and its host-tested data structures |
+| `drivers/src/nvme/panic.rs`, `drivers/src/nvme/hmb.rs` | The polled panic queue, and the host memory buffer |
 | `drivers/src/virtio_blk.rs` | The virtio-blk driver |
 | `drivers/src/usb/storage.rs` | USB sticks and drives (Bulk-Only) |
 | `drivers/src/crash.rs` | The crash partition, claimed for the boot |
 | `fs/src/partition.rs` | MBR parsing, and the devices that stand for partitions |
 | `boot-core/src/gpt.rs` | GPT parsing and writing, shared with `bootctl` and the installer |
 | `boot-core/src/disk_id.rs` | The `/dev/disk/by-id` names, host-tested |
+| `usb-core/src/storage/usb_id.rs`, `usb-core/src/device/string.rs` | The vendor, product and serial parts of a USB disk's name |
+| `drivers/src/tests/block_layer_tests.rs` | Kernel tests for claims, partitions and the `by-id` names |
 | `boot-core/src/layout.rs` | The partitions of an installed disk and their type IDs |
 | `fs/src/devfs/block.rs` | `/dev` block nodes, ioctls and `/dev/disk/by-*` |
 | `scripts/qemu_run.sh` | Which disks QEMU attaches |

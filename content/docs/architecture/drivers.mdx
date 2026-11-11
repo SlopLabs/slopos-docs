@@ -205,16 +205,41 @@ everyone:
 - **A keyboard that leaves releases what it held.** Every key it held goes
   up as it is unplugged.
 
-The layout turns a usage into text. US QWERTY is built in; others live in
-`/usr/share/keymaps/` (`us.layout`, `de_CH.layout`), and `keymap <name>`
-switches to one. Installing a layout takes the `ConsoleConfig` capability,
-so `keymap` asks privd to run it as the action `org.slopos.console.keymap`
-([Privileged actions](/docs/architecture/privd)). The
-choice is saved in `/etc/keymap`, and init applies it at every boot. Layout
-files are parsed in userland, and the kernel accepts only a compact binary
-table that it checks before installing, so it never parses text from a file.
-Dead keys (an accent typed before the letter it goes on) work as on other
-systems.
+The layout turns a usage into text. The kernel holds one layout at a time,
+and init loads the one that whoever is in front wants. On a person's desktop
+that is the layout the person chose, their `keyboard.layout` preference
+([Settings and preferences](/docs/architecture/settings)). On the login
+screen, on the console and for everyone who chose none, it is the computer's
+layout, named in `/etc/keymap`. When neither names an installed layout it is
+US QWERTY, which is built into the kernel as `us`. So two people who type on
+different layouts each get their own as the desktop in front changes. Init
+loads a layout when the session in front changes, and only if it isn't the
+one already in use; it looks again whenever it is asked to.
+
+The layouts are files in `/usr/share/keymaps/`. The base ships `us`, `gb`,
+`de`, `de_CH`, `fr`, `dvorak` and `colemak`, and the `keymap` program shows
+and chooses among them:
+
+| Command | What it does |
+|---|---|
+| `keymap` | Prints the name of the layout in use |
+| `keymap show` | Names three layouts: the one in use, yours and the computer's |
+| `keymap list` | Lists the installed layouts and marks the one in use; `keymap list --titles` adds each layout's title, such as *Swiss German (QWERTZ)* |
+| `keymap set NAME` | Makes `NAME` your own layout, used while your desktop is in front |
+| `keymap reset` | Drops your own choice, so you type in the computer's layout again |
+| `keymap set --computer NAME` | Makes `NAME` the computer's layout. The older form `keymap NAME` does the same |
+
+Choosing your own layout needs nobody's permission: `keymap` writes your
+preference and asks init to load what is wanted now. The computer's layout
+is everyone's, so `keymap set --computer` asks privd to run it as the action
+`org.slopos.console.keymap` ([Privileged actions](/docs/architecture/privd)).
+That action's mechanism writes `/etc/keymap` and asks init in the same way,
+and it refuses to set anyone's own layout. Init does the loading because
+installing a layout into the kernel takes the `ConsoleConfig` capability.
+Layout files are parsed in userland, and the kernel accepts only a compact
+binary table that it checks before installing, so it never parses text from
+a file. Dead keys (an accent typed before the letter it goes on) work as on
+other systems.
 
 Where a key goes next depends on whether a desktop is running. While a
 program holds the *input sink*, which is the compositor of the session in
@@ -225,6 +250,12 @@ goes to the console as the bytes a terminal would send: text as UTF-8, and
 keys like the arrows and F1 as the escape sequences xterm sends. The
 desktop's terminal encodes its keys with the same code, so a program sees the
 same bytes in both.
+
+A program that takes the input sink is told first where the cursor is. It
+hears of the cursor only through motion events, so without that it would
+draw the pointer where it last saw it, or in a corner of the screen, until
+the mouse next moved. A pointer event that arrives while nothing holds the
+sink goes nowhere.
 
 Pointing devices share one cursor the same way. The PS/2 mouse, the touchpad
 and every USB mouse and tablet move the same pointer, whose bounds the
@@ -237,6 +268,15 @@ button is down while any device holds it. There is room for eight keyboards
 and eight pointing devices at once; the i8042 always takes one of the
 keyboards' places, and the PS/2 mouse and the touchpad two of the pointers',
 so seven USB keyboards and six USB pointing devices fit beside them.
+
+The kernel keeps where the cursor is; drawing it is the compositor's job.
+Where the display can lay a small image over the picture (virtio-gpu and the
+Xe driver both can), the compositor gives the kernel an image and a place
+for it, and the kernel takes them only from the program that holds the
+screen. Where the display can't, the compositor paints the pointer into its
+own frames. It does one or the other and never both, so you never see two
+pointers. [Windowing](/docs/architecture/userland-windowing) describes the
+compositor's side.
 
 What isn't merged is the stream of key events itself. A keyboard pulled while
 it holds Shift still produces a Shift release event, even though another
@@ -275,8 +315,10 @@ checked by booting the laptop.
   all three buses and never interprets a device ID, so binding behaviour
   can't drift between them.
 - **Registries.** PCI drivers register with `pci_driver!`, platform drivers
-  with `platform_driver!`, USB drivers with `usb_driver!`. Default priority is
-  128; lower binds first, ties go in link order.
+  with `platform_driver!`, USB drivers with `usb_driver!`. Each macro places
+  a record in a linker section of its bus (`.usb_driver_registry` for USB),
+  which the matching step walks. Default priority is 128; lower binds first,
+  ties go in link order.
 - **Probe outcomes.** `Bound` moves the devres bag into the bus's claim
   table; `Declined` and errors drop the bag and offer the next candidate;
   `Err(ProbeError::Deferred)` retries once after the first pass on PCI and
@@ -303,9 +345,39 @@ checked by booting the laptop.
   use lines of the I/O APIC.
 - **One keyboard state.** A keyboard driver claims a `KeyboardSource` and
   reports `(source, usage, pressed)` steps to `keyboard::key`; it keeps no
-  modifier, lock or layout state of its own. A pointing device claims a
-  `PointerSource` and reports `hid-core` motion. Both release their slot when
-  the device leaves.
+  modifier, lock or layout state of its own. The i8042 is a fixed source and
+  each USB keyboard claims one of the `MAX_KEYBOARDS` slots. A press of a
+  usage its source already holds is the repeat: it goes out with
+  `KEY_FLAG_IS_REPEAT` set and toggles no lock. A pointing device claims a
+  `PointerSource` and reports `hid-core` motion, and a report changes only
+  the buttons it carries. Both release their slot when the device leaves.
+- **One encoding of keys for a terminal.** The bytes the console gets for a
+  key come from `keymap_core::vt`, and the desktop's terminal calls the same
+  functions, so the two can't disagree about what an arrow key sends.
+- **`ps2::keyboard` only decodes.** It turns scancode set 1 into usages and
+  runs the i8042's light exchange (below). Modifiers, locks and the layout
+  stay in the keyboard state.
+- **One layout, loaded by init.** `keymap::follow` in userland picks the
+  layout wanted for the session in front and loads it only when it differs
+  from the one in use. `/run/init`'s `keymap` command makes init look again;
+  a person or root may send it. A layout's title is the `title` line of its
+  file, read by `keymap-core::title`. A `keymap-core` test holds each
+  shipped layout to what three of its keys type, so a new layout file adds
+  its row there.
+- **One pointer on screen.** The compositor draws the display's overlay
+  through `cursor_set_image` and `cursor_move`, which the kernel takes only
+  from the screen's holder. A compositor starts before init hands it the
+  screen, so its first upload is refused with `EPERM`, and
+  `chrome-core::pointer` reads that as saying nothing about the display. The
+  compositor paints the pointer itself only once the display refused an
+  image, and paints none before either answer; treating `EPERM` as "no
+  overlay" showed a painted pointer beside the overlay. It puts its image
+  and place on the overlay again each time it comes in front. virtio-gpu
+  takes the pointer off the screen at bring-up, because QEMU keeps the last
+  boot's image across a device reset and goes on drawing it.
+- **A new sink holder hears the cursor first.** `input_take_sink` queues the
+  cursor's place for whoever the sink is handed to, by its seat or by init's
+  `seat_switch`, under the cursor's lock so no move overtakes it.
 - **The i8042's lights.** Changing the lock lights is a byte exchange with
   the keyboard, which its own interrupt carries forward: each acknowledgement
   sends the next byte. A byte that is refused is sent again at once, and one
@@ -349,7 +421,9 @@ checked by booting the laptop.
 | `drivers/src/usb/` | The xHCI driver, the USB bus and the USB class drivers; see [USB](/docs/architecture/usb) |
 | `acpi/` | ACPI table parsing and the AML evaluator |
 | `drivers/src/keyboard.rs`, `drivers/src/input_event.rs` | The one keyboard state, the one cursor, and where their events go |
+| `chrome-core/src/pointer.rs` | What the compositor knows of the display's pointer overlay, host-tested |
 | `keymap-core/`, `hid-core/` | Layouts, key repeat and terminal key sequences; HID report parsing, host-tested |
+| `assets/keymaps/`, `userland/src/keymap.rs`, `userland/src/apps/keymap.rs` | The shipped layout files, which layout is wanted and how it is loaded, and the `keymap` program |
 | `drivers/src/nvme/`, `virtio_blk.rs`, `virtio_net.rs`, `rtl8168.rs`, `virtio_gpu/`, `xe/`, `ps2/`, `i2c/`, `touchpad/` | The other device drivers |
 | `nvme-core/`, `rtl8168-core/`, `drivers/src/xe_logic/` | Their host-tested register logic |
 | `drivers/src/tests/` | Binding tests for PCI and ACPI, and the keyboard, cursor and i8042 tests |

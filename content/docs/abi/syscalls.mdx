@@ -30,8 +30,9 @@ call.
   built before it still boots. Slot `1056` (`roulette_draw`) is such a slot.
 - SlopRing uses private numbers, not io_uring's (425 to 427), because it does
   not implement io_uring's interface.
-- `scripts/check_syscall_abi.sh` enforces these rules. It compares every
-  number below 1024 with a vendored copy of Linux's `syscall_64.tbl`
+- The `syscall-abi` gate (`xtask lint syscall-abi`, in
+  `tools/xtask/src/lint/syscall_abi.rs`) enforces these rules. It compares
+  every number below 1024 with a vendored copy of Linux's `syscall_64.tbl`
   (`scripts/gates/syscall/linux-x86_64.tbl`) and fails if a name sits on a
   number Linux gave to another call, if the private range has a gap, if a
   number or name is used twice, or if a private name matches a Linux call
@@ -131,7 +132,7 @@ flag of the Linux call.
 | 13 | `rt_sigaction` | `NoneSelf` | `sigsetsize` must be 8. A handler other than `SIG_DFL` or `SIG_IGN` needs an `sa_restorer` (`EINVAL` otherwise) |
 | 14 | `rt_sigprocmask` | `NoneSelf` | `sigsetsize` must be 8 |
 | 15 | `rt_sigreturn` | `NoneSelf` | |
-| 16 | `ioctl` | `NoneFd` | `FIOCLEX`, `FIONCLEX` and `FIONBIO` on any descriptor; block-device requests (`BLKGETSIZE64`, `BLKGETSIZE`, `BLKSSZGET`, `BLKPBSZGET`, `BLKROGET`, `BLKRRPART`); `FS_IOC_GETFLAGS` and `FS_IOC_SETFLAGS`; terminal requests, `FIONREAD` among them, which a pipe or socket does not answer. Anything else is `ENOTTY` |
+| 16 | `ioctl` | `NoneFd` | `FIOCLEX`, `FIONCLEX` and `FIONBIO` on any descriptor; block-device requests (`BLKGETSIZE64`, `BLKGETSIZE`, `BLKSSZGET`, `BLKPBSZGET`, `BLKROGET`, `BLKRRPART`); `FS_IOC_GETFLAGS` and `FS_IOC_SETFLAGS`; terminal requests, `FIONREAD` among them, which a pipe or socket does not answer. Anything else is `ENOTTY`. `TIOCGPTPEER` on a pty master opens the slave even while it is locked (`TIOCSPTLCK`), which Linux refuses with `EIO`, so a slave handed on is never unlocked for opens by its path |
 | 17 | `pread64` | `NoneFd` | |
 | 18 | `pwrite64` | `NoneFd` | |
 | 19 | `readv` | `NoneFd` | At most 1024 segments (`UIO_MAXIOV`) |
@@ -279,7 +280,7 @@ The signature is the one the call's doc comment in `numbers.rs` states.
 | 1032 | `net_query` | `NoneSelf` | `net_query(what, ifindex, buf, len) -> bytes written`: interfaces, addresses, routes, neighbours, sockets, the resolver, global settings or the DHCP clients (`NET_Q_*`), as a header and fixed-size records. A socket's owner is named only to its owner or a `NetAdmin` holder |
 | 1033 | `net_iface_ctl` | `NetAdmin` | `net_iface_ctl(ifindex, op, arg)`: an interface up or down, its MTU, its DHCP client, flushing its addresses or neighbours or deleting one neighbour; with `NET_IFINDEX_GLOBAL`, networking on or off and a connectivity recheck |
 | 1034 | `net_addr_ctl` | `NetAdmin` | `net_addr_ctl(op, ptr, len)`: adds or removes an address (`UserAddrReq`) |
-| 1035 | `net_route_ctl` | `NetAdmin` | `net_route_ctl(op, ptr, len)`: adds or removes a route (`UserRouteReq`) |
+| 1035 | `net_route_ctl` | `NetAdmin` | `net_route_ctl(op, ptr, len)`: adds or removes a route (`UserRouteReq`). An add answers `EEXIST` for a route of that prefix already on the device, `ENOSPC` when the table is full; a delete takes the route on the device `ifindex` names, or on any device for `NET_IFINDEX_NONE` |
 | 1036 | `net_resolver_set` | `NetAdmin` | `net_resolver_set(ptr, len)`: sets or clears the static resolver (`UserResolverReq`) |
 | 1037 | `net_monitor` | `NoneSelf` | `net_monitor(mask, flags) -> fd`: a descriptor that turns readable when the network configuration changes and reads `NetEvent` records |
 | 1038 | `fb_info` | `NoneSelf` | `fb_info(out: *mut DisplayInfo)`: the display's geometry and format |
@@ -356,7 +357,8 @@ interface, and a kernel serves a range of them.
 
 A program shipped outside the base makes no private call: it reaches SlopOS
 through `libc.so`, whose exported symbols and header structure layouts only
-grow. `scripts/check_loose_programs.sh` fails an app that is static, names
+grow. `xtask programs` (`tools/xtask/src/elf/loose_programs.rs`), run after
+every userland build on the host, fails an app that is static, names
 another interpreter, does not need `libc.so` or holds a `syscall`
 instruction, and `scripts/check_libc_exports.sh` holds `libc.so` to
 `scripts/gates/libc/exports.txt` and `scripts/gates/libc/layouts.txt`.

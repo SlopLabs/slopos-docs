@@ -3,7 +3,7 @@ title: "What works"
 description: "What SlopOS can do today, in QEMU and on one real laptop."
 ---
 
-As of 2026-10-29, SlopOS commit `fa0f8f79`.
+As of 2026-11-11, SlopOS commit `b8b2855b`.
 
 SlopOS boots, runs a desktop for several people with their own accounts,
 keeps your files across reboots and crashes, talks to the network over three
@@ -85,7 +85,7 @@ started, never something its path or its user id earns
 person hold none that change the system: the most any of them holds is the
 compositor's hold on the screen and the input. When one needs more (to
 install a kernel, add a person or power the machine off), it asks a broker,
-privd, which carries out one of 34 named actions (the `action` lines of the
+privd, which carries out one of 37 named actions (the `action` lines of the
 base's policy, `assets/privd/actions`, to which an installed extension may add
 its own), after asking the person in a dialog, or at a text console's prompt,
 when the action says so. `priv` runs a command with more power the same way,
@@ -119,7 +119,9 @@ audio device, serial adapter or printer does nothing.
 
 The network stack speaks IPv4, TCP, UDP, DHCP and DNS over QEMU's virtio card,
 Realtek's RTL8168h and RTL8168M wired cards and USB Ethernet adapters, each
-configured by DHCP when it appears, and Unix sockets connect local programs.
+configured by DHCP when it appears unless the computer's kept settings
+(`/etc/network`, which `netctl` and the Settings app change) say otherwise,
+and Unix sockets connect local programs.
 An in-tree TLS 1.3 client lets `curl` fetch pages over HTTPS, and on the
 development machine `git` clones over HTTPS (through the toolchain's own
 libcurl) and over ssh ([Networking](/docs/architecture/networking)).
@@ -141,9 +143,12 @@ commands with a grant the computer's owner approved
 
 The desktop has a compositor with a dock, a menu bar, a system menu and lock
 and login screens, all drawn from one theme. Its apps are the terminal, a
-text editor, a file manager, an image viewer, the System Monitor, a widget
-gallery and the installer's window ([Desktop](/docs/architecture/desktop),
-[Windowing](/docs/architecture/userland-windowing)).
+text editor, a file manager, an image viewer, the System Monitor, Settings
+(network, users, keyboard, desktop and about panels, each driving the
+command a terminal would run), a widget gallery and the installer's window
+([Desktop](/docs/architecture/desktop),
+[Windowing](/docs/architecture/userland-windowing),
+[Settings and preferences](/docs/architecture/settings)).
 
 ## Installing and updating
 
@@ -185,10 +190,11 @@ driven from it: commands, files, the kernel log, and new kernels and bases
 
 ## How it is checked
 
-The QEMU suite plans at least 3,100 tests: that is the floor
-`scripts/check_test_count.sh` fails under (`TEST_COUNT_BASELINE`, set to 3,100
-on 2026-10-28), counted from what one test boot plans across the kernel and
-userland phases. Host-side unit tests run beside it, and longer checks boot
+The QEMU suite is a tracked list of 3,116 tests, 3,032 in the kernel phase
+and 84 userland test programs (the subtests a test program reports are not
+counted): `scripts/gates/tests/tests.txt`. The test runner's `tests` gate
+(`run_tests gate tests`) holds each CI boot to it, failing on a listed test
+that did not run, a test that ran unlisted and a name reported twice. Host-side unit tests run beside it, and longer checks boot
 their own machines to cover USB hotplug, installs, updates, remote control and
 self-hosting ([Write tests](/docs/development/adding-tests)).
 
@@ -198,13 +204,14 @@ enforce; the third-party libraries it links, the two pinned ones (the
 unwinder and the DWARF reader) and a few from crates.io, carry the rest
 ([The framekernel](/docs/verification/framekernel)). Machine-checked proofs
 cover selected parts of its logic and of SlopRing's and TCP's
-([Proofs](/docs/verification/verus-status)). At this commit:
+([Proofs](/docs/verification/verus-status)). All three rows are measured at
+this commit:
 
 | Measure | Value | Measured with |
 |---------|-------|---------------|
 | `pub unsafe fn` in `slopos-ostd` | 52 | `grep -rn "pub unsafe fn" slopos-ostd/src` |
 | `pub unsafe trait` in `slopos-ostd` | 15 | `grep -rn "pub unsafe trait" slopos-ostd/src` |
-| Lines of `unsafe` code over all kernel Rust lines | 0.311 % (1,126 of 362,063, counting the vendored unwinder and DWARF reader) | `just tcb-ratio`; the gates fail above 1 % |
+| Lines of `unsafe` code over all kernel Rust lines | 0.318 % (1,159 of 364,230, counting the vendored unwinder and DWARF reader) | `just tcb-ratio`; the gates fail above 1 % |
 
 ## Summary
 
@@ -224,13 +231,13 @@ cover selected parts of its logic and of SlopRing's and TCP's
 | USB | xHCI, hubs, keyboards, pointers, sticks, Ethernet adapters, hotplug | Works with limits | [USB](/docs/architecture/usb) |
 | Network | IPv4, TCP, UDP, DHCP, DNS, Unix sockets, TLS 1.3 | Works with limits | [Networking](/docs/architecture/networking) |
 | Userland | C library, shell, coreutils, e2fsprogs | Works | [Userland](/docs/architecture/userland) |
-| Desktop | Compositor, terminal, editor, file manager, image viewer, System Monitor | Works | [Desktop](/docs/architecture/desktop) |
+| Desktop | Compositor, terminal, editor, file manager, image viewer, System Monitor, Settings | Works | [Desktop](/docs/architecture/desktop) |
 | Software | Base replaced live, `/usr/local` and `~/.local` trees, extensions | Works | [Installed software](/docs/architecture/software) |
 | Installing | Install medium, installer window and command, rescue shell | Works with limits | [Installing SlopOS](/docs/self-hosting/installing) |
 | Updates | A/B kernel slots with fallback, current and previous bases | Works with limits | [Updating SlopOS](/docs/self-hosting/updating) |
 | Self-hosting | Builds and installs itself, in QEMU and on the laptop | Works with limits | [Development machine](/docs/self-hosting/development-machine) |
 | Remote control | A paired machine driven from the host | Works | [Remote control](/docs/self-hosting/remote-control) |
-| Testing | At least 3,100 QEMU tests, host unit tests, long checks | Works | [Write tests](/docs/development/adding-tests) |
+| Testing | 3,116 listed QEMU tests, host unit tests, long checks | Works | [Write tests](/docs/development/adding-tests) |
 | Verification | One unsafe crate, gates, Verus proofs, Miri | Works | [The framekernel](/docs/verification/framekernel) |
 
 ## Programs on every base
@@ -243,7 +250,7 @@ Every base carries these programs, listed in `scripts/lib/base.sh`; `init`,
 init privd shell coreutils terminal compositor roulette halt bootctl installer
 installer-ui sysmon nmap ip keymap ss nc curl ping oops_smoke cpufreq remoted
 kconsole endtask prof tree-install session login extctl users authcheck priv
-mke2fs e2fsck resize2fs tune2fs debugfs dumpe2fs
+netctl prefs settings mke2fs e2fsck resize2fs tune2fs debugfs dumpe2fs
 ```
 
 `coreutils` answers to these names, each a link to it:

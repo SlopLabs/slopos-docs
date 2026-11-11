@@ -3,7 +3,7 @@ title: "Hardware"
 description: "What you need to run SlopOS in QEMU, and what has been tried on the one laptop it runs on."
 ---
 
-As of 2026-10-29, SlopOS commit `fa0f8f79`. The laptop results below were
+As of 2026-11-11, SlopOS commit `b8b2855b`. The laptop results below were
 recorded between 2026-10-03 and 2026-10-11, on builds from that period.
 Since then the source tree records one thing from a real machine: a fix, on
 2026-10-16, for `just remote-install` being refused there.
@@ -20,6 +20,14 @@ clang, and building them first builds the C++ runtime) and enough memory for
 the guest. The [Quickstart](/docs/getting-started/quickstart) has one
 install command per platform. Go builds the test runner behind `just test`, and
 `openssl` and `ssh-keygen` are needed for the TLS tests in `just test-host`.
+
+Two things are downloaded for you, each pinned by checksum. The first boot
+fetches the UEFI firmware (`scripts/setup_ovmf.sh`, into `third_party/ovmf/`),
+and the first image build fetches the Limine boot loader's binary release
+(`limine-binary.tar.xz`, unpacked into `third_party/limine`). On a machine
+with no network, put them there beforehand;
+[Troubleshooting](/docs/getting-started/troubleshooting) lists the files and
+the variables that point the downloads elsewhere.
 
 QEMU is much faster when it can use the processor's virtualisation support:
 KVM on Linux, HVF on macOS. Without it, QEMU falls back to emulating every
@@ -48,7 +56,13 @@ listed on [QEMU options](/docs/getting-started/qemu-options).
 ## The emulated machine
 
 QEMU presents a modern PC (the `q35` machine) with UEFI firmware (OVMF) and the
-Limine boot loader. Disks are NVMe, plus virtio disks and a USB stick in the
+Limine boot loader. On Linux the boot scripts start it as
+`-machine q35,accel=kvm:tcg`, which means KVM when it is there and software
+emulation otherwise. The kernel needs the machine's I/O APIC, which `q35`
+provides, and the virtio disk and network card must offer MSI-X or MSI
+interrupts, which QEMU's do: without either, those two drivers panic at
+boot, while the virtio display driver declines the device and leaves the
+firmware's framebuffer in use. Disks are NVMe, plus virtio disks and a USB stick in the
 test suite; the network card and the display are virtio devices, and the
 keyboard and mouse are the classic PS/2 kind. The test suite adds an xHCI USB
 controller, and `just test-usb` adds both of QEMU's xHCI models with sticks,

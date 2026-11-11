@@ -247,7 +247,16 @@ guest uses it.
 
 | Variable | Effect |
 |----------|--------|
-| `QEMU_DEBUG=1` | GDB stub on TCP port 1234 and the QEMU monitor on `/tmp/slopos-monitor.sock`. `boot-debug` sets it |
+| `QEMU_DEBUG=1` | QEMU's GDB stub and its monitor, each on a Unix socket. `boot-debug` sets it |
+| `QEMU_GDB_SOCK` | Path of the GDB stub's socket; default `builddir/qemu-gdb.sock`. `rr-replay` and `rr-gdb` put the replay's stub there too |
+| `QEMU_MONITOR_SOCK` | Path of the monitor's socket; default `builddir/qemu-monitor.sock` |
+
+Neither is a TCP port, because whoever connects reads and writes the guest's
+memory: any local user can reach a loopback port, and QEMU's user networking
+hands the guest the host's loopback as `10.0.2.2`.
 
 `just debug-gdb`, `just debug-bt` and `just debug-monitor` attach to a running
-`boot-debug`. See [Debugging with GDB](/docs/development/debugging-gdb-record-replay).
+`boot-debug`; by hand, the same is
+`gdb builddir/kernel-dev.elf -ex "target remote builddir/qemu-gdb.sock"` and
+`socat - UNIX-CONNECT:builddir/qemu-monitor.sock`. See [Debugging with
+GDB](/docs/development/debugging-gdb-record-replay).

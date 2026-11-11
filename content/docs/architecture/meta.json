@@ -33,6 +33,7 @@
     "software",
     "extensions",
     "userland-windowing",
-    "desktop"
+    "desktop",
+    "settings"
   ]
 }

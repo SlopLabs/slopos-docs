@@ -85,9 +85,9 @@ library keeps its promises.
 
 So a program built outside the base should not make system calls itself.
 The apps are held to that: a check after every userland build on the host
-fails one that is statically linked, names another loader, does not list
-`libc.so` among the libraries it needs, or contains a `syscall` instruction
-of its own. The desktop toolkit the apps use
+(`xtask programs`) fails one that is statically linked, names another loader,
+does not list `libc.so` among the libraries it needs, or contains a `syscall`
+instruction of its own. The desktop toolkit the apps use
 reaches the system through `slopos-cabi`, a thin layer of safe Rust over
 functions `libc.so` exports, so the same toolkit code links into a static
 base program against slibc's Rust library and into an app against
@@ -112,7 +112,8 @@ extension's own `lib` directory for that extension's programs, and last
 `~/.local/lib` and `/usr/local/lib`, which it skips for a process running as
 uid 0 or marked `AT_SECURE` (the kernel's mark on a program that starts
 holding a capability beyond those every program has, or running with ids
-other than the real ids of whoever started it), so a library a person can
+other than the real ids of whoever started it, or that is an extension's
+program, whoever starts it), so a library a person can
 write never reaches a program holding more than they do.
 [Installed software](/docs/architecture/software#how-programs-and-libraries-are-found)
 gives the exact order and the reason for it. Two debugging switches help when
@@ -211,12 +212,12 @@ may ask you first (see [Privileged actions](/docs/architecture/privd)).
 
 | Kind | Programs |
 |---|---|
-| People and sessions | `users` (the people on the machine, their passwords and who administers it), `session` (restart, end or lock your session, or show the login screen), `login` (the console's login prompt), `priv` (run a command with power over the machine's settings, the job `sudo` does elsewhere), `endtask` (end another person's program), `/sbin/authcheck` (checks a password) |
+| People and sessions | `users` (the people on the machine, their passwords and who administers it), `session` (restart, end or lock your session, or show the login screen), `login` (the console's login prompt), `priv` (run a command with power over the machine's settings, the job `sudo` does elsewhere), `endtask` (end another person's program), `prefs` (your own preferences: the desktop's background and clock and your keyboard layout), `/sbin/authcheck` (checks a password) |
 | Booting, installing and updating | `bootctl` (kernel slots, bases and crash records), `installer` and `installer-ui`, `tree-install` (see [Installed software](/docs/architecture/software)), `extctl` (extensions), `halt` (power off or restart) |
 | Disks | `mke2fs`, `e2fsck`, `resize2fs`, `tune2fs`, `debugfs` and `dumpe2fs` in `/sbin`, from e2fsprogs |
 | Looking inside | `sysmon` (the System Monitor), `cpufreq`, `prof` (the kernel's profiler), `kconsole` (the diagnostic console's reports) |
-| Network | `ip` (interfaces, addresses and routes), `ss` (sockets), `ping`, `nc` (a TCP or UDP connection), `nmap` (the machines on the local network), `curl` (HTTP and HTTPS), `remoted` (the paired agent a host drives, see [Remote control](/docs/self-hosting/remote-control)) |
-| Desktop | `compositor`, `terminal`, `keymap` (the keyboard layout), `roulette` (the Wheel of Fate) |
+| Network | `ip` (interfaces, addresses and routes, until the next start), `netctl` (the network settings the computer keeps and starts with), `ss` (sockets), `ping`, `nc` (a TCP or UDP connection), `nmap` (the machines on the local network), `curl` (HTTP and HTTPS), `remoted` (the paired agent a host drives, see [Remote control](/docs/self-hosting/remote-control)) |
+| Desktop | `compositor`, `terminal`, `settings` (the Settings app, see [Settings and preferences](/docs/architecture/settings)), `keymap` (the keyboard layout), `roulette` (the Wheel of Fate) |
 
 `/sbin` also holds `init` (see [Init and services](/docs/architecture/init))
 and `privd`. The apps outside the base live in `/usr/local/bin`: the editor
@@ -322,15 +323,25 @@ self-hosting tests, which build software with cargo on SlopOS itself. On every c
 - **Threads and TLS.** pthreads are built on the kernel's futex. Thread-local
   storage uses the x86-64 variant II layout through `FS_BASE`, which `execve`
   resets for every new image.
-- **The unwinder is a feature.** Only the `libc.so` and `libc.a` builds turn
-  on slibc's `unwinder` feature. The base's programs take slibc as a Rust
-  library without it, abort on panic and discard their unwind tables.
+- **The unwinder is a feature, and it ships.** `libc.so` and `libc.a` supply
+  the Level-1 Itanium unwinder (`vendor/unwinding`, the `_Unwind_*` entry
+  points `libc.so` exports) on every image, not only the test one. It sits
+  behind slibc's `unwinder` cargo feature, which only those two wrapper
+  crates (`slibc/cdylib`, `slibc/staticlib`) turn on, and both are built with
+  `-C force-unwind-tables`, because the first frame of every unwind is one of
+  their own. The cost is that the shipped `libc.so` carries the DWARF reader:
+  startup registers the frame finder unconditionally, so the linker's
+  `--gc-sections` cannot drop it, and the apps outside the base unwind
+  through it. The base's static programs are unaffected: they take slibc as
+  a Rust library with the feature off, abort on panic, and
+  `userland/userland.ld` discards `.eh_frame` outright.
 - **Licences are checked.** `check_libc_license.sh` holds every crate
   `libc.so`, `libc.a`, `crt0.o` and `libbuiltins.a` are built from to a
   licence MIT alone satisfies, and their sources to files inside `slibc/`,
   `slibc-core/` and `abi/`, bar the `toolchain/libc/` fork the headers are
   rendered from. A third-party crate needs an entry in
   `slibc/NOTICE`, which ships in `/usr/share/licenses/slibc/`.
+  [Licensing rules](/docs/development/licensing) has the rest.
 - **The search path is stated once,** as `DEFAULT_PATH` in `slopos-abi`,
   which the shell, `execvp` and the tools that search `PATH` share.
 - **`slopos-rt` depends only on `abi` and slibc,** so shared userland
@@ -368,6 +379,8 @@ self-hosting tests, which build software with cargo on SlopOS itself. On every c
 | `abi/` | Constants and layouts shared by the kernel and slibc |
 | `toolchain/libc/` | The headers' upstream fork |
 | `scripts/check_libc_exports.sh`, `scripts/gates/libc/` | `libc.so`'s recorded exports and layouts |
+| `tools/xtask/src/elf/loose_programs.rs` | The check that holds the apps to `libc.so` |
+| `userland/userland.ld` | The static programs' linker script, which discards unwind tables |
 | `cabi/` | How the desktop toolkit reaches `libc.so` |
 | `shell-core/`, `userland/src/apps/shell/` | The shell's parser and the shell program |
 | `userland/src/apps/coreutils/` | The multicall utilities |

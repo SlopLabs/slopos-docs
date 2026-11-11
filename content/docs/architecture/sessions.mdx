@@ -97,7 +97,7 @@ session ends when its shell does.
 
 Init writes the table to `/run/sessions`, one file per session named by its
 login tag, through a temporary file and a rename so a reader never sees half
-of one:
+of one, the way logind keeps `/run/systemd/sessions`:
 
 ```text
 $ cat /run/sessions/1048576
@@ -124,7 +124,8 @@ it. Nothing can change a running process's tag, so a session's processes are
 exactly the ones carrying its tag, whatever user they run as and wherever in
 the process tree they are.
 
-Init gives each session a tag of its own from a range reserved for sessions,
+Init gives each session a tag of its own from a range reserved for sessions
+(`slopos_abi::task::SESSION_LOGINS`),
 and never gives one twice in a boot. The tags outside that range name what
 runs for the system: `remoted` and what it runs carry 1, privd and the
 mechanisms it starts as uid 0 carry 2, and extensions' services and actions
@@ -176,12 +177,18 @@ it.
 Say `user` is logged in and alice is not. `user` opens the system menu and
 chooses *Switch user…*. The compositor asks init to show the login screen:
 init starts it as a new session, hands it the seats and tells `user`'s
-desktop `behind`, so that desktop locks. Then alice logs in:
+desktop `behind`, so that desktop locks. The login screen lists the people
+with the first one chosen and the keyboard already in the password field, so
+that person types their password at once; Tab or
+Shift+Tab reaches the list, where the arrows or the first letters of a name
+choose someone else. Then alice logs in:
 
 <SessionLogin />
 
 The password never travels on a command line: the login screen gives it to
-privd's `org.slopos.login` on a pipe, privd hands it to the mechanism's
+privd's `org.slopos.login` on a pipe (the policy's `allow greeter` lets only
+uid 50 running a base program, and root, ask for it), privd hands it to the
+mechanism's
 standard input, and the mechanism hands it to `/sbin/authcheck` on another
 pipe. Each wrong password since that person's last right one doubles the wait
 before the mechanism answers, from two seconds up to a minute, counted under
@@ -193,6 +200,11 @@ screen also unlocks her desktop. Either way, the login screen ends once a
 desktop has replaced it, and starts over, listing the people as they are then,
 each time it comes in front again. If the desktop it is waiting for has not
 come in front within thirty seconds, it starts over too.
+
+The mechanism is `/bin/session login desktop|console <name>`, running as uid
+0. It asks `authcheck` only when the person has a password, and then asks
+init to bring that person's desktop in front or, for a console login, to
+start a shell on the terminal at its standard output.
 
 At most four desktops and login screens run at once, because init made four
 channels for permission questions at boot, one for each; a fifth login is
@@ -236,7 +248,9 @@ Password:
 ```
 
 `login` asks privd for `org.slopos.login` too, with `login console carol`, and
-hands the mechanism a terminal it made for the shell. If the password is
+hands the mechanism a terminal it made for the shell, one that can't be
+opened by its path ([Users and file permissions](/docs/architecture/users#who-owns-what-on-a-disk)
+says how). If the password is
 right, the mechanism hands that terminal to init, which starts carol's shell on
 it as a `console` session of its own; if not, `login` prints
 `Login incorrect` and asks again. While init lists the session, `login`
@@ -299,11 +313,17 @@ the screen comes up so that someone can look.
   `remoted`, privd's mechanisms and extensions' services have none, and it
   keeps eight: when a ninth session copies, the one copied into longest ago
   is dropped.
+- **The keyboard layout.** While a person's desktop is in front, init loads
+  the layout that person chose; for the login screen, the console and anyone
+  who chose none, it loads the computer's, kept in `/etc/keymap`
+  ([Settings and preferences](/docs/architecture/settings)).
 - **A share of the machine.** Each person's processes are counted against an
   account of their own, which may hold a quarter of the machine's processes
   and a quarter of its threads. One person's fork bomb stops there and leaves
   the other people's sessions running. The first sixteen people to run
   anything in a boot get such an account; a later one shares the system's.
+  A process that has exited but that nobody has collected yet (a *zombie*)
+  still counts against its person, not against whoever started it.
   Memory stays the machine's, under one limit (see
   [Resource limits](/docs/architecture/resource-accounting)).
 
@@ -353,9 +373,14 @@ receives and where it asks.
 
 ## For contributors
 
-- **A login tag is set only at spawn, by a `SetId` holder.** Adding another way
-  to set or change one would let a process leave its session or join
-  another's.
+- **A login tag is set only at spawn, by a `SetId` holder** (`SpawnAttrs::login`
+  under `SPAWN_SET_LOGIN`). Adding another way to set or change one would let
+  a process leave its session or join another's.
+- **A tag is never given twice in a boot.** Sessions take theirs from
+  `SESSION_LOGINS`; an extension's service gets one computed from its
+  extension's number and its place among that extension's services
+  (`init_control::service_tag`), so a re-executed init finds its processes
+  again.
 - **Only init moves the seats.** A compositor init starts must never take a
   seat itself; it waits for `seat_switch`.
 - **Locked first, input second.** A compositor reads init's word before each
@@ -367,6 +392,12 @@ receives and where it asks.
 - **Four channels.** The number of desktops and login screens at once is the
   number of consent channels init makes at boot (`sessions::LINKS`), because a
   running process cannot be handed a new socket pair.
+- **A person's ceiling counts every task.** It is a quarter of
+  `MAX_PROCESSES` and of `MAX_TASKS`; a fork and a new thread are charged as
+  a spawn is (`charge_clone`), and an exiting process leaves its task charge
+  on its person's row until it is reaped (`ChargeSlot::bequeath_into`), since
+  the row outlives the process's own account. Charging a parent instead
+  would let one person's unreaped children use up another's budget.
 
 ## Further reading
 
@@ -393,7 +424,7 @@ receives and where it asks.
 | `userland/src/apps/session.rs`, `userland/src/apps/login.rs` | `/bin/session` and the console prompt |
 | `userland/src/sessions.rs` | `/run/sessions` |
 | `userland/src/apps/compositor/gate.rs` | The login and lock screens, Ctrl+Alt+Delete |
-| `priv-core/src/sessions.rs` | The table as privd receives it, and where a request is asked |
+| `priv-core/src/sessions.rs` | `slopos_priv_core::sessions`: the table as privd receives it, and where a request is asked |
 | `core/src/syscall/ui_handlers.rs`, `drivers/src/input_event.rs` | `seat_switch`, and the kernel's clipboard per login tag |
 | `userland/src/apps/compositor/protocol.rs` | The desktop's clipboard, which apps use |
 | `slopos-ostd/src/process/quota/persons.rs` | Each person's share of processes and threads |

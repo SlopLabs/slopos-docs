@@ -245,7 +245,9 @@ The shorter commit interval is deliberate. The machine SlopOS most often
 loses power on is a QEMU window that a developer closes without shutting down
 first, usually right after a long build has finished. Marking an idle disk
 clean helps with the same thing: a window closed on an idle machine leaves a
-disk that needs no recovery at all.
+disk that needs no recovery at all. It is the state a mounted ext4 disk on
+Linux reaches only when asked to, with `fsfreeze`; SlopOS reaches it by
+itself whenever a disk has been idle for a moment.
 
 ## How it is tested
 
@@ -269,6 +271,67 @@ disk images made and checked by `mke2fs` and `e2fsck`, and kernel tests cover
 the cases where SlopOS must refuse or undo: a journal entry torn halfway
 through, a journal under a clear flag, an operation that fails after changing
 half of its blocks.
+
+## For contributors
+
+- **The in-use mark has an order.** On a disk with a journal, "in use" is
+  the `needs_recovery` feature flag plus a journal whose own header says it
+  is live. Marking the disk in use writes the flag first and the journal
+  header second; marking it at rest empties the journal header first, waits
+  for a flush, and clears the flag second. Either way a crash in between
+  leaves the flag set over an empty journal, which is harmless. The reverse
+  order could leave a live journal under a clear flag, which `e2fsck -p`
+  won't decide by itself. A disk without a journal is marked through the
+  superblock's `s_state` field.
+- **When the mark moves.** The flusher marks a mount at rest only after a
+  pass that leaves nothing dirty, nothing unflushed, no superblock change
+  and an empty journal, and only once the mount has had nothing to write for
+  an idle interval, because a busy mount would otherwise pay a superblock
+  read, write and flush each way on every pass. `Ext4Fs::transaction`
+  marks it in use again before the next change reaches the disk, so every
+  mutation must go through it. A mount owes the at-rest mark from the moment
+  it attaches, since attaching marked it in use and a mount nothing writes
+  to runs no pass.
+- **Journal format.** jbd2 as the kernel documents it and e2fsprogs replays
+  it: descriptor blocks whose tags carry checksums (`CSUM_V3`), revoke
+  blocks, and a commit block written only behind a flush that covers its
+  transaction's records and the data they name. The journal lives in the
+  journal inode, which has no name, and a directory entry that reaches any
+  reserved inode is refused as damage.
+- **Commits are grouped in memory.** An operation's records are staged in a
+  ring of block images (`Journal::pending`, at most `PENDING_SLOTS_MAX`
+  slots) and reach the disk together. `sync_log` does it: it writes dirty
+  file data to its final location, writes the ring with each commit block
+  behind a flush, and flushes again. The flusher calls it every
+  `COMMIT_INTERVAL_MS`, a full ring calls it inline, and `fsync` is the
+  file's data plus `sync_log`.
+- **One open transaction.** The operations whose records are still in the
+  ring share one commit record, written when the ring goes out. An operation
+  that touches a block already logged there rewrites that slot in place, so
+  a burst of creates in one directory doesn't log the directory and
+  inode-table blocks once per create.
+- **What must be durable first.** A metadata block is written to its final
+  location only once its newest journal record is durable. A block that an
+  operation frees isn't handed out again until that free is durable, or a
+  crash that loses the free would leave another file's bytes in the old
+  owner's block. Freeing a block whose data exists only in the cache writes
+  the data to its place first, because an earlier operation's commit can
+  reach the disk without the later one's.
+- **A failed flusher trip is remembered.** The flusher copies dirty data out
+  and writes it with the mount lock released (see the flusher gate in
+  [Filesystem](/docs/architecture/filesystem#for-contributors)). If a trip
+  fails, a later flush answers an error until the flusher has made those
+  blocks dirty again, so no commit goes out over data that never landed.
+- **Without a journal.** The journal belongs to the disk image, not to the
+  kernel. An image built with `FS_JOURNAL_SIZE=0` gets operations that can
+  only be undone in the cache, and is still refused a writable mount after
+  an unclean shutdown. The boot log says which of the two a mount got. By
+  default the build sizes the journal as a fixed fraction of the image,
+  between a floor and a ceiling that `scripts/build_fs_image.sh` states.
+- **The crash test's kernel half** (`test_ext4_rude_exit`) is registered
+  `FLAG_EXPLICIT`, so it runs only when `tests.run` names it exactly: it
+  ends the machine. The host half replays with `e2fsck -E journal_only` and
+  then requires `e2fsck -fn` to pass and the disk to be at rest.
 
 ## Further reading
 
@@ -304,6 +367,7 @@ half of its blocks.
 | `ext4-core/src/jbd2.rs`, `ext4-core/src/recovery.rs` | The journal's on-disk format and replay, host-tested |
 | `fs/src/tests/journal.rs` | Kernel tests for commits, rollbacks and refused replays |
 | `fs/src/tests/rude_exit.rs`, `scripts/check_fs_replay.sh` | The two halves of the crash test |
+| `fs/src/ext4/mod.rs` | `Ext4Fs::transaction`, and marking a disk in use and at rest |
 
 [Filesystem](/docs/architecture/filesystem) covers the rest of the
 filesystem: mounts, choosing the root, the read-only base image and the

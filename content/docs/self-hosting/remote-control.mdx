@@ -53,6 +53,9 @@ the *pairing* (the broker's certificate authority, its address and a token)
 is packed into the base, the read-only image the system's programs come from,
 at `/usr/share/slopos/remote/`. No process can change it, and `remoted` reads
 it from nowhere else; it doesn't even take an address on its command line.
+Init starts `remoted` only when the base carries
+`/usr/share/slopos/remote/remote.conf`, so a base without a pairing runs no
+agent at all.
 [Base system](/docs/architecture/base) explains why nothing can write the
 base.
 
@@ -89,8 +92,9 @@ A command runs like this:
   you pass `--cwd`, and standard input is empty unless you pass `--stdin`.
 - **For how long.** With `--timeout`, the command's process group gets
   `SIGTERM`, then `SIGKILL` two seconds later, and `just remote` exits with
-  status 124. Otherwise the exit status is the command's, or 128 plus the
-  signal that killed it.
+  status 124. `SIGTERM` comes first so that a program waiting on a mechanism
+  privd runs for it can pass the signal on before it dies. Otherwise the
+  exit status is the command's, or 128 plus the signal that killed it.
 
 Files move as whole, checked copies. A push writes into a temporary file
 beside the target and renames it into place, so a reader sees the old file
@@ -191,10 +195,19 @@ base's pairing into the base it builds. `remote.py` refuses to serve or
 install a base paired with another broker, or with none, because the computer
 would boot unreachable.
 
+The pairing reaches a base through one door. The build writes the pairing's
+three files (`remote.conf`, the CA and the token) into a directory and names
+it in `REMOTE_PAIRING_DIR`; the tool that packs the base (`tools/initramfs`)
+packs that directory whole or not at all. The paired base is a separate
+file, `builddir/initramfs-remote.cpio`, so the base every other image packs,
+`builddir/initramfs.cpio`, never carries a token.
+
 ## Everyday commands
 
 With the broker running (`just remote-serve`, in a terminal of its own), the
-`just remote` subcommands reach the newest connected agent:
+command-line tool reaches it over a unix socket:
+`just remote status|wait|run|sh|push|pull|klog`. Each subcommand goes to the
+newest connected agent:
 
 | Command | What it does |
 |---------|--------------|
@@ -233,8 +246,9 @@ builds and installs your current tree on the paired computer:
 1. It picks a fresh build tag, `remote-<UTC date and time>`, and builds a
    paired base under it.
 2. It builds the release kernel without a tag and compares it with the kernel
-   it last installed under the running kernel's tag. Only a kernel that
-   changed is built again, under the new tag.
+   it last installed under the running kernel's tag
+   (`remote.py kernel-changed` prints `same` or `changed`). Only a kernel
+   that changed is built again, under the new tag.
 3. It pushes the base and installs it with `bootctl base install`. When the
    running kernel serves the new base, the computer switches to it at once,
    and the recipe waits for `remoted` to report the new base's tag:
@@ -279,6 +293,31 @@ before it writes anything.
   switch that only changes the `remoted` program lets it finish what it is
   serving first.
 
+## What may be done to a real computer
+
+SlopOS development otherwise stays inside the repository and inside QEMU:
+no kernel copied to a system path, nothing installed or chain-loaded on real
+hardware. The remote control is the one exception, and it applies to people
+and to coding agents working in the tree alike:
+
+- **Which computer.** Only a SlopOS computer that its owner has booted on a
+  base paired with this host (`just remote-serve` and the bootstrap it
+  prints).
+- **By what.** Only through `scripts/remote.py` (`just remote`,
+  `just remote-install`). It runs programs there, moves files, installs a
+  base on the computer's boot partition and a kernel into its spare boot
+  slot.
+- **What stays untouched.** Never write the computer's EFI system partition,
+  its firmware variables beyond what `bootctl` does, or another system's
+  partitions.
+- **When to commit.** Commit a slot (`--commit`, `bootctl commit`) only once
+  the boot it came from answered with the expected tag. Until then the
+  default kernel is the way back.
+
+On the Linux machine itself the old rule holds: Limine, OVMF and the kernel
+are development artifacts, and `/boot`, `/efi` and other host-level
+locations are left alone.
+
 ## How it is tested
 
 `just test-remote` builds a disk shaped like an installed computer, whose base
@@ -313,9 +352,16 @@ serving has finished.
 
 Two rules keep the pairing meaningful. `remoted` reads where to dial only from
 the base, never from a file a program could write or from its arguments. And
-the privd connection it makes goes only to a mechanism or the shell, which
-hands it on only to mechanisms it starts itself; anything else could pass it,
-and the agent's powers with it, to code from outside the base.
+the privd connection it makes (named to the program by `PRIVD_FD` in its
+environment) goes only to a mechanism or the shell
+(`slopos_userland::privd::takes_connection`); anything else could pass it,
+and the agent's powers with it, to code from outside the base. A mechanism
+keeps the connection from whatever it starts. The shell hands it on (its
+`privd_for`) only to a mechanism that the shell's own process starts while
+its environment still names the connection: not from a subshell or a
+pipeline stage, and not while a mechanism it already handed it to is alive,
+because two requesters reading one connection could each take the other's
+replies.
 
 ## Further reading
 

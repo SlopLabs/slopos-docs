@@ -83,7 +83,7 @@ directly.
 | `Mount` | `mount` and `umount` | privd; the installer, what `priv` runs |
 | `RawBlock` | Reading and writing disks and partitions directly, re-reading a partition table, reading and erasing crash records; it also lifts the per-process disk-space limit | privd; `bootctl`, the installer and the e2fsprogs programs it starts |
 | `Clock` | Setting the wall clock | privd; what `priv` runs |
-| `NetAdmin` | Changing the network: interfaces, addresses, routes, the resolver and DHCP; seeing which process owns every socket | privd; `ip`, what `priv` runs |
+| `NetAdmin` | Changing the network: interfaces, addresses, routes, the resolver and DHCP; seeing which process owns every socket | privd; `ip`, `netctl` (which init also runs at boot to apply the kept network settings), what `priv` runs |
 | `Seal` | Setting or clearing a file's immutable flag (what `chattr +i` sets) | privd; `users`, `extctl`, the installer |
 | `BootEntry` | On top of `Power`, the firmware's boot manager entries: `Boot####`, `BootOrder`, `BootNext` and `BootCurrent`, and no other firmware variable | privd; the installer |
 | `SetId` | Taking a user or group id the process doesn't already hold, setting supplementary groups, and starting a child as someone else or with a login tag | privd |
@@ -135,7 +135,10 @@ gated capability, or runs with ids other than its spawner's real ones, starts in
 *secure mode* (`AT_SECURE`, the flag Linux sets for setuid programs). In secure
 mode the dynamic loader ignores `LD_LIBRARY_PATH`, `$ORIGIN` and relative
 directories, and doesn't search `/usr/local/lib` or `~/.local/lib`, so nobody
-can slip a library into a program that holds more than they do.
+can slip a library into a program that holds more than they do. Every program
+of an extension starts in secure mode too, whether a spawn or an `exec` loads
+it and whatever it holds: it speaks as its extension, which whoever started it
+does not, so it must take no library from where its starter points.
 
 `fork` copies the parent's capabilities, and the threads of a process share
 them. Because `exec` drops gated capabilities (see
@@ -354,11 +357,29 @@ it and says why in the commit. The ungated classes (`NoneSelf`, `NoneFd`,
 `NoneRelation`) stay separate because a single "none" class would drift toward
 everything being marked none.
 
-**Finer checks read the same mask.** A handler that needs a capability for part
-of its work asks `SyscallContext::holds`, or takes a witness, `Cap<'_, R>`, from
-`ctx.require_cap::<R>()` (`efivar_set` asking for `BootEntry`, the flags
-`ioctl` asking for `Seal`). Only the authority module can mint a witness, and
-it can't be copied, cloned, sent to another thread or kept past the request.
+**Finer checks read the same mask.** Every check lives in the kernel's
+authority module (`slopos_ostd::authority`). A handler that needs a capability
+for part of its work asks `SyscallContext::holds`, or takes a witness,
+`Cap<'_, R>`, from `ctx.require_cap::<R>()` (`efivar_set` asking for
+`BootEntry`, the flags `ioctl` asking for `Seal`). Only the authority module
+can mint a witness, and it can't be copied, cloned, sent to another thread or
+kept past the request.
+
+**`exec` keeps one mask, and one exception.** At `exec` every thread's mask
+becomes `caps & universal`. The only `exec` that keeps the whole mask is the
+one `exec::exec_keeps_authority` describes: init, as its only thread,
+re-executing the base's `/sbin/init`, attested as a base program. Don't add a
+second case. A program that must hand its whole mask on spawns instead, through
+`slopos_userland::held`, which starts the program with everything the caller
+holds, passes signals on and exits as the program exits; the rescue shell and
+`priv` use it.
+
+**Init and the tests are the two places a full mask starts.** The kernel hands
+init `CAP_MASK_ALL`, which a compile-time assert holds to every bit
+`abi/src/caps.rs` names. A userland test also runs as uid 0 holding every
+capability, unless its `utest!` line declares otherwise (`caps = …, uid = …`,
+for example `caps = none, uid = 1000`). So a test of what an ordinary program
+is refused must declare that, or it tests nothing.
 
 **Capability bits are ABI.** A mask crosses the system call boundary in
 `caps_drop`, `caps_get` and `SpawnAttrs`, so `abi/src/caps.rs` states the bits
@@ -378,11 +399,14 @@ a second source of authority, and review should refuse it.
 holds a reference to the task it checked, so nothing can name the target by id
 after the check and reach a stranger who took over the number.
 
-**Gates.** `scripts/check_authority_reachability.sh` (run by
-`just check-framekernel-gates`) fails unless every handler that can reach a
-power primitive in the linked kernel is classified `Power` or allowlisted with
-a reason. Indirect calls are invisible to it, which is why the kernel's own
-power callers (the diagnostic console, the test harness, panic) are a tracked
+**Gates.** The `authority` ELF gate (`xtask elf … authority`, run by
+`just check-framekernel-gates`) walks the call graph of the linked kernel and
+fails unless every handler that can reach a power primitive is classified
+`Power` or listed with a reason in `scripts/gates/authority/<variant>.txt`. A
+listed entry that matches nothing fails it too, so a dead exemption can't
+cover a path that grows back. Indirect calls are invisible to it, which is why
+the kernel's own power callers (the diagnostic console, the test harness,
+panic) are a tracked
 list. `verification/proofs/authority.rs` proves the mask arithmetic over any
 grant, but not the memory ordering of the mask or that the dispatcher consults
 it; see [Proofs](/docs/verification/verus-status).
@@ -419,6 +443,8 @@ it; see [Proofs](/docs/verification/verus-status).
 | `slopos-ostd/src/seat/mod.rs` | Seats |
 | `userland/src/apps/init/service.rs` | What init hands each program it starts |
 | `priv-core/src/lib.rs` | What privd holds, what an action may name, and `priv`'s ceiling |
+| `userland/src/held.rs` | Handing a whole mask to a program by spawning it |
+| `tools/xtask/src/elf/authority.rs`, `scripts/gates/authority/` | The reachability gate and its reviewed lists |
 | `core/src/tests/authority_tests.rs`, `userland/src/bin/tests/spawn_privilege_test.rs` | Tests |
 
 Every system call and the capability it needs is listed on

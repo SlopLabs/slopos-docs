@@ -82,13 +82,21 @@ programs see the same pixels without copying anything between them.
 A window has two such buffers, so the program can draw the next frame while
 the compositor reads the last one. It draws a frame into one and *commits* it
 ("show this now"); it draws the next frame into the other. When the second is
-committed, the compositor hands the first one back. If the program draws
-again before that hand-back reaches it, the library reuses the buffer it
-committed last, so a program that redraws faster than the compositor answers
-can show a half-drawn frame. The windowing library also tracks how old each
-buffer's contents are, so a program that redraws only what changed knows
-what a recycled buffer has missed (its *age*: how many frames ago it was
-last shown).
+committed, the compositor hands the first one back (a `BufferRelease` event).
+Until then the compositor may read both: the buffer committed last, and the
+one before it. So the windowing library hands out a buffer to draw into only
+when the compositor has let go of one, and a frame that is owed while neither
+is free waits for the hand-back rather than being drawn over what is on
+screen. That is why you never see a frame half drawn. The library also
+tracks how old each buffer's contents are, so a program that redraws only
+what changed knows what a recycled buffer has missed (its *age*: how many
+frames ago it was last shown).
+
+A resize replaces both buffers, and the compositor may still be reading the
+old pair. So the program gives each pair a number (a *serial*), names a
+buffer by its slot and that serial whenever it attaches one, and the
+compositor's hand-back repeats both. A hand-back for a buffer the resize
+replaced then frees nothing of its successor.
 
 ### Redrawing only what changed
 
@@ -98,8 +106,11 @@ window down which parts of each are visible (a window hidden behind another
 needs no painting), and repaints only those. Moving, raising or closing a
 window counts as damage too, because it uncovers what was underneath.
 
-The compositor runs a pass about every 16 ms and paints only when something
-changed. It draws into a buffer of its own and hands the kernel the damaged
+The compositor takes input and runs a pass about every 16 ms (a *tick*), and
+paints only when something changed. A window that appears, zooms or is raised
+repaints its own bounds, and the dock repaints when the pointer changes its
+layout; only the first frame, a desktop brought in front and a new background
+repaint the whole screen. It draws into a buffer of its own and hands the kernel the damaged
 rectangles, which the display driver copies to the screen. On Intel graphics,
 when the driver can set aside a second buffer for the screen (the boot log
 says `XE-PRESENT: tear-free double-buffered scanout (pipe A)`), it switches
@@ -110,8 +121,34 @@ rather than painted into every frame: virtio-gpu in QEMU has one, and Intel
 graphics does when the boot log says
 `XE-CURSOR: hardware cursor plane bound (pipe A)`.
 
-A program that animates can ask to be told when its last frame reached the
-screen and draw the next one then, instead of drawing frames nobody sees.
+### Frame pacing
+
+A program could commit frames far faster than the screen shows them: a
+terminal printing a long file, or an app answering every pointer move. Each
+of those frames costs a repaint that nobody sees. So every commit the
+windowing library makes also asks the compositor to say when that frame has
+reached the screen (a `FrameDone` event), and the library holds the next
+frame back until it hears so. An app or the terminal therefore draws once
+for each frame shown, however fast its input or its output comes. A window
+that is covered or minimised gets no answer, so the wait has a short limit
+and the program does not stop drawing for good.
+
+The other half is the compositor answering quickly. It sends a program its
+events as soon as it has served that program's requests, and a pass's input
+as soon as it has been dispatched, so the program draws its answer while the
+compositor is still composing. And when a commit arrives between two ticks,
+the compositor paints a frame early for it, once the previous frame has had
+a frame's time on screen. So the answer to a key press does not wait for the
+next tick, while a program that never stops committing is still shown only
+once a tick.
+
+An appkit app goes one step further and commits only what differs. It paints
+a whole frame, compares it with the frame on screen, and commits the bands
+of rows where the two differ (at most eight, the number of rectangles a
+commit carries), or nothing at all when they are the same. When the pointer
+merely moves, only the widgets it lights or stops lighting are repainted,
+over a copy of the frame on screen. The compositor's own menus and panels
+repaint by the same rectangles.
 
 ### Resizing
 
@@ -238,7 +275,9 @@ describes what the toolkit gives every app.
 
 A program that draws every pixel itself, as the terminal does, uses the
 windowing library (`slopos-windowing`) directly: it connects, makes the
-window and its two buffers, and hands over the events. Either way:
+window and its two buffers, and hands over the events. Such a program asks
+the library whether a frame can be drawn now (`SoftSurface::ready`) before
+it draws, and gets no buffer while none is free. Either way:
 
 - **Rebuild when the protocol changes.** The apps outside the base are built
   against one protocol version; against a compositor of another, the
@@ -269,7 +308,12 @@ calls. `apps_test` starts each app against a stand-in compositor and checks
 that it names its window as its dock entry does. The parts that need no screen
 are host-tested with `just test-host`: window placement and the menu bar's
 state (`chrome-core`), keyboard handling (`keymap-core`) and the terminal's
-grid and key encoding (`terminal-core`).
+grid and key encoding (`terminal-core`). The buffer bookkeeping
+(`slopos_gfx::swap::Swap`) and the frame comparison are host-tested in `gfx`.
+`protocol_test` also checks that a replaced buffer is released by the slot
+and serial it was attached under. `settings-app`'s tests move the pointer
+over every Settings state and every page of appkit's catalogue and hold each
+frame repainted in part to the same frame painted whole, pixel for pixel.
 
 ## For contributors
 
@@ -280,7 +324,28 @@ grid and key encoding (`terminal-core`).
   slot,** never by descriptor number: a recycled surface slot or a reused
   descriptor can't alias an old mapping. Damage is cleared only for surfaces
   whose frame reached the screen; a commit that lands after the frame's
-  snapshot carries into the next frame.
+  snapshot carries into the next frame, and a commit's damage is added to
+  what of the surface has not reached the screen yet.
+- **Never draw into a buffer the compositor may read.** `Swap` decides which
+  slot is free; a frame begins only through `SoftSurface::frame` or
+  `frame_over_shown`, both of which return nothing while no buffer is free.
+  Don't add a path that falls back to the buffer committed last.
+- **A release frees a buffer only by slot and serial.** Counting releases, or
+  taking an overdue one for lost, lets a program draw into a buffer that is
+  still read after a resize.
+- **Serve each client on a one-shot poll taken again after every read.** A
+  multishot poll fires only when readiness changes, so a commit it missed
+  waited for the compositor's own pass over the clients. The network monitor
+  is read the same way.
+- **A partial repaint must equal the whole one.** `run_app` commits through
+  `SoftSurface::present_changed` (which compares with
+  `slopos_gfx::damage::changed`). For a pointer move that no widget took it
+  repaints only the rectangles `lit_damage` names, after `frame_over_shown`
+  has copied in what the buffer is behind by; a key or a wheel turn that no
+  widget took since then makes the frame a whole one. A widget that paints
+  outside its bounds when lit breaks this, and `settings-app`'s test finds
+  it. The compositor's surfaces use the same rectangles through
+  `Embedded::hover`.
 - **Visibility is computed from the top down,** subtracting each opaque
   frame, so a lower window's shadow never paints over a window above it.
 - **Input-driven requests are checked against serials,** and a pointer grab is
@@ -312,7 +377,10 @@ grid and key encoding (`terminal-core`).
 |---|---|
 | `userland/src/apps/compositor/` | The compositor: `protocol.rs` serves clients, `mod.rs` routes input (with focus, moves and resizes in `input.rs`), `renderer.rs` paints |
 | `slop-protocol/` | The messages, their encoding and both ends of the connection |
-| `windowing/` | Connection, window and double buffers for programs |
+| `windowing/` | Connection, window and double buffers for programs (`soft_surface.rs`) |
+| `gfx/src/swap.rs`, `gfx/src/damage.rs` | Which buffer a frame may be drawn into, and where two frames differ, host-tested |
+| `gfx/src/draw_buffer.rs` | The canvas; glyphs, rounded outlines and shadows are written a row at a time through `Canvas::mix_row_span` |
+| `appkit/src/run.rs`, `appkit/src/event.rs`, `appkit/src/embed.rs` | An app's frame loop, what a pointer move lights, and the same for surfaces the compositor draws itself |
 | `chrome-core/src/placement.rs` | Where a new window opens, host-tested |
 | `slopos-ostd/src/seat/`, `core/src/syscall/ui_handlers.rs`, `core/src/seat_file_ops.rs` | Seat arbitration, the seat system calls and the seat's descriptor |
 | `keymap-core/` | Key decoding and layouts, host-tested |

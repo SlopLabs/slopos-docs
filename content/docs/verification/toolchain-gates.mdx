@@ -1,0 +1,268 @@
+---
+title: "Toolchain gates"
+description: "What each gate on the toolchain, the build inputs and the C library interface holds, what it reads, when it runs or skips, and how to record a new answer."
+---
+
+This page lists the gates that hold the SlopOS toolchain, its pinned inputs
+and the C library's interface: one entry per gate, with what it holds, the
+failure nothing else reports, its inputs and tracked data, when it runs and
+when it prints `skipped`, and how to re-record. Each script's header comment
+in `scripts/` is the authoritative description, and the recipes
+`check-framekernel-gates`, `check-toolchain-coverage`, `ci-gates`,
+`ci-candidates` and `ci-toolchain` in the `justfile` are the authoritative
+list of what runs where. [Safety gates](/docs/verification/tcb-discipline)
+lists every other gate, and [The toolchain](/docs/self-hosting/toolchain)
+explains the pieces these gates check.
+
+## Conventions
+
+| Term | Meaning |
+|---|---|
+| `skipped` | The gate printed `skipped`, with the reason, and exited 0, because an input a checkout may legitimately lack is absent |
+| `--require` | Turns that skip into a failure. Used where the inputs are known to exist |
+| `--self-test` | Runs the gate against planted fixtures. `just check-framekernel-gates` runs every shell gate's self-test before the gates themselves |
+| Materialised tree | A pinned upstream source tree unpacked under `third_party/` with the SlopOS patches applied. It carries a stamp: a digest of the patches and pins it was built from |
+| `builddir/gates/` | Where gates that compile something keep their build directories. `just clean` removes the codegen, rustc-target, LLVM-port, clang-driver, bootstrap and offline-build ones |
+
+| Recipe | Runs |
+|---|---|
+| `just check-framekernel-gates` | Every self-test, then `check_offline_build.sh --pins-only` and the pin, rustc-target, C++ runtime, LLVM-port, clang-driver, bootstrap, recipes, C library licence, C library exports and base-interface gates without `--require`, then `just check-toolchain-coverage` |
+| `just check-toolchain-coverage` | `check_codegen_backend.sh` for `llvm` and `cranelift`, `check_linker_script.sh` for `lld` and `wild` |
+| `just ci-gates` (CI's `gates` job) | `just check-framekernel-gates`, then `just check-offline-build` |
+| `just ci-candidates` (CI's `gates` job, after the gates lane) | Installs the cranelift component and the pinned `wild` under `builddir/candidates`, then runs their two gates, `wild`'s with `--require` |
+| `just ci-toolchain` (CI's `toolchain` job) | Materialises the llvm-project and rustc source trees, builds the tests userland, then runs the clang-driver, C++ runtime, C library exports, recipes (after building them), LLVM-port, bootstrap and rustc-target gates, with `--require` on each that takes it |
+
+## `check_toolchain_pin.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_toolchain_pin.sh [--self-test]` |
+| Holds | The forks of the standard library, the `libc` crate and the compiler, and the crate ports, to their pins and to the trees built from them |
+| Catches | A stale tree compiles: it compiles the previous fork. The userland target `x86_64-unknown-slopos` builds on an owned sysroot, `third_party/rust-slopos`, which `scripts/make_slopos_sysroot.sh` materialises out of the patches under `toolchain/{rust,libc}`, and every way that sysroot can drift is silent |
+| Fails when | (1) The channel in `toolchain/PIN` differs from `rust-toolchain.toml`. (2) A patch's sha256 differs from its `patch_sha256=` line, a patch has no line, or a line names a missing patch. (3) A crate port lacks its `crate=<name> <version> <sha256>` line naming the `.crate` it is cut against, or such a line has no port. (4) A materialised tree's stamp is not what its overlay hashes to. (5) A materialised tree lacks a file its patches create. (6) A `slopos` toolchain registered with rustup points anywhere but `third_party/rust-slopos` |
+| Tracked data | `toolchain/PIN` (channel, `libc` version and checksum, std and `libc` patches), `toolchain/compiler/PIN` (compiler patches and `toolchain/llvm-rustc/`), `toolchain/crates/PIN` (crate ports), `toolchain/cxx/PIN` (`toolchain/llvm/`) |
+| Trees graded | The sysroot and the compiler source tree `third_party/slopos-rustc-src`, each against the stamp of the overlay half it was built from. A compiler-fork edit does not restamp the sysroot and a std edit does not restamp the source tree. A `libc` edit restamps both, because the compiler tree carries its own copy of the fork, beside the crate ports, for rustc and cargo |
+| Why (5) | The stamp describes the overlay, not the result. A tree a broken run left half-patched (patched std, unpatched `libc`) carries a correct stamp |
+| Runs | `just check-framekernel-gates` |
+| Skips | Never prints `skipped`. The tree and registration checks apply only to what exists, so a checkout that materialised nothing passes on the pins alone |
+| Re-record | After editing a patch, write its new `sha256sum` into its `patch_sha256=` line. After a channel bump, re-cut the patches, then update `channel=`. For a stale tree, re-run `scripts/make_slopos_sysroot.sh` or `scripts/make_rustc_src.sh`; for a tree missing created files, delete it first |
+
+## `check_rustc_target.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_rustc_target.sh [--require] [--self-test]` |
+| Holds | The compiler fork's built-in `x86_64-unknown-slopos` target to `targets/x86_64-unknown-slopos.json` |
+| Catches | The compiler fork exists so bootstrap can resolve `--host=x86_64-unknown-slopos`, which leaves two specs describing one machine: the built-in one and the JSON every userland build passes by path. A disagreement compiles everywhere; a cross-built toolchain would produce binaries for a slightly different target than the tree tests |
+| Fails when | The tuple is not in rustc's `TARGETS` list; `Target::to_json()` of the built-in spec differs from `Target::to_json()` of the JSON spec in any field (rustc's own normalisation on both sides); the target no longer allows dynamic linking, which `rustc_driver`'s `crate-type = ["dylib"]` and `libc.so` both need; or rustc's own per-target test fails (`check_consistency(TargetKind::Builtin)` and a JSON round trip, what upstream CI would run on the patch) |
+| Consequence for the JSON | It says `relocation-model: pic`, because rustc refuses a built-in target that allows dynamic linking under any other model. The static images pass `-C relocation-model=static` on the build line (`scripts/build_userland.sh`) instead |
+| Reads | `third_party/slopos-rustc-src` (or `RUSTC_SRC_DIR`), `targets/x86_64-unknown-slopos.json` |
+| Tracked data | None. The JSON spec and `toolchain/compiler/0001-slopos-target.patch` are the two sides |
+| Runs | `just check-framekernel-gates`; `just check-rustc-target` and `just ci-toolchain` with `--require` |
+| Skips | No materialised source tree (`just rustc-src`) |
+| Re-record | Nothing to record. Change the JSON and the patch together, update the patch's pin line, and re-run `scripts/make_rustc_src.sh` |
+
+## `check_cxx_pin.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_cxx_pin.sh [--libc PATH]`, `--self-test` |
+| Holds | The cross-built C++ runtime `third_party/slopos-cxx` to `toolchain/cxx/PIN` and to what `libc.so` exports |
+| Catches | A runtime built from a different llvm-project or clang still links; it links a different C++ ABI. And `libc++.so` is linked without `-z defs`, since an undefined symbol in a shared object is legal, so a symbol the C library lacks is not a link error but a `dlopen` that fails on a machine when the runtime is first needed |
+| Fails when | The pin is inconsistent (version, URL, sha256, host clang floor and tested majors); a `toolchain/llvm/*.patch` differs from its checksum in the pin; such a patch touches `libcxx/`, `libcxxabi/` or `runtimes/`; a present tarball or materialised llvm-project tree does not match the pin; the built tree lacks an artifact; the built tree's stamp is not what `make_slopos_cxx.sh --print-stamp` prints; or `libc++.so` leaves a symbol undefined that `libc.so` does not define |
+| Why the patch scope | The runtime's stamp leaves `toolchain/llvm/*.patch` out, because a tree carrying them builds the same libc++. A hunk reaching into the runtime's sources would make that false and leave the stamp, and so the decision not to rebuild, unchanged |
+| Why the stamp is asked for | The build script prints the expected stamp, so no second copy of that digest exists to drift |
+| Floor | `MIN_UNDEFINED` in the script: fewer undefined symbols than the floor is a measurement that read nothing, and fails |
+| Tracked data | `toolchain/cxx/PIN` |
+| Runs | `just check-framekernel-gates`, `just ci-toolchain` |
+| Skips | Takes no `--require` and never prints `skipped`. The stamp and symbol checks run only when the tests userland has staged the runtime, which `builddir/libc++.so` (with `builddir/libc.so` and `builddir/libbuiltins.a` beside it) says. `builddir/libc.so` alone does not: the shipped userland build stages it before the tests build refreshes the runtime, so keying on it would grade a tree restored from a cache. `--libc` grades regardless |
+| Re-record | Update the pin's lines by hand. Rebuild a stale runtime with a tests userland build (`scripts/make_slopos_cxx.sh` with the directory holding `libc.so`). A missing symbol is a function to add to slibc |
+
+## `check_llvm_port.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_llvm_port.sh [--require] [--self-test]` |
+| Holds | The SlopOS LLVM port to compiling `LLVMSupport` and `LLVMTargetParser` for `x86_64-unknown-slopos`, against slibc's headers and the cross-built C++ runtime |
+| Why those two | `Unix/{Path,Process,Program,Signals}.inc` are the files that name a C library, `raw_ostream.cpp` and `ConvertUTF.cpp` the ones that name a C++ library, and `Triple.{h,cpp}` are where the port's `SlopOS` enumerator lives. The rest of LLVM is portable C++ over them |
+| Catches | Neither failure fails to compile on the host: `toolchain/llvm/*.patch` stops describing the tree, or slibc loses a function or one of the headers these files include (`<inttypes.h>`, `<endian.h>`, `<sysexits.h>`, `<wctype.h>`) |
+| Not held here | The port's clang files (`OSTargets.h`, `Targets.cpp` and the driver). `check_clang_driver.sh` compiles them. The materialiser, `scripts/make_slopos_llvm_src.sh`, holds every patch to having applied exactly, with `git apply --reverse --check` |
+| Reads | `third_party/llvm-project-<version>.src` (or `LLVM_SRC_DIR`), `third_party/slopos-cxx`, `slibc/include`, and both trees' stamps: a stale tree fails. The runtime's stamp reads `builddir/libbuiltins.a`, which only a userland build produces |
+| Host tools | The host clang `scripts/cxx_host_tools.sh` resolves, `cmake`, `ninja`, and a host `llvm-tblgen` of the pinned major (or `LLVM_TBLGEN`). The gate builds no other host tool, and what tablegen emits is data tables. With no such `llvm-tblgen` it builds the pinned tree's own |
+| Self-test | Grades the skip and `--require` paths on any host. Where the inputs exist it grades two rejections, each beside a positive control: `Path.cpp` compiled with `-U__slopos__`, and a `static_assert` that `Triple::LastOSType` is `Vulkan`, its value in unpatched LLVM, instead of `SlopOS` |
+| Tracked data | None; `toolchain/cxx/PIN` pins the sources and patches |
+| Runs | `just check-framekernel-gates`; `just check-llvm-port` and `just ci-toolchain` with `--require` |
+| Skips | No materialised llvm-project tree (`just llvm-src`), no C++ runtime (a tests userland build), or an `llvm-tblgen` that could neither be found nor built |
+| Re-record | Nothing to record. Re-run `scripts/make_slopos_llvm_src.sh` or rebuild the tests userland for a stale tree |
+
+## `check_clang_driver.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_clang_driver.sh [--require] [--self-test]` |
+| Holds | The port's clang driver to the link line `scripts/build_userland.sh` writes by hand |
+| How | Builds `clangDriver` and `clangBasic` out of the pinned tree for the host, drives a `clang::driver::Driver` at `x86_64-unknown-slopos` and grades the link job's arguments. No compiler binary or backend is built. Building `clangBasic` is also what compiles the port's `SlopOSTargetInfo` |
+| Catches | The port's `toolchains::SlopOS` is a second copy of the build's link line. A driver that disagrees links on the host and produces a program that dies at `execve`: no interpreter, no `crt0.o`, no `PT_GNU_EH_FRAME`, at a load address the loader does not map |
+| Link line graded | `crt0.o` first, `--image-base=0x400000`, `--dynamic-linker=/lib/ld-slopos.so.1`, `--eh-frame-hdr`, `-z now`, `-L<sysroot>/lib -lc`, `libbuiltins.a` last |
+| Link shapes | Static executable, dynamic executable, shared object, C++ executable, and the executable rustc links with `-no-pie`; each must produce no driver diagnostic |
+| Toolchain answers graded | `ld.lld` as the linker, the integrated assembler, no PIC or PIE by default, asynchronous unwind tables, libc++, compiler-rt, and `<sysroot>/include/c++/v1` ahead of `<sysroot>/include`, the order libc++'s `#include_next` needs |
+| Self-test | Grades the skip and `--require` paths on any host. Where a tree exists it runs the same probe at a triple the port does not name, which gets the `Generic_ELF` toolchain a missing dispatch hunk would leave, and must be rejected |
+| Reads | `third_party/llvm-project-<version>.src` (or `LLVM_SRC_DIR`) and its stamp |
+| Tracked data | None |
+| Runs | `just check-framekernel-gates`; `just check-clang-driver` and `just ci-toolchain` with `--require` |
+| Skips | No materialised llvm-project tree |
+| Re-record | Nothing to record. Change `build_userland.sh`'s link line, the driver patch and the probe's assertions together |
+
+## `check_bootstrap_config.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_bootstrap_config.sh [--require] [--self-test]` |
+| Holds | The cross-build configuration (`scripts/bootstrap_slopos_toolchain.sh`) to the toolchain it claims to produce, without running the build: it runs bootstrap's own dry run, then compiles and links with the generated compiler wrapper |
+| Catches | (1) The step graph loses an artifact. `cargo` is an extended tool that a stage2 rustc does not depend on, so a configuration that stops naming it still builds a compiler. (2) `toolchain/compiler/0002-bootstrap-cmake-system-name.patch` stops applying: for a triple it does not recognise, bootstrap prints a note, sets `CMAKE_SYSTEM_NAME=Generic` and exits 0, which loses `LLVM_ON_UNIX` and every `Unix/*.inc` file the LLVM port patches. (3) The wrapper stops producing SlopOS binaries. It names two triples on purpose, SlopOS to compile and Linux to link, and regresses by naming one |
+| Installed toolchain | When `just toolchain` has installed one (`builddir/slopos-toolchain/install`, or `SLOPOS_TOOLCHAIN_INSTALL`), every object in it must have no `DT_NEEDED` outside SlopOS's own libraries, no `R_X86_64_TLSDESC` relocation (the loader does not bind one), every `DT_NEEDED` found through the object's own `$ORIGIN` search path, and every undefined name defined in its closure. `bin/cargo` must also use the recipes' libraries and not a copy a `-sys` crate bundled. The loader binds eagerly and nothing there links with `-z defs`, so each of these is otherwise a program that does not start, found only in the guest |
+| Reads | `third_party/slopos-rustc-src` (or `RUSTC_SRC_DIR`), `builddir/libc.so`, `third_party/slopos-cxx/lib`, `toolchain/recipes/*/recipe` |
+| Tracked data | None. The steps the plan must contain are `WANTED_STEPS` in the script |
+| Runs | `just check-framekernel-gates`; `just check-bootstrap-config` and `just ci-toolchain` with `--require`. A first run downloads bootstrap's stage0 compiler |
+| Skips | No materialised rustc source tree, or no staged target sysroot (a tests userland build) |
+| Re-record | Nothing to record. A step the cross-build should newly produce is a line added to `WANTED_STEPS` |
+
+## `check_offline_build.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_offline_build.sh [--self-test] [--require] [--pins-only]` |
+| Holds | The tree to building with no registry, from the directory `.cargo/vendor.toml` names (`third_party/vendor`) and `scripts/make_vendor.sh` fills |
+| Catches | Host builds read the registry, so two failures show nowhere else. `Cargo.lock` moves and the vendored copy stops describing it, and the self-hosting root arrives with a tree its own cargo cannot resolve. And `-Zbuild-std` needs std's crates.io dependencies, which cargo resolves from a lockfile the workspace never reads, so a directory holding only the workspace's crates passes every check but a build |
+| Pins half | Every registry package the workspace's `Cargo.lock` or the pinned toolchain's `library/Cargo.lock` names is vendored as the package its lockfile checksums. A vendored package no lockfile names fails, since it is a pin nobody reviews. The directory's `library.lock` must be std's lockfile, because the self-hosting root's guest grades its tree against that copy |
+| Build half | `cargo check` of the kernel, the userland and the apps, `--offline --locked`, from an empty `CARGO_HOME`, where a warm registry cache cannot answer for a missing crate |
+| Tracked data | `Cargo.lock`; `third_party/vendor` is materialised, not tracked |
+| Runs | `--pins-only` in `just check-framekernel-gates`; both halves with `--require` in `just check-offline-build`, which materialises the directory first and which `just ci-gates` runs |
+| Skips | `third_party/vendor` is not materialised |
+| Re-record | `rm -rf third_party/vendor && scripts/make_vendor.sh` |
+
+## `check_codegen_backend.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_codegen_backend.sh --backend NAME [--emit-allowlist] [--require] [--gate-data-dir DIR]`, `--self-test` |
+| Holds | A rustc codegen backend to seven capabilities the kernel target `targets/x86_64-slos.json` depends on |
+| Capabilities | `object-format` (ELF objects), `soft-float`, `stack-sizes` (the `.stack_sizes` section), `safestack` (instrumentation through `__safestack_pointer_address`), `link-section` (`#[unsafe(link_section)]`), `naked-fn` (`#[unsafe(naked)]`), `asm-sym` (`sym` operands in `asm!`) |
+| Catches | A backend can accept `-Zemit-stack-sizes` and `-Zsanitizer=safestack` and implement neither. A backend swap then leaves the build green with the kernel's stack bound and its split into two stacks enforced by nothing |
+| Tracked data | `scripts/gates/codegen/<backend>.txt`: one `capability`, tab, `has` or `lacks` per line, with the cost of each absence in the comments |
+| Fails when | A verdict differs from the file in either direction. A `lacks` the probe finds present is the signal to decide again whether the toolchain can be hosted without LLVM; the `cranelift` file is the measurement behind the current answer |
+| Not probed | `disable-redzone` and the `unwind` panic strategy. The script's header says why; `link.ld`'s assertion on `.eh_frame_hdr` holds the second at every kernel link |
+| Build directory | `builddir/gates/codegen-probe/` |
+| Runs | `llvm` and `cranelift` in `just check-toolchain-coverage`, so in every `just check-framekernel-gates`; `cranelift` again in `just ci-candidates`, after that recipe has tried to install the component |
+| Skips | The backend has no shared object in the pinned toolchain. `cranelift` is an optional rustup component (`rustc-codegen-cranelift-preview`) |
+| Re-record | `scripts/check_codegen_backend.sh --backend NAME --emit-allowlist`, redirected over the tracked file. Restore the per-row prose it does not print and say in the commit message what moved. `--gate-data-dir` reads a fresh measurement from another directory before it replaces the tracked one |
+
+## `check_linker_script.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_linker_script.sh --linker NAME [--emit-allowlist] [--require] [--gate-data-dir DIR] [--link-script FILE]`, `--self-test` |
+| Holds | A linker to the linker-script constructs the kernel's `link.ld` uses |
+| Catches | A linker that accepts `-T link.ld` and lays the image out its own way produces a kernel that links and boots nothing. The observed case is `wild`: it refuses `link.ld` on `. = KERNEL_VIRT_BASE`, and given the shape it does accept, it keeps the script's section order and still starts the image past the base it was given |
+| Probes | `output-format`, `entry`, `top-level-assign`, `dot-from-symbol` (`. = KERNEL_VIRT_BASE`), `explicit-base`, `section-order`, the three spellings of `ALIGN` (`output-align-expr`, `section-align-attr`, `dot-align`), `in-section-assign`, `symbol-alias`, `keep` (`KEEP` under `--gc-sections`), `assert-sizeof`, `noload` (`(NOLOAD)`), `phdrs` (`PHDRS`), `discard`, `location-gap` (the four early page tables reserved past `_bss_end`), `composed-layout` |
+| Probe rule | Each probe's script carries the construct under test and nothing else a probe grades. A script that scaffolds itself with an `ALIGN` reports the linker's `ALIGN` support under its own name |
+| The exception | `composed-layout` links a script shaped like `link.ld`, because a linker can take every construct alone and compose them differently |
+| Coverage check | Every construct probed must appear in `link.ld`, every uppercase keyword `link.ld` uses must have a probe, and every keyword's probe must have reported. A construct added to the script with no probe fails, and so does a probe whose construct left the script. It runs on the `--emit-allowlist` path too |
+| Tracked data | `scripts/gates/linker/<linker>.txt`: one `construct`, tab, `has` or `lacks` per line. `wild.txt` records what each of its verdicts conflates |
+| Runs | `lld` and `wild` in `just check-toolchain-coverage`; `wild` with `--require` in `just ci-candidates`, which installs the pinned version |
+| Skips | `wild` is not on `PATH`; it is an optional `cargo install`. `lld` is the `rust-lld` in the pinned toolchain, the binary the kernel links with |
+| Re-record | `scripts/check_linker_script.sh --linker NAME --emit-allowlist`. For `lld`, a `lacks` is a toolchain regression, not a number to measure again |
+
+## `check_recipes.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_recipes.sh [--self-test]` |
+| Holds | Every recipe under `toolchain/recipes/` to a pinned upstream tarball, built as shipped by a template, patched at most to teach the project the SlopOS target |
+| Recipe file | One 64-hex `sha256`; an `https` URL naming the recipe's version; a licence and a licence file inside the tarball; a known template; at least one `soname` or `program` to install; dependencies that are recipes, acyclic; no key the build does not read |
+| Directory | No file beside `recipe` but its declared `config` and `patch`es |
+| Patches | Named `NNNN-slopos-<what>.patch`. A patch creates or extends files and never deletes, renames or changes the mode of one; each run of removed lines is replaced where it stood by added lines that start with them; every hunk names SlopOS in a line it adds or in the path of the file it creates. A recipe under a licence whose text the tree may not hold (GPL-2.0-only, CDDL) carries no patch |
+| Arguments | Each `arg` picks among upstream's options and carries no code. A `cmake` or `meson` arg is `-D<name>=<value>`, with the built-in names a recipe may set allowlisted and no flag, file, program or search root among the project's. An `autotools` arg is an `--enable`, `--disable`, `--with` or `--without` switch, or a configure cache answer naming no program, path or system triple. The allow and deny lists are constants in the script |
+| Other | A `NOTICE.md` entry naming the recipe's directory |
+| Built recipes | The stamp `build_recipes.sh --print-stamp` computes now. For a built `GPL-2.0-only` recipe, every object's `DT_NEEDED` closure reaches only libraries a recipe or the sysroot provides under a licence that code may be combined with, each object there carries a symbol table, and none defines, even locally, a symbol an incompatible recipe's library exports |
+| Catches | An argument, a configuration file or a patch can change what is built while every upstream file stays pristine. A GPL-2.0-only program that links an incompatible library, dynamically or as a static copy, builds and runs and cannot be distributed |
+| Reads | `toolchain/recipes/`, `toolchain/cmake/Platform/`, `NOTICE.md`, and the built tree `builddir/slopos-recipes` (or `SLOPOS_RECIPES_DIR`) |
+| Runs | `just check-framekernel-gates`; `just ci-toolchain` after `scripts/build_recipes.sh` |
+| Skips | Takes no `--require`. With nothing built, as in CI's `gates` job, the stamp and closure checks do not run |
+| Re-record | Nothing to record. Rebuild a recipe whose stamp is stale with `just recipes` |
+
+## `check_libc_license.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_libc_license.sh [--self-test]` |
+| Holds | Every crate built into `libc.so`, `libc.a`, `crt0.o` and `libbuiltins.a` to an SPDX licence expression MIT alone satisfies |
+| Catches | The library's licence is the sum of what it is built from. A GPL-2.0-only program links it, so one dependency on a GPL-3.0-or-later crate compiles, links, passes every test and leaves git undistributable |
+| Crates graded | What `cargo metadata` resolves for the four packages (`ROOTS` in the script) and everything they depend on under `--all-features`, except through dev-dependencies. Build-dependencies count: a build script's output is compiled in |
+| Reach | The walk must reach slibc, `slibc-core` and `slopos-abi`, so a dependency graph the gate cannot read fails instead of passing on the roots alone |
+| Crates of this tree | Must keep the manifest and every target under `slibc/`, `slibc-core/` or `abi/`, so neither a new crate elsewhere nor a crate root pointed outside passes on its licence field |
+| Includes | Under those three directories every `include!`, `include_str!`, `include_bytes!` and attribute `path =`, read past comments and literals, must be a literal naming a file inside them (a `.rs` file where it is code) or a single file in `OUT_DIR`. A symlink there is refused. The gate reads spellings, not macro expansions |
+| Outside inputs | `toolchain/libc/`, which `slibc/build.rs` renders the headers from and which is `MIT OR Apache-2.0` itself. `core`, `alloc` and `compiler_builtins` come from the standard library's workspace, which `cargo metadata` does not describe; `slibc/NOTICE` records them by hand |
+| Tracked data | `slibc/NOTICE` |
+| Runs | `just check-framekernel-gates` |
+| Skips | Never |
+| Re-record | A third-party crate under MIT takes an entry in `slibc/NOTICE`. Another licence needs its text there and a change to the gate |
+
+## `check_base_interface.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_base_interface.sh [--self-test]`, `--record`, `--print` |
+| Holds | The private call surface to `slopos_abi::BASE_INTERFACE`, the number a [base](/docs/architecture/base) is built against |
+| Catches | The private calls change shape while the number stays. The base and the kernel then agree on the number and disagree on what it means, and neither build notices |
+| The surface | What rustdoc's JSON says of `slopos-abi`, not its source text: each private syscall's number and the backticked `name(args) -> result` signature its documentation states, packing included; the items those signatures name and the documentation links; everything reachable from them through field and alias types; and the `root` globs in the data file for what no signature can name (records behind a byte buffer, op and flag families, the wire-packing methods of rooted types). Documentation prose, comments, formatting and item order change nothing |
+| Fails when | The surface's sha256 differs from the ledger row for the current number; the number has no row; the ledger is malformed or skips a number; a private call's documentation states no signature; a capitalised name in a signature resolves to no item or to several; a `root` glob reaches nothing the surface renders; or the surface is implausibly small |
+| Exit 2 | The parser crashed, or rustdoc's `format_version` is not the one the parser reads. A toolchain bump revalidates the parser instead of shifting digests |
+| Not held | Linux's own shapes a private call passes through (`sockaddr`, `msghdr`, `iovec`, `AF_*`), which Linux compatibility holds, and what a private call takes from outside `slopos-abi` (the font's glyph ranges, the kernel console's keys, the EFI GUIDs, limits written into a handler). Such a fact moves into `slopos-abi` before it changes |
+| Tracked data | `scripts/gates/base-interface.txt`: the `root` globs, then the ledger, one `interface <n> <sha256>` row per number ever issued |
+| Runs | `just check-framekernel-gates` |
+| Skips | Never |
+| Re-record | Raise `BASE_INTERFACE`, then `scripts/check_base_interface.sh --record`. It appends a row only for the number one past the last, so an issued row is never rewritten. `--print` writes the surface, to diff before and after a change |
+
+## `check_libc_exports.sh`
+
+| | |
+|---|---|
+| Script | `scripts/check_libc_exports.sh [--require] [--record] [LIBC_SO]`, `--self-test` |
+| Holds | `libc.so`'s interface to only growing |
+| Catches | A program built outside the base breaks when a function it calls is removed, or a structure it shares with the library changes layout. Nothing in the tree notices, because everything in the tree is rebuilt against the new headers together |
+| Exports | Every defined dynamic symbol, held to `scripts/gates/libc/exports.txt` as `func`, or `object` or `tls` with its size. A data export's size is part of the interface, since a non-PIE program copy-relocates it |
+| Layouts | The size, alignment and every field offset of every struct and union `slibc/include` defines, held to `scripts/gates/libc/layouts.txt`, as clang's `-fdump-record-layouts-complete` measures them under the target. Every record, not only those a prototype names, because exports take structures through `void *` too. Field types are left out, because their spelling moves between clang releases |
+| Not held | Function prototypes, and an alignment set on a typedef and not on its record |
+| Reads | `builddir/libc.so` (or the path given), `slibc/include`, the host clang `scripts/cxx_host_tools.sh` resolves |
+| Runs | `just check-framekernel-gates`; `just ci-toolchain` with `--require`, where the library and the clang both exist |
+| Skips | No library; the layout half alone when no host clang resolves |
+| Re-record | `scripts/check_libc_exports.sh --record` adds lines for new exports and records. It refuses while anything recorded was removed or changed, so a removal lands only as a hand edit a reviewer sees |
+
+## `xtask programs`
+
+| | |
+|---|---|
+| Command | `cargo run -p slopos-xtask -- programs PROGRAM...` (`tools/xtask/src/elf/loose_programs.rs`) |
+| Holds | Each program shipped outside the base to `libc.so` as its one interface |
+| Fails when | A program has no `PT_INTERP` (it is static), names an interpreter other than `/lib/ld-slopos.so.1`, lacks `libc.so` in `DT_NEEDED`, or has a `syscall` instruction in its executable code. The code is decoded with the `iced-x86` disassembler, and an image without section headers is decoded segment by segment |
+| Catches | A static program carries slibc's own copy. A system call made in place reaches the private surface `BASE_INTERFACE` numbers, or a Linux call, without the library that only grows in between. Either ties a program that changes on its own schedule to one base. The toolkit's crates compile into base programs too, so a raw call returning to one of them fails nothing else |
+| Tracked data | None. Its fixtures are tests in the same file, run by `just test-host` |
+| Runs | After every host userland build (the `_build-userland` recipe) on `builddir/apps/bin/*`, and after the tests userland build on the programs its test extensions carry |
+| Skips | Never. A named file that does not exist is an error |
+| Re-record | Nothing to record. Link the program dynamically against `libc.so` and call the system through it |
+
+[Installed software](/docs/architecture/software) explains why programs
+outside the base reach the system only through `libc.so`.
+
+## In the source
+
+| Path | What it holds |
+|---|---|
+| `scripts/check_*.sh` | The shell gates; each header states the gate's rules and usage |
+| `scripts/lib/toolchain_pin.sh` | Paths, pin parsing and stamp digests shared by the pin gate and the materialisers |
+| `tools/xtask/src/elf/loose_programs.rs` | `xtask programs` |
+| `toolchain/PIN`, `toolchain/compiler/PIN`, `toolchain/crates/PIN`, `toolchain/cxx/PIN` | The pins |
+| `scripts/gates/codegen/`, `scripts/gates/linker/` | Recorded backend and linker verdicts |
+| `scripts/gates/base-interface.txt`, `scripts/gates/libc/` | The interface ledger and the C library's recorded exports and layouts |
+| `justfile` | Which recipe runs which gate, with which flags |

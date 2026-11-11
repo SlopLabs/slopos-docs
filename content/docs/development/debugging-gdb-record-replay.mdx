@@ -34,16 +34,22 @@ just boot-debug
 ```
 
 This is `just boot` with a few changes: it uses the debug build of the
-kernel, skips the Wheel of Fate, and has QEMU listen for GDB on TCP port 1234
-and for monitor commands on the socket `/tmp/slopos-monitor.sock`. Setting
-`QEMU_DEBUG=1` on another boot recipe turns on the same two. The recipes
+kernel, skips the Wheel of Fate, and has QEMU listen for GDB and for monitor
+commands on two Unix sockets in the build directory,
+`builddir/qemu-gdb.sock` and `builddir/qemu-monitor.sock`. Setting
+`QEMU_DEBUG=1` on another boot recipe turns on the same two
+(`QEMU_GDB_SOCK` and `QEMU_MONITOR_SOCK` move them). The recipes
 below load the dev kernel's symbols (`builddir/kernel-dev.elf`), so for a
 boot that runs the release kernel, as plain `just boot` does, give them
 `KERNEL_RELEASE=1` as well: `KERNEL_RELEASE=1 just debug-gdb`.
 
-The GDB port, a replay's included, listens on every network interface of
-your machine, and whoever reaches it can read and change the guest's memory,
-so don't leave a debug boot running on a network you don't trust.
+Whoever connects to either socket can read and change the guest's memory,
+which is why neither is a TCP port. QEMU's user-mode network hands the guest
+your machine's loopback address as `10.0.2.2`, so a port on loopback would
+let code in the guest attach a debugger to its own machine, and any other
+user of your machine could reach it too. A socket in the build directory is
+reached only by someone who can open files there. A replay's GDB connection
+is the same socket.
 
 When something goes wrong, use a second terminal. To get a stack trace from
 every CPU and let the machine carry on:
@@ -62,8 +68,8 @@ To explore interactively:
 just debug-gdb
 ```
 
-GDB loads the kernel's symbols from `builddir/kernel-dev.elf`, connects,
-prints `Remote debugging using :1234`, and stops all CPUs where they were.
+GDB loads the kernel's symbols from `builddir/kernel-dev.elf`, connects to
+`builddir/qemu-gdb.sock`, and stops all CPUs where they were.
 From there `bt`, `info threads`, `thread N`, `frame N` and `print` work as
 they do on any program. `continue` lets the machine run again; Ctrl-C stops
 it. Ctrl-D quits GDB (answer `y` when it asks), which detaches, and the
@@ -260,6 +266,10 @@ default is `builddir/io_capture_test.elf`.
   anything; it attaches to a machine started with `just boot-debug`, and
   looks for the dev kernel. For a boot running the release kernel, run
   `KERNEL_RELEASE=1 just debug-bt`.
+- **`no GDB socket at builddir/qemu-gdb.sock`** (or `no monitor socket`).
+  No machine is running with the debug connection on: start one with
+  `just boot-debug`, or set `QEMU_DEBUG=1` on the boot recipe you use. The
+  connection is that socket, not QEMU's usual TCP port 1234.
 - **Breakpoints early in boot never fire.** On `just boot-debug` the
   machine has run past them before you attach. Use a recorded run, whose
   replay waits before the firmware starts.

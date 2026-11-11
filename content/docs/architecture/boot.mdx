@@ -369,6 +369,10 @@ and replaces and rolls back the base, including one the kernel doesn't serve.
 from it, and `just test-usb` boots with both of QEMU's USB controller models,
 fails unless the USB bus has settled by the end of the device phase, then
 unplugs and plugs devices while the system runs.
+The choice between two bases is graded on every test boot by the kernel's
+own `base_tests`, which feed it a base alone, a current base it serves, one
+it doesn't, and two it serves neither of; `just test-install` names them in
+its run so that each of its reboots grades the base that boot really took.
 
 ## For contributors
 
@@ -404,11 +408,53 @@ keep a reference into them.
 
 **The boot screen.** The ring, the logo and where they sit are
 `slopos-splash-core`, shared by the kernel's splash and `/bin/roulette`, and
-measured in integers alone because the kernel is built soft-float. The kernel
-draws nothing of the wheel: its old drawing call, `roulette_draw`, answers
-`ENOSYS` and keeps its slot. `roulette_result` is the one call holding only
-the universal `Fate` capability that reaches the reboot primitive, which is
-why `scripts/gates/authority/` lists it.
+measured in integers alone because the kernel is built soft-float. The logo
+is `assets/logo.png` pixel for pixel, scaled only by a whole number, and a
+host test holds the crate's copy to that file. The kernel's splash repaints
+only the segments that change. The wheel's spin is `slopos-fate-core`,
+host-tested like the splash: it starts on the splash's last frame, paints
+each frame into a memfd the size of the screen, rewriting only what changed,
+and `/bin/roulette` presents that damage with `fb_flip` from the virtcon
+seat. Nothing in it can change the outcome, which the kernel drew before the
+spin began. The kernel draws nothing of the wheel: its old drawing call,
+`roulette_draw`, answers `ENOSYS` and keeps its slot. `roulette_result` is
+the one call holding only the universal `Fate` capability that reaches the
+reboot primitive, which is why `scripts/gates/authority/` lists it.
+
+**Which disk is the root.** `root=auto` and `root=disk` mean the first
+registered disk that isn't removable (`block::first_fixed_disk`), never
+simply the first disk, so a stick left in a port can't change what boots.
+Nothing in boot waits for USB except a `root=` or `mount=` that names an
+absent device, the install medium's search for its payload, and the test
+boot's own settle step; the crash store doesn't wait either, so keep new
+steps off that wait. The root images QEMU boots differ on purpose. The
+development machine's is built `VERITY=rw` and `PRESERVE_FS_IMAGE=1`, which
+refreshes the host's files in an existing image in place, so what the guest
+wrote survives a rebuild. The tests image is built `VERITY=off`, because the
+suite writes to it, and is made afresh on every build: a root that persisted
+would make every filesystem test a change to the image the next run boots.
+
+**The crash record.** The format is `boot-core::crash`: a ring of fixed-size
+slots, each a header that seals the record's text with a CRC-32, then the
+summary, the panic report and the kernel log's tail. The store
+(`drivers/src/crash.rs`) reads what every slot holds once, at boot, so the
+panic path only writes: it takes no lock it would have to wait for and
+allocates nothing. The report goes into a static buffer the size of a slot,
+the log's newest whole lines are added through `klog_tail`, which is a
+`try_lock` and gives up when the panic happened inside a log call, and the
+record is written through the NVMe controller's `PanicQueue`, polled, with
+the chunk that holds the header last and a flush after it, so a record cut
+short fails its CRC instead of passing for whole. A stack overflow writes
+none, since its stack is spent. The store is found by the GPT disk GUID
+Limine reports for the kernel file, and the `limine` crate gets that field
+wrong: its `limine_file` binding misplaces every field after `media_type`
+and its `Uuid` isn't `repr(C)`, so `boot/src/limine_protocol.rs` rebuilds
+the GUID from the bytes the fields were really read from. Don't replace
+that with the crate's accessor. `bootctl collect` takes each saved file's
+index from `/var/log/crash/bounds`, made durable before the copy (as BSD's
+`savecore` does), so a copy that failed never hands its index to another
+record; the copy goes through a flushed sibling and a flushed rename, and
+only then is the record erased from the partition.
 
 **Reset after a panic.** A reset after a panic (`panic=reboot`) skips the
 filesystem flush, whose locks the panicking CPU may hold, and skips UEFI

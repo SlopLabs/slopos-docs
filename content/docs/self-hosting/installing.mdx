@@ -346,14 +346,19 @@ disk then boots without the stick, builds and installs its own base and
 kernel where it has the toolchain, and commits it. The blank disk is then
 repaired from the stick's rescue shell and reinstalled keeping its root. The
 host holds every partition table to `sfdisk --verify`, every FAT volume to
-`fsck.fat`, every root to `e2fsck`, and the other system's partitions,
-entries and files to their bytes. `just test-installer foreign` runs one
-disk; it needs `just toolchain` unless `INSTALLER_PAYLOAD=0`.
+`fsck.fat -n`, every root to `e2fsck -fn`, and the other system's partitions,
+entries and files to their bytes: that disk's ESP holds a loader of its own
+under `\EFI\other\`, which must come through an install unchanged. The
+install from the CD drive must log `the medium carries no toolchain`, since
+the kernel has no driver for the drive and so mounts no payload.
+`just test-installer foreign` runs one disk; it needs `just toolchain`
+unless `INSTALLER_PAYLOAD=0`.
 
 ## For contributors
 
 **The engine prints nothing.** `installer::engine` probes, proposes and
-installs and reports everything as events; the terminal installer and
+installs and reports everything as events; the terminal installer
+(`installer::cli`) and
 `installer --serve` only render them or carry them. A window and the engine
 agree through `installer-core`, a host-tested crate holding the views of a
 disk, the choices, the proposal, its issues and the framed protocol, and
@@ -367,7 +372,19 @@ new step after that check.
 
 **Words are held by tests.** Every page of every fixture, and every issue
 the terminal prints, is held to the screen glossary (`theme-core::words`)
-and to decimal units. A new message goes through those tests.
+and to decimal units. A new message goes through those tests. An issue is
+one fact with two wordings: `Issue::words` is what the window shows, the
+fact and then what to do instead, and its `Display` is the terminal's
+sentence, which names the flag that changes it where one does. The pages,
+lists and words the window renders come from the `Wizard` in
+`installer-core`, so the window itself decides nothing about them. Sizes
+have one writer and one reader: `disk_size` prints decimal units, as a
+disk's label does, and `parse_size` reads the same units and no others
+(`20 GB`, `512MB`, `4096 bytes`, a bare number as GB; no binary unit, no
+one-letter unit but `B`, nothing short of a whole byte), for the window's
+box and `--root-size` alike. A disk's name on screen is the model its
+`/dev/disk/by-id` names carry, read by `boot_core::disk_id::describe`, the
+same module that writes those names, so the two can't drift apart.
 
 **Layout and capabilities.** Where partitions go is `boot-core::install`.
 The partition types, sizes and paths it places are `boot-core::layout`, which
@@ -375,7 +392,56 @@ the host's disk builder reads too (`tools/bootdisk`), so the QEMU boot disk
 and an installed disk share one layout. `org.slopos.install` runs the engine as
 uid 0 with `RawBlock`, `Mount`, `Power`, `BootEntry`, `Seal` and
 `DacOverride`; e2fsprogs, an unpatched recipe, gets only the `RawBlock` it
-needs for the device it formats or checks.
+needs for the device it formats or checks. The recipe is
+`toolchain/recipes/e2fsprogs`, and its programs are in every base at `/sbin`
+holding nothing themselves; the root is formatted by `/sbin/mke2fs`, in the
+ext4 profile the kernel mounts. A `RawBlock` holder could write any disk raw
+anyway, so the kernel lifts its per-process `DiskBlocks` ceiling, which is
+what lets the engine fill a whole root from one process; don't split the
+copy across processes to get under a quota. One rule decides which disks
+are never offered, `apps::installer::not_offered`: a disk that reports
+itself read-only, and the disk carrying the medium's GPT disk GUID. The
+installer check excludes the stick by calling the same function, so the
+test and the installer can't disagree about it.
+
+**The medium and its payload.** The paths are `boot-core::layout`'s. The
+kernel serves the archive at `layout::MEDIUM_DIR` and adds the kernel and
+base it booted as `boot/kernel.elf` and `boot/base/current.img`, mapped
+where Limine put them, not copied. `scripts/build_install_medium.sh` picks
+a fresh GPT disk GUID for each build and records it in the archive as
+`boot/disk-guid` (`layout::MEDIUM_DISK_GUID`), and `scripts/build_iso.sh`
+hands the same GUID to xorriso as `--gpt_disk_guid`. That GUID is how both
+the kernel and the installer tell which disk is the medium, however the
+firmware started it. It is read from the header alone (`gpt::disk_guid`), so
+it still identifies a disk whose entry array the reader would refuse. The
+payload is an ext4 volume in the profile, holding the toolchain with the
+manifest an install records for it and a `--vendored` clone of `HEAD`,
+shrunk with `resize2fs -M` and then given ext4's `read-only` feature, which
+`mke2fs` refuses at creation, so no system that mounts it writes it. The ISO
+carries it as a partition of SlopOS's payload type (`layout::PAYLOAD_TYPE`),
+and the build fails unless `bootdisk medium` finds it there byte for byte
+through the reader the kernel uses. That reader stages as many entries as
+xorriso writes at most (`gpt::MAX_ENTRIES`), more than partitioning tools
+do. At boot, `block::locate_partition` takes the one partition of that type
+on the one disk with that GUID, after USB has settled so that a second disk
+carrying it makes the choice ambiguous instead of first come, and the
+kernel mounts it read-only at `layout::PAYLOAD_DIR` under a read claim held
+for the boot. The installer takes a payload only from the root of a
+read-only ext4 volume mounted there, because any program can make a
+directory at that path.
+
+**The rescue shell.** Exec keeps only the universal capabilities, so the
+rescue shell spawns each program with its whole mask from a process forked
+for it (`slopos_userland::held`). That process passes on a `SIGHUP`,
+`SIGINT`, `SIGQUIT` or `SIGTERM` another process sends it, but not one the
+terminal raised, which reached the program's group already, and it ends as
+the program ended. The shell takes `PRIV_ACTION` out of its environment, so
+a mechanism it runs acts itself instead of believing privd started it, and
+sets `SLOPOS_RESCUE`, so a shell it starts, a script's included, hands on
+what it holds the same way. `bootctl --boot` must not ask the running
+loader what the other disk offers: it renders that disk's own `limine.conf`
+(`limine::offered_entries`), and it leaves the running root's records under
+`/var/lib/slopos/slots` alone, since they describe another system.
 
 ## Further reading
 
@@ -408,6 +474,6 @@ needs for the device it formats or checks.
 | `installer-core/` | What the engine and a window agree on, the pages and their words; host-tested |
 | `boot-core/src/install.rs`, `boot-core/src/layout.rs` | Where the partitions go, and the medium's paths |
 | `scripts/build_install_medium.sh`, `scripts/build_iso.sh` | The medium, its payload and the ISO |
-| `userland/src/apps/shell/held.rs` | The rescue shell |
+| `userland/src/held.rs`, `userland/src/apps/shell/held.rs` | Handing a whole capability mask to a program; the rescue shell |
 | `assets/privd/actions` | `org.slopos.install` and `org.slopos.rescue` |
 | `userland/src/bin/tests/installer_test.rs`, `scripts/make_installer_disk.sh` | The installer check and its disks |

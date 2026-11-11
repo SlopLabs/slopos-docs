@@ -27,7 +27,7 @@ starts with `#![forbid(unsafe_code)]`, and `just check-framekernel-gates` also
 checks the macro expansion of each crate, so `unsafe` arriving through a
 macro is rejected too. Two third-party crates OSTD uses for panics are the
 exception: the stack unwinder (`vendor/unwinding`) and the DWARF reader under
-it (`vendor/gimli`), which `check_vendor_pin.sh` holds to their pinned
+it (`vendor/gimli`), which `scripts/check_vendor_pin.sh` holds to their pinned
 upstream commits. Other crates.io dependencies keep whatever `unsafe` they
 have inside themselves; the gates only stop it reaching SlopOS crates
 through a macro or a linker section. The table shows where each kind of
@@ -47,7 +47,8 @@ low-level code goes:
 
 Outside OSTD, one file holds anything of the kind: the kernel binary's own
 `kernel/src/main.rs`. It declares the global allocator and the
-allocation-error handler, which need the `extern crate alloc;` no other
+allocation-error handler (`#[global_allocator]`, `#[alloc_error_handler]`),
+which need the `extern crate alloc;` no other
 kernel crate may write, and it places the base-interface note, the record
 that says which [base interfaces](/docs/architecture/base) the kernel serves,
 in a linker section of its own with a hand-written
@@ -88,17 +89,12 @@ If the API you need already exists in OSTD, use it and stop here.
    used once, a sealed trait, a slice instead of a pointer and length. They
    are described on [The trusted core](/docs/verification/ostd-trusted-core#how-safety-rules-become-types).
 
-   Don't write a `# Safety` section on a safe `pub` or `pub(crate)` function.
-   `just check-framekernel-gates` rejects it:
-
-   ```text
-   check_safe_contract_surface: 1 safe fns carry a '# Safety' section (baseline 0)
-     A '# Safety' section on a fn that is not 'unsafe fn' says the caller must
-     uphold something the compiler will not check. Express it — a guard, a
-     capability token, a closure-scoped borrow, a witness type — or mark the
-     function 'unsafe fn' so the obligation is visible where it is taken on.
-     Re-run with SAFE_CONTRACT_BASELINE=0 to list them.
-   ```
+   Don't write a `# Safety` section on a safe function, `pub`, `pub(crate)`
+   or private. `just clippy` rejects it through clippy's
+   `unnecessary_safety_doc` lint, which the workspace denies: the section
+   says the caller must uphold something the compiler will not check. Express
+   the condition as a type, or mark the function `unsafe fn` so the
+   obligation is visible where it is taken on.
 
    Marking the function `unsafe fn` is only an option if its callers are all
    inside OSTD, because no other crate can call it.
@@ -167,16 +163,18 @@ declare, through the `RegistryEntry` trait, which registries it belongs to,
 and the macro refuses a static whose type doesn't.
 
 Adding a whole new registry touches several files, because the linker script,
-OSTD and two gates all have to agree on it:
+OSTD and a gate all have to agree on it:
 
 1. Declare the output section and its start and stop symbols in `link.ld`.
 2. In `slopos-ostd/src/ffi/registry.rs`, add a variant to `RegistryId` and
    its section name to `section()`, declare the start and stop symbols and
    return them from `bounds()`, and add an arm to `registry_entry!`.
-3. Add the section and its entry size to `ENTRY_SIZE` in
-   `scripts/check_registry_sections.sh`.
-4. Add the section to `SECTION_ALLOWLIST` in `scripts/check_unsafe_expansion.sh`.
-5. Implement `RegistryEntry` for the entry type, listing the new id.
+3. Add the section to `SECTION_ALLOWLIST` in
+   `tools/xtask/src/lint/unsafe_expansion.rs`.
+4. Implement `RegistryEntry` for the entry type, listing the new id.
+
+The gate on the linked kernel (`registry-sections`) needs no edit: it reads
+the registries from `link.ld` and the entry sizes from the image.
 
 ## Functions called from assembly
 
@@ -206,32 +204,55 @@ instead, the way the task-entry and task-exit paths do
 (`register_task_entry_hook` and `register_task_exit_hook`). The three above
 can't be hooks because a fault early in boot, before any hook is registered,
 would reset the machine instead of panicking. A new C-ABI symbol has to be
-added to `SYMBOL_ALLOWLIST` in `scripts/check_unsafe_expansion.sh` with its
-reason.
+added to `SYMBOL_ALLOWLIST` in `tools/xtask/src/lint/unsafe_expansion.rs`
+with its reason.
+
+## Style rules for kernel code
+
+- **Keep `unsafe` blocks tiny and documented.** One operation, one
+  `// SAFETY:` comment. Prefer `pub(crate)` helpers to wider visibility, and
+  prefix an API another module calls with its subsystem (`mm::`, `sched::`).
+- **Match the surrounding code**: four-space indentation, opening brace on
+  the same line.
+- **Assembly is Intel syntax** in `*.s` files, and each routine documents
+  its register contract: what it expects in which register and what it
+  clobbers.
+- **Default to no comment.** Express intent through names, types and
+  structure. Comment only what the code can't carry: a hardware or
+  specification quirk, an ordering or locking requirement that isn't
+  obvious, a deliberate deviation, a reason invisible from the diff. Keep it
+  to a line or two, and say why the code is so, not what it does. Wanting a
+  comment usually means the code is doing something unobvious, so first try
+  to change the code until the comment is unnecessary.
+- **Contracts are not commentary.** `# Safety` sections on `unsafe fn`,
+  `///` documentation of public APIs and register contracts in assembly are
+  exempt from the rule above.
 
 ## Check the result
 
 ```bash
 just build
 just check-framekernel-gates
+just clippy
 just check-miri        # if you changed OSTD
 just verify            # if you changed a module with a proof
 ```
 
-Each command should finish without an error. CI runs all four.
+Each command should finish without an error. CI runs all five.
 
 ## What the gates reject
 
 | You wrote | Gate that fails |
 |---|---|
-| `unsafe` in a kernel crate outside OSTD, or `#[allow(unsafe_code)]` | `check_unsafe_outside_ostd.sh` |
-| A new kernel crate without `#![forbid(unsafe_code)]` | `check_unsafe_outside_ostd.sh` |
+| `unsafe` in a kernel crate outside OSTD, or `#[allow(unsafe_code)]` | `unsafe-outside-ostd` |
+| A new kernel crate without `#![forbid(unsafe_code)]` | `unsafe-outside-ostd` |
 | `#[unsafe(link_section = "...")]` or `#[unsafe(no_mangle)]` by hand outside OSTD | The compiler, through `#![forbid(unsafe_code)]` |
-| A macro from another crate that expands to `unsafe` in a kernel crate, to a `link_section` that isn't a registry's, or to `no_mangle` on any name but the three above | `check_unsafe_expansion.sh` |
-| A safe `pub` or `pub(crate)` OSTD function with a `# Safety` section | `check_safe_contract_surface.sh` |
-| A crates.io dependency that places data in its own linker section | `check_registry_sections.sh` |
-| A registry entry type whose size changed without updating `ENTRY_SIZE` | `check_registry_sections.sh` |
-| `alloc::` containers in a kernel crate | `check_alloc_dep.sh` |
+| A macro from another crate that expands to `unsafe` in a kernel crate, to a `link_section` that isn't a registry's, or to `no_mangle` on any name but the three above | `unsafe-expansion` |
+| A safe function with a `# Safety` section | Clippy's `unnecessary_safety_doc` (`just clippy`) |
+| `mem::forget` or `ManuallyDrop::new` in a kernel crate, without a site-local `#[expect]` that says why the destructor must not run | Clippy's `disallowed_methods` (`just clippy`) |
+| A crates.io dependency that places data in its own linker section | `registry-sections` |
+| A registry whose entries are not all one size, or don't cover its section exactly | `registry-sections` |
+| `alloc::` containers in a kernel crate | `alloc-dep` |
 
 The full list, with the command for each, is on
 [Safety gates](/docs/verification/tcb-discipline). If a gate fails on code you

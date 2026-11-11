@@ -131,19 +131,17 @@ format](/docs/abi/ktap-test-output) describes it.
 ### 3. Run some of the tests
 
 Pass a glob, a pattern where `*` matches anything, as the first argument. It
-is matched against each test's `<module>::<test>` name. Separate several
+is matched against each test's `<module>::<name>` name. Separate several
 globs with commas:
 
 ```bash
 just test 'slopos_mm::*'
-just test '*ext4_aaa*,slopos_fs::*'
+just test 'slopos_fs::*,slopos_mm::*'
 ```
 
-A filtered run whose kernel tests create files must include `'*ext4_aaa*'`.
-The kernel tests run before the boot mounts the root disk, so they write to a
-filesystem in memory, and that test, which sorts ahead of the filesystem
-tests, is the one that sets it up. Userland tests run on the root disk and
-don't need it.
+A filter selects tests only. Setup that tests share, such as the filesystem
+the kernel tests write to, is registered as a fixture, and fixtures run
+whatever the filter says.
 
 `just test-verbose` and `just test-quiet` take the same glob.
 
@@ -160,6 +158,20 @@ programs on your machine, with no QEMU. It is the fastest way to check a
 change to one of those parts. The TLS tests talk to `openssl` and
 `ssh-keygen`, so both must be on `PATH`. [Write
 tests](/docs/development/adding-tests) explains where a new test belongs.
+
+### Before you send a change
+
+```bash
+cargo fmt --all
+just ci
+```
+
+`just ci` runs every lane CI runs, in CI's order, with the commands CI runs:
+`ci-gates`, `ci-candidates`, `ci-suite`, `ci-toolchain`, then `check-miri` and
+`verify`. A passing `just test` is necessary but not enough, because CI also
+runs gates that `just test` does not. [Write
+tests](/docs/development/adding-tests#what-ci-runs) says what each lane
+holds and what to do when a gate fails.
 
 ### The longer checks
 
@@ -186,7 +198,10 @@ tests](/docs/development/adding-tests) describes what each one grades.
   carries programs built with LLVM 18 or later, and your machine has none it
   can use. See
   [Troubleshooting](/docs/getting-started/troubleshooting#the-build-cannot-find-llvm).
-- A filtered run fails on file operations: add `'*ext4_aaa*'` to the filter.
+- A test passes in the full suite and fails when filtered: it reads what
+  another test left behind. [Write
+  tests](/docs/development/adding-tests#1-write-a-kernel-test) shows how a
+  test declares that with `rank` or a fixture.
 - A framekernel gate complains that the kernel ELF or `builddir/libc.so` is
   missing: run `just build` first.
 
@@ -214,7 +229,7 @@ recipe's own description.
 |--------|--------------|
 | `just boot` | The development machine: release kernel and base on an A/B boot disk, persistent root, 6 GiB of memory, Wheel of Fate first |
 | `just boot-fast` | `just boot` with `ROULETTE=0` |
-| `just boot-debug` | `just boot-fast` on the dev kernel with QEMU's GDB stub on port 1234 and a monitor socket |
+| `just boot-debug` | `just boot-fast` on the dev kernel with QEMU's GDB stub and monitor on Unix sockets in the build directory (`builddir/qemu-gdb.sock`, `builddir/qemu-monitor.sock`) |
 | `just boot-live` | The live ISO from memory, no disk; Wheel of Fate unless `ROULETTE=0` |
 | `just boot-log` | The live ISO with no window for `BOOT_LOG_TIMEOUT` seconds (default 15), log in `test_output.log`; fails unless `/sbin/init` started |
 | `just ui-shots [scene...]` | Boot the live ISO and save a PNG of every installer page, the desktop's surfaces and each app under `builddir/ui-shots/`; names scenes to take only those, `--no-install` stops the installer at its review page |
@@ -248,8 +263,7 @@ base the guest installed survives guest reboots but not the next `just boot`.
 | `just test-userland-only` | Runs no tests at this commit. It boots the tests ISO with `tests.run=__userland_only__`, a pattern that names no test, and the harness applies `tests.run` to the userland phase as well as the kernel phase, so both plan nothing and the runner exits 2. To run every userland test program and no kernel test, filter by module: `just test 'slopos_core::utests::*'` |
 | `just test-elf [ELF=]<kernel> [BASE=<base.cpio>] ['glob']` | Run the suite on a tests kernel and base built elsewhere, such as inside the guest |
 | `just test-host` | Unit tests of the pure-logic crates and of `slopos-ostd`, on the host, no QEMU |
-| `just check-tests-host` | Unit tests of the Go test runner |
-| `just check-test-count` | Fail if `just test` plans fewer tests than `TEST_COUNT_BASELINE` |
+| `just check-tests-host` | `go vet ./...` and `go test ./...` in `tools/run_tests`: the unit tests of the Go test runner and of its log gates. `just test-host` runs it too |
 | `just test-persist` | Two boots of one image: write and `fsync`, power off, boot again and read it back |
 | `just test-rude-exit` | A boot commits a file to the root's journal and dies holding it; the host's `e2fsck` must replay it |
 | `just test-usb` | Boot with both of QEMU's USB controllers, plug and pull sticks, keyboards, pointers, a hub and a USB network adapter through QEMU's control socket, and check that every device comes and goes cleanly |
@@ -267,16 +281,23 @@ base the guest installed survives guest reboots but not the next `just boot`.
 | Recipe | What it does |
 |--------|--------------|
 | `just check-fs-image [--map] [image]` | Hold an image, by default the test image, to `e2fsck -fn` and to being at rest (clean, nothing to replay); with `--map`, or when it names no image, also to the ownership map |
-| `just check-fs-throughput` | Fail if a write costs more transactions or device requests per MiB than recorded |
-| `just check-quota-headroom` | Fail if a resource account's peak passes its recorded cap, anything was refused, or charging got slower |
-| `just check-lockdep-headroom` | Fail unless the lock-order checker booted active, reported no violation and stayed within the limits recorded for its pools |
-| `just check-sched-spread` | Fail unless every online CPU can be given tasks |
+| `just check-capture [LOG...]` | Grade saved captures of a test boot with every log gate: the tracked test list, the lock-order checker, CPU placement, resource-account headroom and filesystem cost. With no argument it grades `builddir/ci-test.log`, which `just ci-suite` writes |
 
-Each of these but `check-fs-image`, like `check-test-count` above, boots the
-test suite once and grades what it printed. The scripts behind them
-(`scripts/check_*.sh`) take `--log <file>` to grade a saved capture of
-`builddir/run_tests --raw --no-color` instead, which is how CI grades one run
-with several of them.
+`check-capture` boots nothing. It runs
+`builddir/run_tests gate tests lockdep sched quota fsperf` with one `--log`
+for each capture, and each capture is a whole run of the suite, graded on its
+own. [Test output format](/docs/abi/ktap-test-output#log-gates) describes
+the gates.
+
+### CI lanes
+
+| Recipe | What it does |
+|--------|--------------|
+| `just ci` | Every lane below, then `check-miri` and `verify`, in CI's order |
+| `just ci-gates` | `fmt`, `test-host`, `clippy`, the dev kernel and every framekernel gate, the offline build, and the release kernel with its authority gate |
+| `just ci-candidates` | Hold the cranelift codegen backend and the pinned wild linker to what the kernel needs, installing either when absent |
+| `just ci-suite` | Boot the tests system once and save its raw output to `builddir/ci-test.log`; hold the capture to the test list, lock-order and CPU placement gates, the image to `check-fs-image` and the tests kernel to the authority gate; then run `test-persist`, `test-rude-exit`, `test-usb` and `test-toolchain`. Fails at the end if any check did |
+| `just ci-toolchain` | Unpack the llvm-project and rustc sources, build the tests userland, then run every check of the toolchain port. Fails at the end if any step did |
 
 ### Remote control
 
@@ -294,10 +315,9 @@ the machine lets the broker do.
 | Recipe | What it does |
 |--------|--------------|
 | `just fmt` | Check formatting (`cargo fmt --all -- --check`) |
-| `just check-return-types` | Slow, advisory audit of kernel functions that return large values |
-| `just check-framekernel-gates` | The framekernel gate scripts alone (needs `just build`) |
-| `just check-framekernel` | Every gate plus `fmt`, Miri and Verus (needs `just build`) |
-| `just check-no-kernel-async` | Fail on any `async fn` in a kernel crate |
+| `just clippy [target...]` | Clippy over the host crates, the kernel's crates and the userland, each with its build's own flags; name `host`, `kernel` or `userland` to run one |
+| `just check-framekernel-gates` | The toolchain and pin gates, every source gate (`xtask lint`) and the dev kernel's ELF gates (needs `just build`) |
+| `just check-framekernel` | The above plus `clippy`, `fmt`, Miri and Verus (needs `just build`) |
 | `just check-miri` | Run the `slopos-ostd` tests under Miri, with Stacked and Tree Borrows |
 | `just ensure-verus` | Download the pinned Verus toolchain into `third_party/verus` |
 | `just verify ['stem']` | Check every proof under `verification/proofs/`, or the one named |
@@ -311,9 +331,9 @@ protect.
 
 | Recipe | What it does |
 |--------|--------------|
-| `just debug-gdb` | Interactive GDB attached to a kernel started by `just boot-debug` |
+| `just debug-gdb` | Interactive GDB attached, through `builddir/qemu-gdb.sock`, to a kernel started by `just boot-debug` |
 | `just debug-bt` | Backtraces of every CPU into `builddir/freeze-gdb.log` |
-| `just debug-monitor` | Connect to the QEMU monitor socket |
+| `just debug-monitor` | Connect to the QEMU monitor socket (`builddir/qemu-monitor.sock`; needs `socat`) |
 | `just rr-record` | Record a deterministic test run to `builddir/replay.bin` (one CPU, no KVM) |
 | `just rr-replay` | Replay the recording under interactive GDB. Its script's breakpoints on a program's fault and on a kernel exception are not set (GDB wants the functions' full Rust paths), so set them yourself |
 | `just rr-gdb [<address>]` | Meant to replay to the fault unattended and, given an address, run backwards to the instruction that wrote it. At this commit it does neither: it never stops at the fault, and its script reads the fault's registers in C syntax GDB refuses in Rust code, and the watchpoint it would set (`wpva`'s) watches the wrong address. Do the same steps by hand under `just rr-replay` |

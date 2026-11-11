@@ -104,15 +104,16 @@ on the linked kernel run on every kernel build; the other checks run in
 **Every other kernel crate forbids `unsafe`.** Each SlopOS crate the kernel
 links, apart from OSTD, OSTD's derive macros and the kernel binary's own
 crate, starts with `#![forbid(unsafe_code)]`, which makes any `unsafe` in it
-a compile error that can't be switched off further down. A check script also
+a compile error that can't be switched off further down. A check also
 reads the kernel's list of dependencies and fails if any SlopOS crate on it
 lacks the attribute, so a new crate is covered as soon as the kernel links
 it. Crates from outside the tree are not held to this
 ([below](#what-it-doesnt-promise)).
 
-**A source scan backs that up.** A second check searches every kernel crate
-outside OSTD for the `unsafe` keyword, so an `#[allow(unsafe_code)]` that
-slipped in somewhere is caught even if the lint was weakened.
+**A source scan backs that up.** A second check parses every kernel crate
+outside OSTD and looks for the `unsafe` keyword, so an
+`#[allow(unsafe_code)]` that slipped in somewhere is caught even if the lint
+was weakened.
 
 **The macro expansion is checked too.** Neither of those catches `unsafe` that
 arrives through a macro. When a macro defined in another crate expands to
@@ -130,10 +131,10 @@ expands its own macros where no source scan sees them. The final check reads
 the linked kernel image and fails if it contains a linker section the kernel's
 linker script doesn't declare.
 
-Nearly every check also tests itself first: it is run against planted
-violations and must reject them, so a check that has quietly stopped matching
-fails instead of passing. [Safety gates](/docs/verification/tcb-discipline) lists
-all of them.
+Every check also carries tests that run it against planted violations, which
+it must reject, so a check that has quietly stopped matching fails instead
+of passing. [Safety gates](/docs/verification/tcb-discipline) lists all of
+them.
 
 ## What you have to trust in the trusted core
 
@@ -150,12 +151,13 @@ OSTD hands an obligation to its caller, and there are three kinds:
 
 The last kind is the one that matters. A safe function with a `# Safety`
 section admits that safe code can break it, which is exactly what a
-framekernel must not allow. A check counts the `pub` and `pub(crate)`
-functions in OSTD that carry one and holds the count at zero: each contract
-it once counted has become a type the caller must hold or an `unsafe fn`,
-or its function has left the safe surface.
+framekernel must not allow. A clippy lint (`unnecessary_safety_doc`) rejects
+every safe function in OSTD that carries one, private functions included, so
+the count is held at zero: each contract it once counted has become a type
+the caller must hold or an `unsafe fn`, or its function has left the safe
+surface.
 [Safety gates](/docs/verification/tcb-discipline) shows how to count the
-other two. The check reads only `# Safety` sections, so a safe function that
+other two. The lint reads only `# Safety` sections, so a safe function that
 is unsound and says nothing about it passes ([below](#what-it-doesnt-promise)).
 
 The gates also print the share of kernel source lines that contain `unsafe`
@@ -215,8 +217,8 @@ than checked.
   the [base interfaces](/docs/architecture/base) the kernel serves. OSTD's
   derive macros, a crate of their own, write the `unsafe impl` lines of the
   traits they derive.
-- **Some rules are held by scripts, not by the compiler.** Apart from the
-  `forbid` lint, the checks above are scans of source text, of macro
+- **Some rules are held by checks, not by the compiler.** Apart from the
+  `forbid` lint, the checks above are scans of parsed source, of macro
   expansions and of the linked image.
   They are tested against planted violations, but a scan only finds the
   shapes it looks for.
@@ -231,9 +233,24 @@ than checked.
 
 If a change seems to need `unsafe` outside OSTD, it belongs in OSTD as a small
 safe API. Any obligation on the caller has to be a type, not a sentence in the
-documentation, because the safe-contract check will reject the sentence.
+documentation, because the safe-contract lint will reject the sentence.
 [Unsafe code and FFI](/docs/development/unsafe-ffi-boundaries) walks through
-adding such an API. Run the checks locally after a build:
+adding such an API. Keep these when you change kernel code:
+
+- **`forbid` is necessary, not sufficient.** Don't remove or relax
+  `#![forbid(unsafe_code)]` in a crate the kernel links, and don't answer a
+  macro-expansion finding by adding to an allowlist: the expansion check is
+  the only thing that sees `unsafe` a macro from another crate injects.
+- **Every kernel crate is `#![no_std]` on the pinned nightly.** Inside an
+  `unsafe fn`, each unsafe operation still needs its own `unsafe` block: OSTD
+  sets `#![deny(unsafe_op_in_unsafe_fn)]` and the kernel binary's crate
+  `#![forbid(unsafe_op_in_unsafe_fn)]`.
+- **Userland is out of scope.** The C library, the runtime and the base's
+  programs may use `unsafe`. A crate becomes subject to the rules the moment
+  the kernel binary links it, because the check reads the binary's
+  dependency closure, not a list of names.
+
+Run the checks locally after a build:
 
 ```bash
 just build
@@ -278,10 +295,10 @@ just check-framekernel-gates
 |---|---|
 | `slopos-ostd/` | The trusted core |
 | `slopos-ostd/src/io/cmos.rs`, `drivers/src/rtc.rs` | The clock example above, both halves |
-| `scripts/check_unsafe_outside_ostd.sh` | The source scan and the `forbid` check over the SlopOS crates the kernel links |
-| `scripts/check_unsafe_expansion.sh` | The macro-expansion check and its short allowlists |
-| `scripts/check_registry_sections.sh` | The check on the linked kernel image |
-| `scripts/check_safe_contract_surface.sh`, `scripts/tcb_ratio.sh` | The two numbers above |
+| `tools/xtask/src/lint/unsafe_outside_ostd.rs` | The source scan and the `forbid` check over the SlopOS crates the kernel links (`xtask lint unsafe-outside-ostd`) |
+| `tools/xtask/src/lint/unsafe_expansion.rs` | The macro-expansion check and its short allowlists |
+| `tools/xtask/src/elf/registry_sections.rs` | The check on the linked kernel image |
+| `Cargo.toml` (`[workspace.lints.clippy]`), `tools/xtask/src/lint/tcb_ratio.rs` | The two numbers above |
 
 [Safety gates](/docs/verification/tcb-discipline) lists every check, with the
 command that runs it.

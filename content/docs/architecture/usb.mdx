@@ -423,11 +423,28 @@ tried ([Hardware requirements](/docs/status/hardware-requirements#the-tested-lap
 
 ## For contributors
 
-- **Formats are data.** xHCI's registers, rings and contexts, descriptors,
-  hubs, Bulk-Only and SCSI, and CDC live in `usb-core`; HID lives in
-  `hid-core`, which the I²C touchpad shares. Both allocate nothing and are
-  tested by `just test-host`. A parser of device input bounds every read and
-  joins the mutation loops.
+- **Formats are data.** `usb-core` holds xHCI as data and as register
+  sequences over a `RegisterBus` trait, which the driver implements on the
+  controller's registers and the tests on a simulated controller. It also
+  holds the standard, hub and class requests and descriptors, and the parts
+  that decide what happens next without owning hardware: `usb_core::bus`,
+  the tree of ports, hubs and devices as a state machine over a `Host`
+  trait; `usb-core::storage`, the Bulk-Only transport and its recovery over
+  a `Wire`; and `usb-core::cdc`, the network class's descriptors,
+  notifications, requests and NCM transfer blocks. HID lives in `hid-core`,
+  which the I²C touchpad shares. Both crates allocate nothing and are tested
+  by `just test-host`. A parser of device input bounds every read and joins
+  the mutation loops.
+- **What the xHCI driver binds.** A PCI function of class `0x0C`, subclass
+  `0x03` and programming interface `0x30`. One it declines keeps its command
+  register as found, and one for which no dynamic MMIO range is left (for
+  its registers, or for an MSI-X table when it has no MSI) isn't touched at
+  all. A failure after the handover from the firmware takes the controller
+  off the bus and resets it.
+- **Enumeration waits for `usb::start`.** The `pci` boot step calls it after
+  it has offered every PCI and ACPI device its driver. Until then the `usb`
+  thread serves the controllers but steps no tree, which is what keeps the
+  machine's own disks and network cards first in the names.
 - **The event ring is the only completion path.** The interrupt handler
   drains it into per-endpoint queues, allocating nothing, then wakes the
   block engine, netpoll or the USB threads. A `ReportSink` or
@@ -447,7 +464,22 @@ tried ([Hardware requirements](/docs/status/hardware-requirements#the-tested-lap
 - **A halt is cleared on both sides.** Resetting the endpoint resets the
   controller's data toggle and `CLEAR_FEATURE(ENDPOINT_HALT)` resets the
   device's; a driver that owns its pipes through `BoundDevice::stream`
-  recovers them itself, as Bulk-Only must.
+  recovers them itself, as Bulk-Only must. A stick's reset recovery also
+  sends `CLEAR_TT_BUFFER` to the hub when a full-speed stick talks through a
+  transaction translator, and ends by dropping and adding both pipes in one
+  Configure Endpoint command, which resets the controller's toggles and
+  moves each ring past what failed.
+- **A probe's own command isn't retried.** Probes share the `usb-bind`
+  thread, so `usb-storage` doesn't send again a probe command that hung, and
+  a logical unit that leaves its first question unanswered ends the scan.
+- **What `usb-net` accepts.** It matches class `02/06` (ECM) and `02/0D`
+  (NCM), and declines a function whose `wMaxSegmentSize` is under 1514 bytes,
+  a whole Ethernet frame. An NCM device is held to the 16-bit block format
+  with receive blocks of at most 16 KiB. A transmit that ends on a whole
+  packet is followed by a zero-length packet, or the adapter waits for
+  more. Carrier is the last `NETWORK_CONNECTION` notification; its `wIndex`
+  isn't checked, because QEMU names the data interface there instead of the
+  control one. Removal calls `nic::retire`.
 - **Rings and contexts are single zeroed pages**, so nothing crosses a page
   or a 64 KiB boundary. A ring entry (TRB) is written with integer stores,
   its cycle bit last, behind a fence, since that bit hands it to the
@@ -456,6 +488,36 @@ tried ([Hardware requirements](/docs/status/hardware-requirements#the-tested-lap
   QEMU, and spec prose stays out of comments, which cite sections.
   [Add a driver](/docs/development/adding-a-driver#a-usb-driver) shows the
   handles a USB driver gets.
+- **`just test-usb` is two halves that talk through the log.** The guest
+  half is kernel tests registered with `FLAG_EXPLICIT | FLAG_UNCAPTURED`, so
+  they run only when `tests.run` names them in full and their log isn't
+  captured, and the explicit userland tests `usb_disk_test`, `usb_net_test`
+  and `usb_shell_test`. The recipe names them all, in order. A test that
+  needs the host to act prints a `USB-TEST:` line (`USB-TEST: hold x`,
+  `USB-TEST: pull mice`), and `scripts/test_usb.py` acts on it through QMP,
+  QEMU's control socket, which `qemu_run.sh` opens when `QEMU_QMP` names a
+  path: `device_del` and `device_add` pull and plug, and `input-send-event`
+  types, clicks and moves. A new check adds its line to both halves.
+- **The machine `just test-usb` builds.** It boots from the initramfs with
+  no disk but the sticks. `qemu-xhci` runs on MSI-X and `nec-usb-xhci` gets
+  `msix=off`, so the second controller exercises MSI. Each stick is a
+  `-blockdev` node, because QEMU deletes a `-drive` backend together with
+  the device that used it and the stick has to come back. The USB keyboards
+  and tablets are bound to the display `video0`: an event that names
+  `video0` reaches them, and one that names no display reaches the i8042 or
+  the newest USB mouse, which is how the host types on one keyboard and not
+  another. The host reads QEMU's `ps2_set_ledstate` trace to see that Caps
+  Lock pressed on a USB keyboard lit the i8042's light as well.
+- **Two drivers exist only for that test.** Under the kernel's `test-hooks`
+  feature, `usb-test` and `usb-test-hid` register ahead of the real drivers.
+  `usb-test` binds the small blank sticks, sends a command, stalls the
+  bulk-in endpoint with a stray read and sends the command again, which
+  proves a stall is cleared on both sides; it declines the ext4 sticks, so
+  `usb-storage` gets those. `usb-test-hid` is offered every keyboard, tablet
+  and mouse first, abandons a read of the idle interrupt endpoint, waits for
+  the endpoint to come back and declines, so `usb-hid` binds a device whose
+  endpoint has already been recovered once. A test run's log therefore says
+  `bound usb-test` where a normal boot says `bound usb-storage`.
 
 ## Further reading
 

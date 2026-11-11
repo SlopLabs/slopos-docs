@@ -88,10 +88,14 @@ compare-and-swap that decides which CPU frees a task, are checked by review
 and by [Miri](/docs/verification/kernmiri), not by proof.
 
 **Rules the build checks instead.** A few things each proof relies on are
-enforced by a script rather than by Verus. For example, the page-table proof
-assumes there is one writer per address space at a time, and a check makes
-sure nothing writes the kernel's own page tables except through the one locked
-path. [Safety gates](/docs/verification/tcb-discipline) lists those checks.
+enforced by a gate rather than by Verus. The page-table proof assumes there
+is one writer per address space at a time, and the `kernel-pml4-writer` gate
+makes sure nothing writes the kernel's own page tables except through the
+one locked path. The resource-accounting proof assumes a charge lives in
+exactly one place for its object's lifetime, which the `charge-linearity`
+gate holds, and the capability proof leaves "can a system call reach a power
+primitive unchecked" to the `authority` gate.
+[Safety gates](/docs/verification/tcb-discipline) lists those checks.
 
 **The rest of the trusted core.** Interrupt handling, locks, device access,
 copying to and from user programs, the boot code and most of the memory code

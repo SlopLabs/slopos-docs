@@ -137,7 +137,8 @@ Its identity matters in three places only:
 - **Ownership.** It may do to the files it owns what any owner may.
 - **The disk's reserve.** ext4 keeps a share of each volume for a reserve user,
   so the system can still write when people have filled the disk. That user is
-  uid 0 unless the volume says otherwise.
+  uid 0 unless the volume says otherwise (the superblock's `s_def_resuid` and
+  `s_def_resgid` name the reserve's user and group).
 - **The loader.** A process running as uid 0 never loads libraries from
   `/usr/local/lib` or `~/.local/lib`, where people can put them.
 
@@ -198,6 +199,8 @@ so, one line per tree:
 
 The image builders and the installer write this record when they make a root,
 and every base carries the one-person record for a root that boots in memory.
+A builder that reuses an image a guest has written follows the record that
+image carries and never writes a new one over it.
 A root without one, or with one that can't be read, gives the first person
 nothing. While the first person is alone, their home is `0755` and they install
 software into `/usr/local` themselves. Adding a second person changes both:
@@ -208,7 +211,13 @@ software](/docs/architecture/software) describes that hand-over.
 Other things have owners too:
 
 - **A pseudo-terminal** belongs to whoever opened its master side, mode `0620`,
-  as on Linux, so one person can't read another's terminal.
+  as on Linux, so one person can't read another's terminal. A new terminal's
+  other side (the *slave*, `/dev/pts/N`) starts locked: opening it by its path
+  fails until the master's holder unlocks it. Asking the master for it
+  (`TIOCGPTPEER`) works even while it is locked, which Linux refuses. privd's
+  requesters and `/bin/login` rely on that: the terminal they hand to a
+  mechanism or a shell is never unlocked, so the descriptor they pass on is
+  the only way in.
 - **A Unix socket's name** is a file of type socket. Binding one needs write
   and search permission on the directory, and connecting needs write
   permission on the name. A bound socket holds its name's file open, as a
@@ -233,7 +242,8 @@ person 1001 bob /home/bob - $argon2id$v=19$m=65536,t=3,p=4$<salt>$<tag>
 ```
 
 A `-` in the fourth field means not an administrator, and in the fifth, no
-password. The record lives in `/var/lib/slopos/accounts`, a directory only uid
+password. The record lives in `/var/lib/slopos/accounts`
+(`slopos_abi::fs::ACCOUNTS_STORE`), a directory only uid
 0 can read. Each change is written as a new *generation* beside the old one
 and *sealed* (marked immutable, which takes the `Seal` capability), and readers
 believe only the newest sealed generation. So a change cut short leaves the
@@ -261,7 +271,8 @@ every Unix program reads:
 
 All three are sealed. The C library's `getpwnam`, `getgrnam`, `getgrouplist`
 and `initgroups` believe one of them only while it is a sealed regular file,
-and otherwise answer from rows built into the library: the users root,
+and otherwise answer from rows built into the library
+(`slopos_slibc_core::passwd::BASE_PASSWD`): the users root,
 `greeter`, `user` and `nobody`, each with a group of its own, and `admin`
 listing `user`. So a program that managed to write `/etc/passwd` without
 `Seal` changes no name and no group. Init runs `users sync` at every boot,
@@ -281,13 +292,15 @@ desktop or at a console login, they have nothing to type, so a request that
 asks them is refused.
 
 One program reads a hash back: `/sbin/authcheck`. It takes a name and a
-password on standard input, one per line, and answers with its exit status
+password on standard input, one per line (`<name>\n<secret>\n` and nothing
+more), and answers with its exit status
 alone: 0 for the right password, 1 for anything else (a wrong password, a
 person with no password, nobody of that name), 2 when it can't tell. Only uid 0
 may read `/etc/shadow`, so `authcheck` answers only when it runs as uid 0, as
 privd and the accounts programs run it, and whoever asks it never sees a hash.
 A password never appears on a command line: programs hand it over on a pipe,
-or read it from a terminal whose echo they turned off first. How the login
+or read it from a terminal whose echo they turned off before printing the
+prompt and keep off until the whole exchange is over. How the login
 screen slows down repeated wrong passwords is on
 [Sessions and login](/docs/architecture/sessions), and how privd does on
 [Privileged actions](/docs/architecture/privd#passwords).
@@ -299,7 +312,8 @@ screen slows down repeated wrong passwords is on
 | Command | Does |
 |---|---|
 | `users` or `users list` | Lists each person's name, uid, `admin` or `-`, and home |
-| `users add <name> [--admin] [--keep-autologin]` | Adds a person with the next uid and a home `/home/<name>`, mode `0700` |
+| `users list --porcelain` | The same people for another program to read, one line each: name, uid, home and a comma-separated list of what holds for them (`admin`, `password`, `autologin`, `remote`, `withheld`, or `-` for none), separated by tabs |
+| `users add <name> [--admin] [--password] [--adder-password] [--keep-autologin]` | Adds a person with the next uid and a home `/home/<name>`, mode `0700`. With `--password`, their password is read twice from standard input |
 | `users remove <name> [--home]` | Removes a person; their home stays unless `--home` says otherwise, and their uid is never given again |
 | `users rename <name> <new name>` | Renames a person, keeping their uid and home |
 | `users passwd` | Changes your own password, after you type the current one if you have one |
@@ -310,10 +324,17 @@ screen slows down repeated wrong passwords is on
 
 Changing your own password is privd's `org.slopos.accounts.password` action,
 which any person may ask for and confirms with a click at their own desktop
-(at a console login, privd asks for their password instead). Everything else
-is `org.slopos.accounts.manage`: an administrator confirms it the same way,
-and a person who isn't one (a *standard user*) needs an administrator to type
-their password into the desktop's dialog
+(at a console login, privd asks for their password instead). The porcelain
+listing is `org.slopos.accounts.list`, which any person may ask for without
+being asked anything: the mechanism reads the record for them, so the
+Settings app can show the people without reading the record itself. It tells
+root and the administrators who has a password, who is logged in
+automatically and whom `remoted` runs as. Anyone else learns those of
+themselves alone, and every other row says `withheld`.
+
+Everything else is `org.slopos.accounts.manage`: an administrator confirms it
+with a click as well, and a person who isn't one (a *standard user*) needs an
+administrator to type their password into the desktop's dialog
 ([privd actions](/docs/abi/privd-actions)). A few rules hold whoever asks:
 
 - A name is a lowercase letter followed by lowercase letters, digits, `-` and
@@ -322,9 +343,14 @@ their password into the desktop's dialog
 - The last administrator stays one, and the first person can't be removed,
   because they hold the workspace at `/src`.
 - An administrator without a password is asked to set one when they add
-  someone, and adding someone turns automatic login off unless
-  `--keep-autologin` says otherwise. A shared machine shouldn't open anyone's
-  desktop to whoever sits down.
+  someone, before the new person's own if `--password` was given. When
+  standard input isn't a terminal, the command line must say whether those
+  lines are coming: `--adder-password` exactly when the record says the adder
+  has no password. Otherwise a script written for one state of the record
+  would have its lines read as something else.
+- Adding someone turns automatic login off unless `--keep-autologin` says
+  otherwise. A shared machine shouldn't open anyone's desktop to whoever sits
+  down.
 - Adding the second person hands `/usr/local` to uid 0, and adds nobody if
   that fails.
 
@@ -361,7 +387,9 @@ tests check the credential arithmetic. Another userland test adds, renames,
 promotes and removes people, sets and checks passwords (including one typed
 at a terminal, which must never be echoed), and checks that `DacOverride` alone can't touch
 the record or the database. After the suite, the host checks the disk image it
-wrote against the ownership map (`check_fs_image.sh --map`), and the Argon2id
+wrote against the ownership map and its owners record, and checks that a
+`/usr/local` the record doesn't name is uid 0's and writable by uid 0 alone
+down to its last entry (`check_fs_image.sh --map`), and the Argon2id
 code is held to RFC 9106's test vectors.
 
 ## For contributors
@@ -374,9 +402,26 @@ code is held to RFC 9106's test vectors.
 - **The ownership map is stated once** in `slopos_abi::fs` (`ROOT_LAYOUT`,
   `PERSON_TREES`, `OWNERS_RECORD`) and mirrored in `scripts/lib/root_layout.sh`
   and `tools/initramfs`, whose test holds all three equal. Change them together.
-- **Database writers take the store's lock** across reading the record and
-  writing the database, so the last database written matches the newest
-  record. `/etc/shadow` is written first and from the record alone.
+- **The host trusts nothing on an image a guest wrote.** The scripts read a
+  kept image's owners record with `fs_tree.py read` and list a tree's owners
+  and modes with `fs_tree.py walk`, both through directory listings only, so
+  no link or crafted name redirects them. A record that is absent or
+  unreadable grants nothing; never fall back to the one-person record.
+- **A terminal handed on stays locked.** Make it with
+  `process::openpty_handed_on`, which takes the slave through the master and
+  unlocks for that one open only on an older kernel (known by its `EINVAL`).
+  In the kernel, a terminal ioctl holds its open file until it returns, so a
+  descriptor closed under it can't give its index to the next terminal
+  allocated.
+- **Database writers take the store's lock** (`ACCOUNTS_STORE.lock`, a file
+  beside the store) across reading the record and writing the database,
+  `extctl` among them after an extension changes, so the last database
+  written matches the newest record. `/etc/shadow` is written first and from
+  the record alone.
+- **Secrets are typed through `userland/src/secret.rs`.** It turns echo off
+  before the prompt and keeps it off across the exchange, on the terminal
+  privd gave the mechanism, and prints no prompt when standard input isn't a
+  terminal.
 - **Nothing but `/sbin/authcheck` parses a hash** outside `accounts-core`, and
   privd never does.
 - **A file written through a seal must be read back sealed.** Use the sealed
@@ -405,13 +450,13 @@ code is held to RFC 9106's test vectors.
 
 | Where | What |
 |---|---|
-| `slopos-ostd/src/process/cred.rs` | Credentials, the id rules and the permission checks |
+| `slopos-ostd/src/process/cred.rs` | `slopos_ostd::process::cred`: credentials, the id rules and the permission checks |
 | `fs/src/vfs/perm.rs`, `fs/src/vfs/ops.rs` | Where the filesystem applies them |
 | `core/src/syscall/cred_handlers.rs` | The id system calls |
-| `abi/src/fs.rs` | The uid ranges and the ownership map |
+| `abi/src/fs.rs` | The uid ranges (`EXTENSION_UIDS`, `PERSON_UIDS`), the ownership map, and the directories the kernel keeps in place (`KEPT_DIRS`) |
 | `userland/src/root_layout.rs` | Laying out a root, and the owners record |
-| `accounts-core/` | The accounts record, the database and password hashes |
-| `userland/src/accounts.rs`, `userland/src/sealed.rs` | The store and sealed files |
+| `accounts-core/` | The accounts record (`slopos_accounts_core::record`), password hashes (`slopos_accounts_core::password`), the three database files (`slopos_accounts_core::{passwd, group, shadow}`) and the porcelain listing |
+| `userland/src/accounts.rs`, `userland/src/sealed.rs`, `userland/src/secret.rs` | The store, sealed files, and reading a typed secret |
 | `userland/src/apps/users.rs`, `userland/src/apps/authcheck.rs` | `/bin/users` and `/sbin/authcheck` |
-| `slibc/src/pwd.rs` | How the C library reads the database |
+| `slibc/src/pwd.rs`, `slibc-core/src/passwd.rs` | How the C library reads the database, and its built-in rows |
 | `userland/src/bin/tests/dac_test.rs`, `userland/src/bin/tests/accounts_test.rs` | Tests |

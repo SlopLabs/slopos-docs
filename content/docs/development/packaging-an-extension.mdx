@@ -221,7 +221,9 @@ SHA256:bbXpuKG6zhzdmnxq256TlqzFBzRl2f6OOg722cYNbU8 trusted with ceiling - and us
 just remote install --extension builddir/extensions/hello.ext
 ```
 
-The script pushes the image, and the sidecar and signature when they lie
+`just remote` runs `scripts/remote.py install --extension`. It refuses a
+sidecar that names another image than the one beside it, and otherwise
+pushes the image, and the sidecar and signature when they lie
 beside it, then runs `extctl install-signed` for a signed image or
 `extctl install` naming the root it pushed for an unsigned one. Either way it
 runs unasked, because the paired host may install extensions. Among its

@@ -24,7 +24,13 @@ beside SlopOS's other ones.
 A change to the wire (a message, a field, a tag, a meaning) takes the next
 version. The two `Hello` messages never change their encoding, so two builds of
 different versions always find out that they differ. `protocol_test` holds
-version 1's tags and both `Hello` encodings.
+version 1's tags, both `Hello` encodings and the encoded lengths of
+`SurfaceAttach` and `BufferRelease`, the two messages that name a buffer.
+
+The rule has one exception so far: the `serial` field of `SurfaceAttach` and
+`BufferRelease` was added without a new version, because every client is
+built from the same tree as its compositor. A client built before that field
+passes the version check and then fails on the first attach.
 
 ## Connection
 
@@ -72,10 +78,16 @@ version: rebuild this program").
   descriptor nobody takes is closed with the connection.
 - A connection reads into a 16 KiB buffer, which always has room for a whole
   frame once the frames before it are decoded.
-- The compositor queues events in a 4 KiB buffer per client and flushes it
-  every frame. An event that finds the buffer full flushes it at once; a
-  client whose buffer still has no room for the event, or whose socket fails
-  a write, is disconnected without an `Error`.
+- The compositor queues events in a 4 KiB buffer per client. It flushes one
+  client's buffer as soon as it has served that client's requests, every
+  client's once a pass has dispatched its input, and every client's again at
+  the end of the pass. An event that finds the buffer full flushes it at
+  once; a client whose buffer still has no room for the event, or whose
+  socket fails a write, is disconnected without an `Error`.
+- The compositor waits for each client's requests with a one-shot `poll`
+  that it takes again after every read. A multishot poll reports only a
+  change in readiness, so a request that arrived just after a read would wait
+  for the compositor's next pass.
 
 ## Requests (client to compositor)
 
@@ -83,7 +95,7 @@ version: rebuild this program").
 |---|---|---|---|
 | 0 | `Hello` | `version: u32` | |
 | 1 | `CreateSurface` | `new_id: u32` | |
-| 2 | `SurfaceAttach` | `surface: u32`, `buffer_id: u32`, `width: u32`, `height: u32`, `has_fd: bool` | the buffer, when `has_fd` |
+| 2 | `SurfaceAttach` | `surface: u32`, `buffer_id: u32`, `serial: u32`, `width: u32`, `height: u32`, `has_fd: bool` | the buffer, when `has_fd` |
 | 3 | `SurfaceDamage` | `surface: u32`, `x: i32`, `y: i32`, `w: i32`, `h: i32` | |
 | 4 | `SurfaceCommit` | `surface: u32` | |
 | 5 | `SurfaceFrame` | `surface: u32` | |
@@ -107,9 +119,9 @@ message, or none, and a request left with none is ignored.
 | Request | What the compositor does |
 |---|---|
 | `CreateSurface` | Makes a surface with the client's id. An id of `0`, an id the client already uses for a live surface, or no free surface slot ends the connection. |
-| `SurfaceAttach` | Selects `buffer_id` (0 or 1) for the next commit, at `width` × `height`. With `has_fd`, the descriptor registers the slot, replacing and closing any descriptor the slot held. Any other `buffer_id`, or an unknown surface, is ignored and its descriptor closed. |
+| `SurfaceAttach` | Selects the buffer in slot `buffer_id` (0 or 1) for the next commit, at `width` × `height`, and records `serial` as that buffer's name (see [Buffers](#buffers)). With `has_fd`, the descriptor registers the slot, replacing and closing any descriptor the slot held. Any other `buffer_id`, or an unknown surface, is ignored and its descriptor closed. |
 | `SurfaceDamage` | Records a rectangle, in buffer coordinates, that the next commit changes. Up to 8 per commit; a ninth makes the whole surface damaged. |
-| `SurfaceCommit` | Makes the selected slot the surface's buffer and its recorded damage the commit's. A commit with no damage repaints the whole surface. Sends `BufferRelease` for the previous slot when the slot changed. |
+| `SurfaceCommit` | Makes the selected buffer the surface's and its recorded damage the commit's. A commit with no damage repaints the whole surface. Damage from an earlier commit that has not reached the screen yet is kept beside the new damage (or the whole surface is repainted when the two don't fit in 8 rectangles). Sends `BufferRelease` for the buffer shown before when its slot or its serial differs from the new one's. |
 | `SurfaceFrame` | Asks for one `FrameDone` after the next frame that reaches the screen. |
 | `SurfaceDestroy` | Removes the surface and closes its buffers' descriptors. |
 | `GetToplevel` | Gives the surface the toplevel role (a window) under the client's toplevel id. Ignored for a surface that already has the role. |
@@ -129,7 +141,7 @@ Requests that name a surface or toplevel the client does not have are ignored.
 | 0 | `Hello` | `version: u32` |
 | 1 | `OutputInfo` | `width: u32`, `height: u32`, `format: u32`, `pitch: u32`, `scale: u32` |
 | 2 | `FrameDone` | `surface: u32`, `timestamp_ms: u32` |
-| 3 | `BufferRelease` | `surface: u32`, `buffer_id: u32` |
+| 3 | `BufferRelease` | `surface: u32`, `buffer_id: u32`, `serial: u32` |
 | 4 | `Configure` | `toplevel: u32`, `width: u32`, `height: u32`, `states: u32` |
 | 5 | `Close` | `toplevel: u32` |
 | 6 | `PointerEnter` | `surface: u32`, `serial: u32`, `x: i32`, `y: i32` |
@@ -149,7 +161,7 @@ Events never carry a descriptor. A tag of 16 or more is a malformed message.
 |---|---|
 | `OutputInfo` | In answer to the client's `Hello`. `format` is the screen's `PixelFormat`; `scale` is `1`. |
 | `FrameDone` | After the first frame that reaches the screen following a `SurfaceFrame`, for a surface that is shown. `timestamp_ms` counts from the compositor's start. |
-| `BufferRelease` | When a commit replaces the surface's buffer with the other slot: the compositor reads the named slot no more, and the client may draw into it. |
+| `BufferRelease` | When a commit shows another buffer in this one's place: the compositor reads the buffer no more, and the client may draw into it. `buffer_id` and `serial` are the ones the buffer was last attached with. |
 | `Configure` | The size the window is to lay itself out at, and its states: when placement shrinks a new window to fit, at most every 100 ms while the pointer moves during an interactive resize and once at its end, and when zoom resizes or restores the window. |
 | `Close` | The window's close button was pressed. The client decides whether to close. |
 | `PointerEnter`, `PointerLeave` | The pointer moved onto or off the surface's content, or something (a frame, the lock screen, a question) now covers it. `x`, `y` are surface-local. |
@@ -219,11 +231,25 @@ that could not be decoded would otherwise be read again forever.
 2. Pixels are in the format `OutputInfo` names, rows packed with no padding:
    a row is `width` times that format's bytes per pixel. The compositor draws
    every window opaque, whatever the alpha byte holds.
-3. The first `SurfaceAttach` of a slot sends the memfd and sets `has_fd`.
-   Later attaches of the same slot send no descriptor. A resize makes new
-   memfds and registers both slots again.
-4. `SurfaceDamage` names what changed, and `SurfaceCommit` shows it.
-5. When the other slot is committed, `BufferRelease` hands the first back.
+3. The client numbers each pair of buffers with a *serial*, starting at `0`
+   and one higher for each new pair. Every `SurfaceAttach` carries the slot
+   and the pair's serial.
+4. The first `SurfaceAttach` of a buffer sends the memfd and sets `has_fd`.
+   Later attaches of the same buffer send no descriptor. A resize makes new
+   memfds, takes the next serial and registers both slots again.
+5. `SurfaceDamage` names what changed, and `SurfaceCommit` shows it.
+6. When another buffer is committed, `BufferRelease` hands the first back,
+   naming it by slot and serial. A client ignores a release whose serial is
+   not its current pair's: it is for a buffer a resize replaced, and frees
+   nothing of the buffer now in that slot.
+
+The compositor may read two buffers at once: the one committed last, and the
+one before it until its `BufferRelease`. So a client draws only into a buffer
+that is neither. `slopos_windowing::SoftSurface` does this bookkeeping, sends
+a `SurfaceFrame` with every commit, and holds back the next frame until the
+`FrameDone` arrives or a short wait runs out
+([Windowing](/docs/architecture/userland-windowing#frame-pacing) explains
+why).
 
 A memfd is sized once, to at most 64 MiB, and the kernel holds at most 64
 memfds at a time across all processes (`mm/src/memfd.rs`); a window's two

@@ -188,13 +188,15 @@ BOOT: base current (interface <N+1>) not booted; its memory goes to the allocato
 ```
 
 A kernel built from the same tree as the new base serves *N*+1, so once you
-install and boot one, it boots current.
+install and boot one, it boots current. Every boot logs its choice in the
+same form, `BOOT: base current|previous (<n> bytes), interface <i>`.
 
 The base the kernel didn't choose is loaded in memory but never used, so its
 pages are handed to the allocator as free memory before anything else can
 read them. That is why the choice happens so early: the pages join the free
 memory when the allocator is first set up, and nothing has looked at them by
-then.
+then. Only the whole 4 KiB pages the module covers are given away, since a
+page it shares with something else is not the base's to free.
 
 If the kernel serves neither base, it says so as it chooses, and the
 `initramfs root` boot step then fails, which stops the boot with a kernel
@@ -221,8 +223,8 @@ how it chooses, and why a disk that refuses writes gets no base):
 
 - Each mount is read-only, and every file in it is *sealed* for good: it
   reports the immutable flag, and nothing can clear it.
-- Each mount is *pinned*: `umount` refuses it, and `mount` refuses to put
-  anything at or beneath it, with `EPERM`.
+- Each mount is *pinned* (the mount flag `MOUNT_PINNED`): `umount(2)` refuses
+  it, and `mount(2)` refuses to put anything at or beneath it, with `EPERM`.
 - The directories on the way to a base directory, `/usr` and `/etc`, can't be
   renamed or removed (`EBUSY`), so nobody can move `/usr` aside and put
   another `/usr/bin` in its place. A root that has a symbolic link where one
@@ -236,6 +238,13 @@ instead, the kernel first copies into it what the archive holds
 outside the six base directories (the skeleton of directories such as `/etc`,
 `/var` and `/home`, and the few files there), and then mounts the base
 directories from the module as it would over a disk.
+
+Since the base covers those six directories anyway, a root disk need not
+hold a system at all. The root images that `just boot` and the self-hosting
+checks use are built with `FS_BASE=boot`, which leaves each base directory
+as an empty sealed mount point and refuses to install a program there. The
+test images and the verified image are built without it and carry a system
+of their own; when one is the disk under a booted base, the base covers it.
 
 ## How a base is checked before it is used
 
@@ -294,7 +303,8 @@ Here is what happens, in order:
    points all six base directories at the new generation. A program never
    sees `/bin` from one base and `/lib` from another.
 4. The kernel logs the switch, and the descriptor that the `base_monitor`
-   system call gives programs to watch becomes readable:
+   system call gives programs to watch becomes readable. Reading it gives
+   the current generation's number:
 
    ```text
    BASE: generation <n> is the base, interface <i>
@@ -406,21 +416,37 @@ lists each case.
   retire a call by answering `ENOSYS` in its slot.
 - **A program that makes SlopOS-only system calls directly belongs in the
   base.** Anything outside it reaches the kernel only through `libc.so`,
-  whose exports only grow; `scripts/check_loose_programs.sh` holds the apps
-  to that.
-- **There is one definition of a valid base,** `boot_core::base::check`, and
-  one reader of the archive format, `boot_core::newc`. The packer, `bootctl`
+  whose exports only grow; `xtask programs` holds the apps to that after
+  every userland build ([Installed software](/docs/architecture/software#the-apps-outside-the-base)).
+- **There is one definition of a valid base,** `boot-core::base::check`, and
+  one reader of the archive format, `boot-core::newc`. The packer, `bootctl`
   and the host's disk builder share the check, and the kernel, the packer,
   `bootctl` and the tests share the reader, so change either in `boot-core`
-  and nowhere else.
+  and nowhere else. The kernel reads a base's interface at boot through the
+  same two modules, so it and `bootctl` can never read one base differently.
+- **A kernel file keeps its note.** `bootctl` reads the range a kernel serves
+  from the file (`boot-core::kernel` finds the note section by name through
+  the section headers), so `link.ld` fails a link whose note is missing or
+  the wrong size.
+- **The boot partition's paths are stated once,** in `boot-core`'s
+  `layout::BASE_*`, with the two module names. No slot is named `base`,
+  because that name is the bases' directory.
 - **Everything that can fail runs before the switch.** The switch itself is a
-  single pass over the mount table under its lock, all six mounts or none.
+  single pass over the mount table under its lock, all six mounts or none
+  (`vfs::mount::switch_roots`).
+- **A program that must notice a switch uses `slopos_userland::base_watch`.**
+  It opens `base_monitor` (the descriptor is close-on-exec, so no child
+  inherits it) and pairs the generation it reads with the manifest it read
+  before, which is how init, the compositor and remoted learn what a switch
+  changed.
 - **A generation's lifetime is read, not counted.** The reaper looks for a
   generation's inodes in the open-file table, the file page sets and the
   process table rather than keeping a reference count. A new path that keeps
   a base inode beyond one system call must show up in one of those places
   (exec holds its files with `basefs::Hold` for this reason), or the reaper
-  can free a generation that is still in use.
+  can free a generation that is still in use. A socket's record of who its
+  peer was holds nothing: once that generation is gone, the peer reads as no
+  program.
 - **The booted generation is never freed.** init made the consent channel and
   the other connections of the boot under it, and they name its programs.
 
@@ -454,11 +480,12 @@ lists each case.
 |-------|------|
 | `boot/src/base.rs` | Choosing current or previous at boot; the unused base's pages |
 | `boot-core/src/base.rs`, `boot-core/src/base/check.rs` | Interface, manifest and the rules a base must pass, host-tested |
-| `boot-core/src/kernel.rs` | Reading the interfaces a kernel file serves from its ELF note |
+| `boot-core/src/kernel.rs` | `boot-core::kernel`: reading the interfaces a kernel file serves from its ELF note |
 | `boot-core/src/newc.rs` | The one reader and writer of the archive format |
-| `abi/src/base_interface.rs` | `BASE_INTERFACE`, `BASE_INTERFACE_MIN` and the note's layout |
+| `boot-core/src/layout.rs` | The boot partition's paths and the modules' names |
+| `abi/src/base_interface.rs` | `slopos_abi::base_interface`: `BASE_INTERFACE`, `BASE_INTERFACE_MIN` and the note's layout |
 | `fs/src/basefs/` | Serving the base, generations, activation, the reaper and `base_monitor` |
-| `boot/src/boot_services.rs` | Mounting the base directories at boot |
+| `boot/src/boot_services.rs`, `fs/src/vfs/mount.rs` | Mounting the base directories at boot; pinned mounts and the switch |
 | `userland/src/apps/bootctl.rs` | `bootctl base install`, `base rollback` and `status` |
 | `userland/src/base_watch.rs`, `userland/src/apps/init/` | Noticing a switch and restarting what it changed |
 | `tools/initramfs/`, `scripts/lib/base.sh` | Packing a base, and which programs it carries |

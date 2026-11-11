@@ -3,7 +3,7 @@ title: "Known limitations"
 description: "What SlopOS does not do yet, and which of those gaps are recorded as defects to fix."
 ---
 
-As of 2026-10-29, SlopOS commit `fa0f8f79`.
+As of 2026-11-11, SlopOS commit `b8b2855b`.
 
 SlopOS is a research system. Everything is tested in QEMU, and one laptop has
 run an installed system. This page lists what is missing, what each gap means for
@@ -163,8 +163,9 @@ one is about CI.
   `/usr/local` for everyone is copied before it is installed, both counting
   against one disk quota, so it can be at most half of that quota; and it must
   be readable by everyone, so it cannot come from inside a home directory
-  closed to others ([Installed software](/docs/architecture/software)). Open
-  defect.
+  closed to others. uid 0 running `tree-install` itself installs from the
+  same kind of copy, under the same two bounds, wherever the tree goes
+  ([Installed software](/docs/architecture/software)). Open defect.
 
 ## Desktop and people
 
@@ -178,9 +179,6 @@ one is about CI.
   relayed to a program stays in kernel pipe buffers and the compositor's
   memory until they are reused; no other program can read it there
   ([Privileged actions](/docs/architecture/privd)). Open defect.
-- **Console input after a signal key is lost.** On the text console and the
-  serial line, characters typed in the same burst after one that sends a
-  signal, such as Ctrl+C, are dropped. Open defect.
 
 ## Toolchain
 
@@ -203,7 +201,8 @@ files involved, including the low-severity ones this page leaves out:
   a remote command that outlives its timeout;
 - a base switch that lands while init re-executes itself and goes unacted on;
 - one lock taken on every lookup of a base file;
-- a compositor client whose message wakes nothing until it sends again;
+- the compositor taking input only once per 16 ms frame tick, so a key or
+  pointer event can wait up to a tick before any app hears of it;
 - `recvmsg` on a Unix socket taking every queued descriptor at once;
 - peer identities that outlive what they describe;
 - the rest of the kernel interface edge cases: a spawn request whose layout

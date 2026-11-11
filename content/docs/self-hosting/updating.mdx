@@ -36,7 +36,8 @@ back unless told otherwise is what FreeBSD's `nextboot` does, and
 systemd-boot's *automatic boot assessment* is a more general version that
 counts boot attempts. SlopOS tells its boot loader what to boot through the UEFI variables
 systemd defined for that, the *Boot Loader Interface*. The rule for which old
-base to keep comes from FreeBSD's kernel install, as
+base to keep comes from FreeBSD's kernel install (`make installkernel`, which
+moves the old kernel to `kernel.old` only when it is the one running), as
 [Base system](/docs/architecture/base#where-it-comes-from) explains.
 
 ## Why a kernel needs a safe way to be replaced
@@ -162,7 +163,7 @@ does. [Installed software](/docs/architecture/software) explains why.
 
 ### What `bootctl` checks before it writes
 
-`bootctl base install` refuses an image that:
+`bootctl base install <image>` refuses an image that:
 
 - isn't a base by the rules every base must pass
   ([Base system](/docs/architecture/base#how-a-base-is-checked-before-it-is-used));
@@ -541,7 +542,21 @@ sizes, the GPT reader the kernel's partition probe uses, load options and
 device paths, the boot variables' formats, the Limine menu, the base's rules
 and the kernel's interface note. The kernel, `bootctl`, the installer and the
 host's disk builder (through `tools/bootdisk`) all read it from there, so
-change the layout in `boot-core` and nowhere else.
+change the layout in `boot-core` and nowhere else. Limine is installed as
+`\EFI\SlopOS\BOOTX64.EFI` with its configuration beside it, and Limine's own
+`LICENSE` and `3RDPARTY.md` go with it as `LICENSE.limine` and
+`3RDPARTY.limine.md` on every medium that carries the binary (the boot
+disk, an installed ESP, the ISO and the install medium), because its licence
+asks for them wherever the binary is redistributed.
+
+The tests install the way a person does, so the loop you type is the loop
+they grade. `install_test` and `installer_test` run `scripts/selfhost.sh
+install` and then `install-kernel` through one helper
+(`slopos_userland::selfhost::selfhost_install`), and `selfhost_test` runs the
+script's build the same way. A test that runs as root hands the script a
+privd connection of its own, so the script's `bootctl` calls are the test's
+and wait for nobody at the machine. If you change what the script asks
+privd for, these tests are what tells you whether a person can still do it.
 
 ## Further reading
 
@@ -577,3 +592,4 @@ change the layout in `boot-core` and nowhere else.
 | `core/src/efivar.rs` | The kernel side of the variable system calls and what each may reach |
 | `assets/privd/actions` | The `org.slopos.boot.*` and `org.slopos.base.*` actions |
 | `userland/src/bin/tests/install_test.rs` | The install, commit and rollback test |
+| `userland/src/selfhost.rs` | How the tests run `scripts/selfhost.sh` |

@@ -1,0 +1,324 @@
+---
+title: "Settings and preferences"
+description: "How the Settings app changes the network, the people, the keyboard and the desktop through the same tools a terminal has, and where each person's own preferences are kept."
+---
+
+Settings is the app where you turn networking on or off, give an adapter an
+address, add a person, pick a keyboard layout, choose a background and set
+the clock to twelve or twenty-four hours. What you can rely on is that it has
+no power of its own. Every change it makes is a command you could type in a
+terminal, checked by the same code and refused in the same words, so the app
+and the terminal can never disagree about what the system allows. What
+belongs to one person (their layout, background and clock) is a small text
+file in their home, which Settings, the `prefs` command and a text editor all
+change the same way.
+
+This page explains how the app is built, which tool each of its pages drives,
+and how preferences are stored and reach the desktop.
+
+## Where it comes from
+
+The pages follow the settings apps people already know. The Users page leads
+with your own account, as GNOME's Users panel and Windows 11's *Your info*
+do. The Network page leads with whether the computer is connected, as Windows
+11's *Network & internet* does. A switch acts the moment it is pressed, with
+no *Apply* button after it, as the Nielsen Norman Group's and Microsoft
+Fluent's guidance for switches asks. A removal sits apart from the other
+controls and a field says what is wrong with it once you leave it, as the
+GNOME Human Interface Guidelines ask.
+
+The split between system settings that need an administrator and a person's
+own preferences in a file under their home is the usual Unix one. The path
+for a person's own pictures, `~/.local/share/backgrounds`, is GNOME's.
+
+## Why Settings changes nothing itself
+
+A settings app that edits the system's files directly has to repeat every
+rule the command-line tools enforce, and sooner or later the two drift apart:
+the app accepts an address the tool would refuse, or writes a file the tool
+can't read. It also has to run with enough power to write those files, which
+makes a large program with a window a risky thing to trust.
+
+So `/bin/settings` runs as the person who opened it and holds no
+[capability](/docs/architecture/authority). A change to the system is a
+request to [privd](/docs/architecture/privd) to run one of the base's tools,
+and a change to your own preferences is a write to your own file.
+
+## How the app is built
+
+Settings is two parts. The panels are a library, `settings-app`, that holds
+each page's state, builds its view from that state, and returns what it wants
+done as data (an `Effect`: "ask privd to run this action with these
+arguments", "read the network", "save these preferences"). The library reads
+no file and asks privd nothing. The program, `/bin/settings`, puts those
+panels in a window, carries out each effect on a thread of its own, and hands
+the result back to the panels as a message.
+
+Because the panels are only data, every page in every state can be laid out
+on the machine that builds SlopOS, with no SlopOS running. That is how the
+tests below check that no label is cut off at a narrow window and that every
+word on every page follows the desktop's wording rules.
+
+Effects that touch the same thing run one after another in the order you
+asked, so the last of a quick run of changes is the one that stays. Effects
+that touch different things run side by side, so a password question that
+privd is waiting on doesn't hold up a read of the network.
+
+`settings --page network|users|keyboard|desktop|about` opens the app on one
+page; with no argument it opens on Network. The sidebar's search field
+narrows the pages by name and by keywords (typing "wall" finds Desktop), and
+Enter opens the first one found.
+
+## What each page drives
+
+- **Network** turns networking or one adapter on or off with
+  `netctl networking on|off` and `netctl set ADAPTER on|off`. An edited
+  address or list of DNS servers is sent as `netctl load`, with the whole
+  edited `/etc/network` on the tool's standard input, so a dialog's changes
+  are one request and take effect together. Settings kept for an adapter that
+  is no longer plugged in are removed with `netctl forget`.
+  [Networking](/docs/architecture/networking) describes `netctl` and the
+  file.
+- **Users** runs `/bin/users` for every change. The list of people comes from
+  `users list --porcelain`, which privd runs for any person (the action
+  `org.slopos.accounts.list`) because the accounts record itself is readable
+  only by uid 0. Passwords never appear among the arguments: `users add
+  --password` and `users passwd` read them from standard input.
+  [Users and file permissions](/docs/architecture/users) describes the tool
+  and the record.
+- **Keyboard** has two layouts to change. Your own is a preference (below).
+  The computer's, which the login screen uses and which everyone who chose
+  none follows, is changed with `keymap set --computer`.
+  [Drivers](/docs/architecture/drivers) explains layouts.
+- **Desktop** changes your background and your clock, which are preferences.
+- **About** only reads: the version, the processor, the memory and the space
+  on the disk.
+
+privd decides who may ask for each of these.
+[privd actions](/docs/abi/privd-actions) lists the actions; in short, an
+administrator turns a network switch without being asked anything, confirms
+any other change to the network, and anyone changes their own password by
+typing it.
+
+### What you see when a change is refused
+
+When a tool runs and fails, Settings shows the last line it printed, with the
+program's name taken off the front, as a sentence. So `users: that is not
+ada's password` at a terminal is "That is not ada's password." in the app.
+When you say no to privd's question, Settings says nothing, because you
+already know.
+
+Settings also checks before it asks. A field is held to what the tool would
+refuse (a name that is already taken, an address that is not one), using the
+same checking code and the same sentences (`settings-core`), and it says what
+is wrong once you leave the field or press the dialog's button, not while you
+are still typing. A standard user is told at the top of a page that changes
+there take an administrator's password. And the Users page won't offer what
+the tool would refuse or a person would regret: making the last administrator
+a standard user, removing the computer's first person, and removing or
+demoting yourself.
+
+### How the pages behave
+
+The **Users** page shows your own account first: who you are, drawn as the
+login screen draws you, and under it a row for your name (*Rename…*), your
+password (*Set…* or *Change…*), and a switch each for logging in
+automatically and for being an administrator. A switch that can't be turned
+says why in a line of its own. Everyone else is a row under *Other users*
+that opens that person's page with the same rows; the arrow by the title,
+Escape and the sidebar go back. Removing someone is offered only on their
+page, apart from the other rows, and only for someone who can be removed.
+
+The **Network** page first says how the computer stands: connected, through
+which adapter and at what address, or what to do about it. Then come a group
+for each adapter and one for the DNS servers, which all adapters share. A
+switch you turn is *pending* until the network has been read again. Nothing
+is disabled meanwhile: a second press, or another switch, is asked in turn.
+The page shows nothing new when the tool answers, only when the read that
+follows the answer arrives, so it goes from what was to what is in one step
+and a switch never flicks back and forth. An address, or the DNS servers,
+have parts that must change together, so they change in a dialog behind
+*Edit…* whose Save is the one request. A manual address starts from the one
+the adapter holds now. An adapter with no address still shows its address and
+gateway rows, saying *None*, so nothing under them moves, and an adapter
+still waiting for its DHCP lease says *Connecting*.
+
+The page learns of changes from the kernel (a `net_monitor` descriptor), so
+it also follows a cable pulled or a change made in a terminal. Only when it
+can't open one does it read the network again on a timer.
+
+The **Keyboard** page draws the layout in use as a keyboard, each key
+printing what it types alone, with Shift and with AltGr, in the ISO or ANSI
+shape the layout has. Above it is a field to try the layout in, and the key
+that typed the last character lights up. Choosing a layout takes effect at
+once, and what came of it is said in a line that is always there, so no
+answer moves the list you are choosing from. The first row of the list
+follows the login screen's layout; the login screen's own section has a
+`Change…` button, and one step that gives it yours.
+
+The **Desktop** page lists the theme's gradients, then the system's pictures
+from `/usr/share/slopos/wallpapers`, then your own. *Add picture…* copies a
+PNG into `~/.local/share/backgrounds`, so it stays when the file it came from
+goes. Only a copy of your own can be taken away again.
+
+## Each person's preferences
+
+Your preferences are one file, `~/.config/slopos/prefs`, of `key = value`
+lines:
+
+```text
+# Your preferences, which Settings and `prefs` change. `prefs describe`
+# says what each one does and the values it takes.
+background.picture = /home/ada/.local/share/backgrounds/beach.png
+background.fit = fit
+clock.format = 12h
+keyboard.layout = de_CH
+```
+
+| Key | Takes | Default |
+|---|---|---|
+| `background.gradient` | one of the theme's gradients (`prefs describe background.gradient` lists them) | the theme's first |
+| `background.picture` | the whole path of a PNG file, or nothing | nothing: the gradient alone |
+| `background.fit` | `fill`, `fit`, `center`, `stretch` or `tile` | `fill` |
+| `clock.format` | `24h` or `12h` | `24h` |
+| `keyboard.layout` | a layout's name, as `keymap list` prints it, or nothing for the computer's | nothing |
+
+Only keys set to something other than their default are written. Setting a
+key to its default removes its line, so if a later version of SlopOS changes
+a default, you get the new one. A line the reader doesn't understand is
+skipped and the rest still counts, so a mistake made in an editor costs you
+at most that line.
+
+`/bin/prefs` is the command for the file:
+
+| Command | What it does |
+|---|---|
+| `prefs` or `prefs list` | prints every key and its value, marking the defaults |
+| `prefs get KEY` | prints one value |
+| `prefs set KEY VALUE` | sets it, after checking the value |
+| `prefs reset KEY`, `prefs reset --all` | goes back to the default |
+| `prefs describe [KEY]` | says what a key does, what it takes and its default |
+| `prefs monitor` | prints each change as it happens, until interrupted |
+
+`prefs set` refuses more than a malformed value: a picture must be a file
+that decodes as a PNG, and a layout must be installed. Nothing here needs
+anyone's permission, because the file is yours.
+
+### How a change reaches the desktop
+
+SlopOS has no way for a program to be told that a file changed. So your
+compositor looks at the file's size, modification time and identity a few
+times a second and reads it again when any of them differs. It then takes a
+new background or clock format at once. That is why Settings, `prefs` and an
+editor all change the desktop the same way, and why there is nothing to
+restart. A twelve-hour clock reads `2:05 PM` on the menu bar and on the lock
+screen, and the menu bar keeps the clock as wide as the widest time in that
+format so the items beside it don't shift each minute.
+
+The keyboard layout takes a different road, because layouts are applied in
+the kernel and loaded by init. After writing the file, `prefs` and Settings
+ask init to load the layout now. Init loads your layout while your desktop is
+in front and the computer's while nobody's is, so two people logged in at
+once each type in their own. If init can't be reached, the layout is kept
+and takes effect at your next login.
+
+The login screen belongs to nobody, so it shows the default background, a
+twenty-four-hour clock and the computer's layout.
+
+### Why the file is always under your home
+
+Most desktop programs look for their configuration in the directory that
+`XDG_CONFIG_HOME` names. SlopOS ignores that variable for this file, because
+init has to read your layout and init has no environment of yours to find
+the variable in. Every reader therefore looks in the same place.
+
+Init runs as uid 0 and reads a file you control, so it is careful: it reads
+your preferences only from a regular file that you own, opened without
+following a symbolic link at the last step of the path. A link pointing at
+some other file, a pipe or a device in that place is treated as no
+preferences at all.
+
+## How it is tested
+
+`just test-host` runs `settings-app`'s tests on the build machine. They build
+every state of every page and dialog and check that each lays out without
+cut-off or overlapping text at a narrow, a medium and a wide window, and that
+every word shown follows the desktop's wording rules (`theme-core::words`).
+They step through a switch being turned frame by frame, checking that nothing
+moves and nothing flicks back, and that passwords appear only in what is sent
+to standard input. `settings-core`'s tests cover the preferences file and the
+network settings as text.
+
+Inside SlopOS, `settings_test` runs the tools themselves as a terminal would:
+`netctl`, `prefs`, `keymap` and `users list --porcelain`, as root and as an
+ordinary person.
+
+To look at the pages without booting anything:
+
+```sh
+SETTINGS_SHOTS=/tmp/shots cargo test -p slopos-settings-app shots
+```
+
+writes a PNG of every state into the directory (the general form is
+`SETTINGS_SHOTS=<dir> cargo test -p slopos-settings-app shots`).
+
+## For contributors
+
+- **Settings changes nothing a terminal can't.** A new control drives a tool
+  (through a privd action) or writes a preference. If the tool can't do it
+  yet, extend the tool. Never give `/bin/settings` a capability or a file to
+  write outside the person's home.
+- **Passwords travel on standard input only,** never in an action's
+  arguments, which a command line shows. The panels keep them in a buffer
+  that is wiped when dropped and prints only its length when debugged.
+- **Panels stay data.** `settings-app` reads no file and makes no system
+  call; anything that does is an `Effect` the window carries out. Otherwise
+  the page can't be laid out and audited on the host.
+- **A request shows nothing before the read that follows it.** The answer to
+  a network switch triggers a read, and only that read's message
+  (`network::Msg::Settled`) updates the page. Updating on the answer makes
+  the switch flick. Don't disable controls while a request is pending
+  either: a second press is queued and asked in turn.
+- **Nothing said moves the control it is about.** A refusal goes under what
+  was asked, a dialog's inside the dialog, and outcome lines have a fixed
+  place. The tests compare a control's position before and after.
+- **Validate with `settings-core`,** which the tools use too, so the app and
+  the terminal refuse the same values with the same sentences.
+- **The preferences file is read without trust and written whole.** Readers
+  that are not the person use `prefs::of_person` (regular file, owned by
+  them, no link followed). Writers read the file, change the keys and
+  replace it through `write_durable`, so a change made elsewhere meanwhile is
+  kept and a crash never leaves half a file.
+- **A new key needs a default and a sentence.** Add it to
+  `settings-core::prefs` with its kind, default and summary; `prefs
+  describe` and the parser pick it up. A gradient key's values are
+  `theme-core::GRADIENT_IDS`.
+- **Don't read `XDG_CONFIG_HOME` for preferences,** for init's sake (above).
+
+## Further reading
+
+- [GNOME Human Interface Guidelines](https://developer.gnome.org/hig/). The
+  source for where destructive actions sit and when a field reports an
+  error.
+- [Toggle-Switch Guidelines](https://www.nngroup.com/articles/toggle-switch-guidelines/)
+  from the Nielsen Norman Group. Why a switch takes effect at once and needs
+  no *Apply*.
+- [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/).
+  What `XDG_CONFIG_HOME` is, which this file deliberately doesn't follow.
+
+## In the source
+
+| Path | What is there |
+|---|---|
+| `settings-app/` | The panels as data: `network.rs`, `users.rs`, `keyboard.rs`, `desktop.rs`, `about.rs`, and the tests that lay out every state |
+| `settings-core/` | The preferences (`settings-core::prefs`), the background's fit and the network settings as text, host-tested |
+| `userland/src/apps/settings.rs` | `/bin/settings` (`apps::settings`, app id `org.slopos.settings`): the window, the threads that carry out effects, pictures and thumbnails |
+| `userland/src/apps/prefs.rs` | `/bin/prefs` |
+| `userland/src/prefs.rs` | Reading and writing a person's file, and the change watch (`slopos_userland::prefs`) |
+| `userland/src/apps/compositor/desktop_prefs.rs` | The compositor's periodic look at the file (`compositor::desktop_prefs`) |
+| `userland/src/keymap.rs` | Which layout init loads for whoever is in front |
+| `accounts-core/src/listing.rs` | The format of `users list --porcelain` (`slopos_accounts_core::listing`) |
+| `appkit/src/widgets/keyboard_map.rs`, `keymap-core/src/board.rs` | The keyboard drawing (`KeyboardMap`) and what a layout puts on each key (`keymap-core::board`) |
+| `chrome-core/src/clock.rs` | How the clock counts the hours (`chrome-core::clock::Hours`) |
+| `assets/privd/actions` | The actions the pages ask for |
+| `userland/src/bin/tests/settings_test.rs` | The tools, run inside SlopOS |

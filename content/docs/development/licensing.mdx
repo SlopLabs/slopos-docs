@@ -1,0 +1,128 @@
+---
+title: "Licensing rules"
+description: "Which licence each part of SlopOS is under, and what a change may copy, link or build in without breaking one of them."
+---
+
+By the end of this page you will know which licence the code you are touching
+is under, what you may take from another project, and what to record when you
+add third-party code. The rules are few, but each one is there because
+breaking it would leave SlopOS, or a program that runs on it, impossible to
+distribute, while everything still builds. `NOTICE.md` at the root of the
+source tree is the authoritative record of every licence and notice; this
+page is the rules a change must keep.
+
+## Which licence covers what
+
+| Part | Licence | Why |
+|------|---------|-----|
+| SlopOS as a whole: the kernel, the base's programs, the apps, the scripts | `GPL-3.0-or-later` (`LICENSE`) | The project's choice |
+| The C library: `slibc/`, `slibc-core/` and `abi/` | `MIT OR Apache-2.0` (each directory carries `LICENSE-MIT` and `LICENSE-APACHE`) | Every program links it, whatever that program's licence |
+| The CMake platform modules in `toolchain/cmake/Platform/` | `BSD-3-Clause` | They are written to be contributed to CMake, which is under that licence |
+| Fonts in `assets/fonts/` | SIL OFL 1.1 for the text faces (Inter, JetBrains Mono); ISC for the icon font, Lucide, with MIT for the icons it derives from Feather | Their authors' licences; shipped unmodified |
+| The certificate bundle in `assets/certs/` | MPL-2.0 | Mozilla's root list, shipped unmodified |
+
+## Take ideas and interface facts, never code or prose
+
+**No verbatim code from a GPL-2.0-only source, and none from a CDDL one.**
+GPL-2.0-only code can't be combined with the GPL version SlopOS ships under,
+and that covers the sources people most often want to borrow from: Linux, the
+seL4 kernel, and Rust for Linux (`rust/kernel/**` in the Linux tree). CDDL,
+the licence of illumos, can't be combined with any version of the GPL.
+
+What you may take is everything that isn't someone's expression:
+
+- **Concepts and algorithms.** How a scheduler picks a task or a journal
+  orders its writes is free to learn from and reimplement.
+- **Interface facts.** System call numbers, `errno` values, ioctl codes,
+  structure layouts and hardware register offsets carry no copyright. That
+  is what makes it sound for SlopOS to speak Linux's system call interface.
+
+What you may not take is upstream's text. Don't paste an upstream comment
+block, a design essay or a paragraph of documentation, even into a comment.
+
+When a comment credits an influence, name the specification or the documented
+behaviour, not the implementation file. "Values follow the Linux x86-64 ABI"
+is a statement about interoperability. "Derived from `kernel/sched/fair.c`"
+says the code was derived from a GPL-2.0-only file, which is exactly what
+must not have happened. Keep the influence comments that are already in the
+tree: they were written at the time, and they are evidence that what was
+borrowed was the idea.
+
+## The C library stays permissive
+
+A program's licence governs the whole it is linked into, and every program on
+SlopOS links the C library. git is GPL-2.0-only, so it can be combined neither
+with GPL-3.0-or-later code nor with code under Apache-2.0 alone; whoever
+distributes git on SlopOS takes the library under its MIT option. One
+copyleft line in the library would take that option away.
+
+So nothing copyleft goes into `slibc/`, `slibc-core/` or `abi/`: no code from
+glibc or any other GPL or LGPL source, and no dependency on a GPL crate,
+including the GPL crates of this tree. `scripts/check_libc_license.sh`
+enforces it. It walks every crate `cargo metadata` resolves for `libc.so`,
+`libc.a`, `crt0.o` and `libbuiltins.a` and fails when MIT alone doesn't
+satisfy one's licence, when a third-party crate has no entry in
+`slibc/NOTICE`, or when a source file in the three directories includes a
+file from outside them. The one outside input it allows is the `libc` crate
+fork in `toolchain/libc/`, which the headers are rendered from and which is
+itself `MIT OR Apache-2.0`.
+
+When you add a third-party crate to the library, add its notice to
+`slibc/NOTICE`. That file ships with both licence texts in
+`/usr/share/licenses/slibc/` on every image that carries `libc.so`.
+
+## Fonts and the certificate bundle are loaded at runtime
+
+**Never `include_bytes!` a font into a binary that ships.** The fonts
+(`assets/fonts/*.ttf`) are installed as separate files in `/usr/share/fonts/`
+and loaded when a program starts. Shipping a file beside a program is
+aggregation, and puts no condition on the program. Building the font into
+`kernel.elf` or a userland binary would be different: OFL section 5 requires
+the font to be "distributed entirely under this license", and GPLv3 section
+5(c) requires the binary to be licensed "as a whole, under this License".
+Both can't hold for one file.
+
+The `include_bytes!` calls in `font/src/` are inside `#[cfg(test)]` modules,
+so they exist only in host test binaries that are never distributed. They
+must stay that way. Each font's licence text ships beside it, in
+`assets/fonts/` in the source tree and in `/usr/share/fonts/` on the
+installed images, because each licence requires every copy of the font to
+carry its notice.
+
+**The certificate bundle is data, treated like a font.** It is installed as
+its own file, `/etc/ssl/certs/ca-certificates.crt`, with its licence text in
+`/usr/share/licenses/ca-certificates/`. Nothing compiles it in; the only code
+that reads it from the source tree is a host test of the TLS library.
+`scripts/update_ca_bundle.sh` is the only thing that replaces it.
+
+## Record what you link
+
+New third-party code that is linked into a binary SlopOS ships needs an entry
+in `NOTICE.md`, with its copyright line and licence. Where a crate offers
+`MIT OR Apache-2.0`, SlopOS elects MIT, and `NOTICE.md` says so once for all
+of them.
+
+## How to check
+
+```bash
+scripts/check_libc_license.sh
+```
+
+It needs `jq` and `python3`. `just check-framekernel-gates` runs it with the
+other gates, and `just ci` runs those. Nothing checks the copying rules or
+the `NOTICE.md` entries for you: they are a reviewer's job, which is why this
+page spells them out.
+
+## In the source
+
+| Where | What |
+|---|---|
+| `LICENSE`, `NOTICE.md` | The GPL text, and every third-party licence and notice |
+| `slibc/LICENSE-MIT`, `slibc/LICENSE-APACHE`, `slibc/NOTICE` | The C library's licence texts and the notices of what it links |
+| `scripts/check_libc_license.sh` | The gate that keeps the C library permissive |
+| `assets/fonts/`, `assets/certs/` | The fonts and the certificate bundle, each with its licence text |
+| `scripts/build_fs_image.sh` | Where fonts, the bundle and the licence texts are installed into an image |
+| `toolchain/cmake/Platform/` | The CMake platform modules |
+
+Read next: [Userland](/docs/architecture/userland) for what the C library is
+and why every program links it.

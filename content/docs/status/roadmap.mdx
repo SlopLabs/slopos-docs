@@ -3,7 +3,7 @@ title: "Roadmap"
 description: "The plans we are working on, what each is for, how far along it is, and what has landed."
 ---
 
-As of 2026-10-29, SlopOS commit `fa0f8f79`.
+As of 2026-11-11, SlopOS commit `b8b2855b`.
 
 This page lists the work that is planned next and the larger plans that have
 landed since August 2026. Today one plan is open, about CI; the rest of the
@@ -29,25 +29,27 @@ check a path against the tree before relying on it.
 **What it is for:** keeping the time from a push to a test result short, and
 the runner minutes every push costs low. (`plans/ci-latency.md`)
 
-**Where it stands:** CI runs four jobs side by side, each a chain of steps
-over one set of inputs, each meant to finish near the boot lane: the boot
-lane itself (the tests build, the boot, the checks that read its log, and the
-persistence, unclean-shutdown, USB and self-hosting-root boots), the gates
-(host tests, kernels, the framekernel gates and the offline build), the
-toolchain (the C++ runtime, the LLVM port and the cross-build checks), and
-the proofs (Miri and Verus). Compiler output is cached by content, never by
-timestamp. The gates job is the longest today, because its framekernel gates
-step runs without the cache, including the builds its `unsafe` expansion
-check makes. Still to do:
+**Where it stands:** CI runs four jobs side by side. Each is one shared setup
+step followed by a `just ci-*` recipe, so a job that fails reproduces on
+your machine with the command it ran, and `just ci` runs every lane in CI's
+order. The gates job runs formatting, the host tests, clippy, the dev kernel
+with every framekernel gate, the offline build, the release kernel with its
+gates and the candidate compiler backend and linker. The suite job builds
+the tests system, boots the suite once, grades that boot's capture (the test
+list, the lock-order and CPU-placement gates), checks its disk image, then
+runs the persistence, unclean-shutdown, USB and self-hosting-root boots.
+The toolchain job checks the LLVM and Rust ports, and the last job runs Miri
+and Verus. A check joins the job that already has its inputs, because
+another machine costs a setup and a build to save a short boot. Compiler
+output is cached by content, never by timestamp, and only on build steps: a
+gate that asks what a compiler does gets no cache, since a cached answer
+would prove nothing. The suite job is the longest. Still to do:
 
-1. Split the gates recipe so its expansion builds can use the compiler cache
-   and its compiler probes cannot (a cached answer from a probe would prove
-   nothing), which takes the gates job below the boot lane.
+1. Find where the slowest userland tests wait. Eleven of them take most of
+   the suite's test time, and none of that time is the kernel's: they wait
+   on a consent or password timeout, a drain or a backoff.
 2. Stop every job paying its own toolchain install, with a runner image that
    has it built in.
-
-The boot is deliberately one run, because the ratchets grade one boot's
-counts; making its slowest tests cheaper is a test change, not a CI change.
 
 ## What is not planned
 

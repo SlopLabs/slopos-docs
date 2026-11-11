@@ -104,7 +104,8 @@ action org.slopos.boot.install
 ```
 
 `args install *` means the first argument must be `install` and anything may
-follow. `cwd` means the mechanism runs in the requester's directory, so a
+follow; a `?` in a shape stands for exactly one argument of any kind, as in
+`set ? off`. `cwd` means the mechanism runs in the requester's directory, so a
 relative path such as `kernel.elf` names the file the person meant.
 `exclusive boot-slots` lets one mechanism of that group run at a time, so two
 writers never touch the boot partition at once: a request that comes while one
@@ -281,8 +282,8 @@ The compositor draws the question over everything, one at a time. It reads
 *App* wants to *describe*., where *describe* is the action's line from the
 policy and *App* names the requester from what no process can write:
 
-- a base program with an app entry in the base is named by it, so the System
-  Monitor asks as *System Monitor*, with its icon;
+- a base program with an app entry in the base (`/usr/share/slopos/apps`) is
+  named by it, so the System Monitor asks as *System Monitor*, with its icon;
 - any other base program by its file name, such as *bootctl*;
 - an extension's program by its extension, as *The hello extension* for one
   named `hello`, with no icon, so nothing an extension ships can pass for
@@ -324,7 +325,8 @@ The dialog is built so that nothing but a deliberate answer allows a request:
 The channel between privd and the compositor is a pair of sockets init makes
 at boot, four of them, one for each desktop or login screen that may run at
 once, and each end checks that init made it. No other process can open it, so a question can only come from privd and
-an answer only from the compositor.
+an answer only from the compositor. The frames they exchange are listed under
+[Consent channel](/docs/abi/interfaces#consent-channel).
 
 ## Passwords
 
@@ -394,7 +396,7 @@ priv mount -r LABEL=photos /media
 priv -s
 ```
 
-`priv <command>` asks for `org.slopos.priv` and `priv -s` for a shell,
+`priv <command> [argument...]` asks for `org.slopos.priv` and `priv -s` for a shell,
 `org.slopos.priv.shell`. Both allow uid 0 and an administrator who confirms,
 and both run *as the requester*: privd starts `/bin/priv` again as the person
 who asked, in their own groups and session, on a terminal of its own when
@@ -403,7 +405,10 @@ started from one, holding the requester ceiling: `Mount`, `NetAdmin`,
 an environment of its own (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
 `LANG`, `SLOPOS_PRIV` and, on a terminal, `TERM`), and exits as it exits. A
 shell started this way names the power in its banner and starts its prompt
-with `priv`, and hands the power on to every program it runs.
+with `priv`, and hands the power on to every program it runs. A single
+command's terminal takes no Ctrl+Z, since nothing would continue what it
+stopped. A requester that already holds the ceiling, such as a rescue shell,
+asks nobody: it runs the command itself and hands on everything it holds.
 
 The ceiling is stated once in the source (`REQUESTER_CEILING`), and the policy
 parser refuses any `uid requester` action that asks for more. It leaves out
@@ -411,6 +416,7 @@ everything that writes a raw disk, the base, an extension, a sealed file, the
 firmware's or the boot loader's variables or another identity. So the boot
 partition, the base, extensions and the user database refuse what `priv`
 runs, and `bootctl` or `halt` run under `priv` still ask privd, as the person.
+`Mount` still mounts any ext4 volume that nothing else holds.
 
 `priv` runs only a program nobody but uid 0 could have put or changed: one in
 a directory of the default search path that only uid 0 can write, as is every
@@ -443,7 +449,8 @@ hold nothing they lack. To end a task of someone else's,
 `/bin/endtask PID NAME USER` runs as `org.slopos.task.end` (uid 0, or an
 administrator who confirms) holding `ProcSignal`, which waives the kernel's
 rule. It keeps the half of the rule that protects the system: it ends only a
-task in a person's session, running as a person, holding no more than every
+task in a person's session (a login tag in `SESSION_LOGINS`), running as a
+person (a uid in `PERSON_UIDS`), holding no more than every
 program holds, and still running under the name and user the person was shown.
 Everything the system runs (init, privd, the compositors, mechanisms,
 `remoted`, extensions' services) is refused. A task's capabilities only
@@ -462,8 +469,11 @@ refuses every request it reads from then on with
 `The system is being updated. Try again in a moment.`, refuses any request
 still waiting for the person's answer, and exits once every request it took
 has finished, so a mechanism in the middle of writing a boot slot is never
-cut off. Init starts the new base's privd when the old one exits, or beside
-it after five seconds. The new privd refuses requests for `exclusive` actions
+cut off. From the moment it drains it starts no mechanism and lets go of its
+consent links, so the next privd can use them. Init starts the new base's
+privd when the old one exits, or beside it once the old one has drained for
+`service::DRAIN_MS` (five seconds), which a mechanism waiting at its terminal
+easily outlasts. The new privd refuses requests for `exclusive` actions
 while a mechanism its predecessor started still runs, since it cannot know
 which groups that one holds. A requester that finds nothing listening on
 `/run/privd` waits up to two seconds for a privd that init is starting again,
@@ -493,8 +503,8 @@ actions, and no program of an extension is handed the connection.
 ## What it means in practice
 
 - **At a shell, run the command.** `halt`, `bootctl`, `extctl`, `users`,
-  `cpufreq set`, `ip`, `keymap`, `kconsole`, `prof`, `tree-install` and
-  `installer` ask privd by themselves when they need to.
+  `cpufreq set`, `ip`, `netctl`, `keymap`, `kconsole`, `prof`, `tree-install`
+  and `installer` ask privd by themselves when they need to.
 - **For anything else that needs power, use `priv`.** It runs a command from
   `/bin`, `/sbin` or another directory of the default search path that only
   uid 0 can change.
@@ -529,14 +539,108 @@ queue and the wire formats, with mutation loops over the codecs.
   again before the verdict, after the question and before the start. Do not
   look a requester up by pid or path.
 - **The mechanism inherits nothing.** Its environment, directory and
-  descriptors are listed above; adding to them is a change to review.
+  descriptors are listed above; adding to them is a change to review. A
+  mechanism leaves who may ask to privd and acts only for the action
+  `PRIV_ACTION` names.
+- **privd holds `slopos_priv_core::PRIVD_CAPS` and no more:** what an action
+  may name, plus `SetId`. An action run as its requester stays within
+  `slopos_priv_core::REQUESTER_CEILING`, which the parser
+  (`slopos_priv_core::policy`) enforces. Both sets are stated once, in
+  `priv-core/src/lib.rs`, and widening either is a security decision.
 - **The words are checked.** `describe`, `detail` and `verb` are held to
-  `priv-core/src/words.rs` as the policy parses: no capability names, none of
-  the policy's own terms, no flags. The consent channel has a version
-  (`consent::VERSION`); a change to what a question may carry needs a new one,
-  and privd asks a compositor of another version nothing.
-- **The requester ceiling and the delegable set are stated once,** in
-  `priv-core/src/lib.rs`. Widening either is a security decision.
+  `slopos_priv_core::words` as the policy parses: no capability names, none of
+  the policy's own terms, no flags. What privd answers a requester is a
+  sentence for the person too, and those sentences are held to the same rules;
+  the detail a developer needs goes to privd's log.
+- **A requester reads as strictly as privd writes.** It reads the policy
+  through `slopos_userland::privd::policy`, which leaves out a `medium` action
+  off the install medium just as privd does, and it parses replies strictly.
+  So after a base switch that changes the policy or the replies, a requester
+  started before it asks nothing until it starts again. A window, which has
+  no terminal, asks through `run_capturing`, which collects what the mechanism
+  prints.
+- **A console prompt goes through the requester, never a descriptor privd
+  opens.** privd sends `Reply::Prompt` with the line saying what is asked and
+  the password prompt; the requester shows both, reads with echo off and
+  sends the answer back.
+- **The mechanism's own terminal is never open by path.** The requester takes
+  the pty's slave through its master while the slave stays locked, feeds it
+  nothing before the mechanism starts, and relays only once its own terminal
+  is raw.
+
+### The consent channel and the dialog
+
+- **A new instance speaks first.** Each side of a link (`consent::Link`) sends
+  `RESET` naming an epoch of its own when it starts and acts on nothing until
+  a `RESET_SEEN` naming that epoch comes back. A side that reads a new `RESET`
+  drops what it had pending (privd interrupts every question). Init holds both
+  ends of every pair, so neither side reads end of file when the other exits;
+  init sends the `RESET` for a side that exited and discards what is written
+  to one that isn't running.
+- **One question is in flight.** privd sends a question only after a `READY`
+  it has not yet used, so no frame is left torn in the pair's buffer.
+- **A change to what a question may carry is a new `consent::VERSION`.** A
+  host test holds the two together. privd asks a compositor of another
+  version nothing (`Refusal::Outdated`), and a compositor closes its end on a
+  question it cannot read, so neither a desktop older than the base nor a base
+  rolled back past the desktop asks anything until the desktop restarts.
+- **The compositor paints, priv-core decides.** The dialog on screen is built
+  from appkit's components, laid out and painted by `slopos_appkit::embed`,
+  which also takes the pointer. The keys stay with `consent::Dialog`,
+  priv-core's model of the question, which owns focus, the ignore-input window
+  and what counts as an answer. Keep that logic there, where host tests reach
+  it.
+- **The card's place is taken once,** when the question is first laid out, so
+  the asking app can't move it by moving its window.
+- **The name comes from what no process can write.** An extension's program is
+  named by `consent::named_extension`, from the name its activation gives, and
+  anything unattested is `consent::UNIDENTIFIED`. An app entry under
+  `/usr/local` or a home directory is never read for the name or the icon.
+- **Descriptor numbers are stated once,** in `init_control::fds`: privd's
+  links, then the pair it hears the session table on, and a compositor's own
+  link and session pipe. Init makes the table's pair anew for each privd it
+  starts, so one still draining reads end of file. A privd handed no table
+  reaches nobody and treats nobody as logged in.
+
+### Peer identity in the kernel
+
+- **The record is `Identity`** (`slopos_ostd::process::identity`): the pid
+  `getpid` answers, the effective uid and gid, the program, and the process
+  and *program instance* it was taken from. It is taken at `listen` for the
+  listener, at `connect` for the connector and at `socketpair` for both ends.
+  For a SlopRing `OP_CONNECT` it is the task whose `ring_enter` performs the
+  connect. The syscall layer tells the socket layer who connects; nothing
+  below it reads the current task.
+- **Ids stand, the program lapses.** `SO_PEERCRED` and `SO_PEERPIDFD` read
+  what was recorded, as Linux's do; with no peer they give `{0, -1, -1}` and
+  `ENODATA`. The program and the extension label go through `Identity::now`,
+  which answers them only while that process is alive and still runs the
+  same program instance. Once lapsed, the record reads as no program, never
+  as a later program's.
+- **Every change of program moves the instance**, except init re-executing
+  the base's `/sbin/init` (the case `exec_keeps_authority` allows), so the
+  consent pairs init made at boot stay init's across a base switch.
+- **What counts as a base or extension program.** A program is `Base(inode)`
+  when the file, every script of its `#!` chain and its ELF interpreter are
+  served by the base's filesystem (`BASE_FS`), and `Extension(inode)` when the
+  file is one activation's and every other link is the base's or that
+  activation's. Each interpreter must be named by an absolute path, and each
+  script by the absolute path it was found at, because the interpreter opens
+  that spelling again. `fork` copies the program; an `exec` that fails after
+  the old image is gone leaves *other*.
+- **Executable mappings are judged before the code can run.** Mapping
+  anything executable that the program may not run (anonymous memory, a
+  memfd, a file from elsewhere, another activation's file), or an `mprotect`
+  that makes a page executable, turns the process into *other* until its
+  next `exec`. The `mprotect` case is decided under the lock that applies it.
+- **The inode names its generation.** `SO_PEERPROGRAM` answers the path in
+  the program's own generation, `/opt/<name>/<path>` for an activation's, and
+  nothing once that generation is freed.
+- **A pidfd is a handle, not a lookup.** Task ids are never reused, so a
+  peer's pidfd is handed out even after the peer is gone, and is then
+  readable at once.
+- **uid 0 alone is no principal,** at privd or at `/run/init`. What keeps an
+  extension from `root` is that none of its programs runs as uid 0.
 
 ## Further reading
 
@@ -568,7 +672,10 @@ queue and the wire formats, with mutation loops over the codecs.
 | `userland/src/apps/privd/` | privd |
 | `userland/src/privd.rs` | The requester's side: `elevate`, the relays, exit statuses |
 | `userland/src/apps/compositor/consent.rs` | The dialog on screen |
-| `userland/src/apps/priv.rs`, `userland/src/held.rs` | `priv`, and running a program with a whole mask |
+| `userland/src/apps/priv.rs` (`apps::r#priv`), `userland/src/held.rs` | `priv`, and running a program with a whole mask |
+| `userland/src/root_layout.rs` | `slopos_userland::root_layout::settled`, which says whether `/usr/local/bin` counts for `priv` |
+| `appkit/src/embed.rs` | Laying out and painting the dialog's components inside the compositor |
+| `userland/src/init_control.rs` | The descriptors init hands privd and each compositor |
 | `userland/src/apps/endtask.rs` | Ending another person's task |
 | `slopos-ostd/src/process/identity.rs` | What the kernel records about a peer |
 

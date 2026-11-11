@@ -225,13 +225,99 @@ Anyone can read the configuration. Changing it takes the `NetAdmin`
 hold, so when `ip` is asked to change something it asks the
 [privilege broker](/docs/architecture/privd) to run it with that capability:
 the action `org.slopos.net.configure`, which an administrator confirms with a
-click, or `org.slopos.net.toggle` for `ip net on` and `ip net off`, which an
-administrator may do unasked. The desktop's network switch runs the same
-`ip net` command, and is offered only to people who can use it without being
-asked. For familiar habits, `ifconfig` is `ip` under another name and
+click, or `org.slopos.net.toggle` for `ip net on|off`, which an administrator
+may do unasked. Whatever `ip` changes lasts until the next start, as on
+Linux. For familiar habits, `ifconfig` is `ip` under another name and
 `netstat` is `ss` under another name, with `netstat -r` and `netstat -i` for
 the routes and the per-interface counters; `ss` shows every socket to anyone,
 but names the process that owns one only to its owner or a `NetAdmin` holder.
+
+### Settings that last across restarts
+
+`ip` changes the network until the next start. `netctl` (`/bin/netctl`) keeps
+what the network starts as and brings it there now. The two stand side by
+side the way iproute2 and systemd-networkd's `networkctl` do on Linux. What
+`netctl` keeps is one text file, `/etc/network`, with one line for each
+setting:
+
+```text
+networking off
+dns 1.1.1.1 9.9.9.9
+
+adapter 52:54:00:12:34:56
+  ipv4 manual 192.168.1.20/24
+  gateway 192.168.1.1
+
+adapter eth1
+  ipv4 auto
+  off
+```
+
+The file says whether networking is on, the DNS servers for every adapter
+(at most three), and, per adapter, a block `adapter <id>` holding `ipv4 auto`
+or `ipv4 manual <address>/<length>` with an optional `gateway` line, and
+`off` for an adapter that is kept down. An adapter's id is its hardware
+address or the kernel's name for it. A name passes to the next adapter once
+its holder leaves (unplug one USB adapter, plug in another, and the second
+is `eth1` now), so a block for a hardware address wins over one for a name,
+and `netctl` files a present adapter's settings under its hardware address
+whichever way you named it. An adapter that no block names keeps what the
+kernel gives every adapter, a DHCP lease, and `netctl` doesn't touch it.
+
+Settings that can't work are refused when they are read, with the line
+number and a sentence saying what is wrong: an address without a prefix
+length (the network would have to be guessed), an address that is its
+network's own or its broadcast address, a gateway that isn't on the
+address's network, a fourth DNS server.
+
+| Command | What it does |
+|---|---|
+| `netctl`, `netctl status [ADAPTER]` | Show networking, the DNS servers and each adapter: its link, what is kept for it, its addresses and gateway, and anything not yet as kept |
+| `netctl set ADAPTER auto` | Address, gateway and DNS servers from DHCP |
+| `netctl set ADAPTER manual ADDRESS/LENGTH [gateway ADDRESS]` | This address, and the gateway for other networks |
+| `netctl set ADAPTER on` or `off` | Whether the adapter is brought up at all |
+| `netctl dns SERVER...`, `netctl dns auto` | DNS servers for every adapter, which leases then never change; `auto` takes them from the leases again |
+| `netctl networking on` or `off` | The switch for every adapter but loopback |
+| `netctl forget ADAPTER` | Drop what is kept for the adapter, which goes back to DHCP |
+| `netctl apply [ADAPTER]` | Bring the network, or one adapter, to its settings now |
+| `netctl load` | Replace every kept setting with the ones on standard input, in the form `netctl cat` prints, and apply them |
+| `netctl cat` | Print the kept settings |
+
+Reading (`status`, `cat`) is open to anyone. Every change goes through the
+privilege broker, under one of two actions, and `netctl` picks the one its
+command belongs to:
+
+- **Switches** are `org.slopos.network.switch`: `netctl networking on|off`
+  and `netctl set ? on|off` (in a policy's argument shape, `?` stands for
+  any one argument). An administrator may run it unasked. The system menu's
+  networking switch and the switches in
+  [Settings](/docs/architecture/settings) both run it, so the two always
+  agree, and a switch lasts across restarts. The menu's switch is offered
+  only to people who can use it without being asked.
+- **Everything else** is `org.slopos.network.settings`, which an
+  administrator confirms: `set`, `dns`, `forget`, `apply` and `load`. `load`
+  takes the whole file from standard input, which must be a file or a pipe,
+  not a terminal.
+
+Neither action is open to the
+[remote-control agent](/docs/self-hosting/remote-control), because a change
+could cut the connection the agent arrived on.
+
+You never have to run `netctl apply` yourself after a restart. Init runs it
+at every start when `/etc/network` exists, and runs `netctl apply <adapter>`
+for each adapter that appears later, so a USB adapter takes its settings
+when you plug it in. An apply for one adapter leaves the networking switch
+and the DNS servers alone.
+
+A manual address replaces the adapter's lease: `netctl` stops its DHCP
+client, which takes the lease's address and routes with it, then adds
+yours and a default route
+through the gateway, with the same metric a lease's route would have (100
+plus the interface's index), so the first-card rule above still holds.
+Going back to `auto` removes what was set by hand and starts the client
+again. DNS servers you give are pinned, so no lease changes them, and
+`netctl dns auto` renews every running lease so the leases' servers arrive
+at once rather than at the next renewal.
 
 The desktop's menu bar shows whether you have no connection, only the local
 network, or the internet. The kernel works this out from the cards' link
@@ -270,10 +356,26 @@ source.
 The kernel knows nothing about encryption. TLS, the protocol behind HTTPS,
 runs inside the programs that need it, the same as on Linux. SlopOS has its
 own TLS 1.3 client library (`tls-core`), written for SlopOS in safe Rust along
-with every cryptographic primitive it uses. `curl` and the
+with every cryptographic primitive it uses. The library does no I/O itself:
+it turns bytes into bytes, and `userland::tls` wraps it in a blocking stream
+over a socket, with the system's certificates, the kernel's random numbers
+and the clock. `curl` and the
 [remote-control agent](/docs/self-hosting/remote-control) are built on it.
 Certificates are checked against Mozilla's root list, shipped in
-`/etc/ssl/certs/ca-certificates.crt`.
+`/etc/ssl/certs/ca-certificates.crt`. The list is committed to the source
+under `assets/certs/` and is replaced only by `scripts/update_ca_bundle.sh`,
+which downloads the bundle curl.se extracts from Mozilla and checks it
+against the SHA-256 curl.se publishes for it.
+
+The same library holds the other cryptography the base needs. It verifies
+Ed25519 signatures (RFC 8032) strictly, refusing a key in the small-order
+subgroup, a non-canonical key or a signature whose parts are not in
+canonical form, and it verifies the SSH signatures `ssh-keygen -Y sign`
+writes over such keys, which is how
+[extensions](/docs/architecture/extensions) are signed. It can only verify:
+the code that signs is behind a Cargo feature, `test-server`, that only the
+test builds turn on. BLAKE2b (RFC 7693) and Argon2id (RFC 9106) hash the
+[accounts'](/docs/architecture/users) passwords.
 
 The developer tools in the [toolchain](/docs/self-hosting/toolchain) bring
 their own, built from upstream: git's HTTPS and cargo's registry downloads go
@@ -311,29 +413,99 @@ real one. `just test-usb` plugs QEMU's USB adapter in beside the virtio card,
 checks that it becomes `eth1`, leases its own address, carries TCP to a peer
 on its own network, and leaves cleanly when unplugged. The parsing that `ip`
 shares with the desktop (`net-core`) is tested on the host with
-`just test-host`. Inside a booted guest, git and cargo fetching over HTTPS,
-and git fetching and pushing over SSH to the host, exercise the whole path.
+`just test-host`. So are `/etc/network`'s parser and the planning of an
+apply (`settings-core`), the planning against a model of the kernel's
+configuration calls, and a test inside the guest runs `netctl` itself and
+checks that it leaves the network back on a lease. `tls-core` and
+`http-core` are tested on the host as well, since the userland crate's unit
+tests run nowhere: the hashes and signatures against their RFCs' vectors,
+and TLS against OpenSSL in both directions (`openssl s_server` and
+`s_client`) and SSH signatures against `ssh-keygen -Y`, so `just test-host`
+needs `openssl` and `ssh-keygen` on `PATH`. Inside a booted guest, git and
+cargo fetching over HTTPS, and git fetching and pushing over SSH to the
+host, exercise the whole path.
 
 ## For contributors
 
 The rules a change to the stack has to keep:
 
-- **The stack owns the threads; a driver supplies a device.** A card driver
-  implements `NetDevice`, an interrupt handler that only wakes netpoll,
-  `rx_pending` (receive work that raced in after a poll) and
+- **The stack owns the threads; a driver supplies a device.** `nic::init`
+  starts netpoll and net-timer at boot, after loopback and before the PCI
+  probe. A card driver implements `NetDevice`, an interrupt handler that only
+  wakes netpoll, `rx_pending` (receive work that raced in after a poll) and
   `sample_carrier`, and calls `nic::publish`. No driver keeps a thread of its
   own. A driver whose device can leave calls `nic::retire`, which undoes
-  everything `publish` did. Call both with no driver lock held.
+  everything `publish` did and runs the device's `set_down` before it
+  returns, so a handle someone kept can't drive a retired device. Call both
+  with no driver lock held.
 - **No bring-up under a spinlock.** A chip's bring-up busy-waits for tens to
-  hundreds of milliseconds, so the Realtek driver runs it with its spinlock
-  released, serialised by a sleeping mutex.
+  hundreds of milliseconds, so the Realtek driver runs bring-up and stop
+  with its spinlock released, serialised by a sleeping mutex.
+- **The Realtek chip is data and a register sequence, written once.**
+  `drivers/src/rtl8168.rs` binds PCI id `10ec:8168` and does the kernel's
+  part: mapping, interrupts, DMA memory. Everything about the chip (the
+  register map, the version table, descriptors and ring bookkeeping, the
+  take-over from the management firmware, reset, the station address, the
+  PHY's settings and start) is in `rtl8168-core`, written over a
+  `RegisterBus` trait so the same code runs against the simulated chip on
+  the host. A new chip version is a row in the version table plus its own
+  sequence, never a guess that an existing sequence fits.
+- **Waits that Linux treats as advisory are advisory here.** A FIFO-drain or
+  link-list wait that times out is logged and the bring-up goes on. A reset
+  that never completes leaves the chip unused.
 - **A device never writes past the buffer it was given.** The Realtek chip's
   receive size limit is the buffer length its descriptors name. A larger
   limit over smaller buffers was the precondition of CVE-2009-1389 in Linux's
   driver for the same family.
+- **Realtek interrupts are cleared whole, before the rings are read.** Any
+  event after the clear is then a fresh interrupt, and any before it already
+  has its descriptor in place. After a reclaim that leaves frames in flight
+  the driver asks the chip to poll the transmit ring again.
+- **Link power saving is off unless the vendor validated it.** The driver
+  turns ASPM L0s and L1 off in the PCIe endpoint's Link Control register
+  unless the chip says the machine's vendor validated them (MAC OCP register
+  `0xc0b2`), which is the test Linux applies.
+- **The chip stops on power off and restart.** The driver registers a
+  `driver_core::shutdown` hook that stops the chip and its DMA, so it doesn't
+  write into memory the next owner reuses.
 - **Egress identity comes from the route.** The source hardware address is
-  stamped once the route has picked the device, an ARP names that device's
-  address, and a neighbour's queued packets leave on the neighbour's device.
+  stamped once the route has picked the device (`ipv4::send`), an ARP names
+  that device's address, and a neighbour's queued packets leave on the
+  neighbour's device.
+- **One function decides what a card accepts.** `ipv4::admits` holds every
+  rule of [what the machine accepts](#what-the-machine-accepts-from-the-wire),
+  including the DHCP exception. An address of any interface counts as the
+  machine's unless it is host-scoped, as loopback's are. `ipv4::send`
+  refuses a `127.0.0.0/8` source on any device but loopback.
+- **A route belongs to one interface.** `net_route_ctl`'s add answers
+  `EEXIST` for a route of its prefix already on its device, as Linux's does.
+  Its delete, and `net_addr_ctl`'s delete of an address's connected route,
+  take only the route on the interface the request names, so one adapter's
+  default route is never another's. Deleting an address keeps the connected
+  route while another address of the interface covers its network.
+- **Applying settings is planned one phase at a time.** `network::plan` in
+  `settings-core` is pure: from what the kernel reports it returns the next
+  phase only (the switch, then which adapters are up, then their addresses,
+  then the DNS servers), because each phase changes what the next finds.
+  `network_settings::apply` carries a phase out and reads the network again,
+  for a bounded number of rounds, so a second apply asks for nothing. A
+  manual address needs two rounds: ending a lease takes every route of the
+  adapter with it, so the address and gateway go in only after the network
+  is read again.
+- **`netctl` refuses before it asks.** An adapter named wrong or absent,
+  nothing kept to forget, a terminal to `load` from: each is an error before
+  privd puts a question to anyone.
+- **One `netctl` changes the network at a time.** A change runs holding a
+  lock on `/run/netctl.lock`, so init's apply and a person's never
+  interleave. `org.slopos.network.settings` is also in privd's exclusive
+  group `network`; the switch is in none, so a second press waits for the
+  lock rather than being refused by privd.
+- **Init applies settings itself, one adapter at a time.** `init::network`
+  starts `netctl apply` holding `NetAdmin` directly, not through privd,
+  watches the kernel's interface monitor for adapters that appear, reads the
+  whole interface table when it fires so a lost event costs nothing, and
+  ends an apply that runs past its time limit so it holds up no adapter
+  after it.
 - **IPv4 headers carry real identification.** Every outgoing packet gets a
   fresh 16-bit ID, which RFC 6864 requires of any packet that may be
   fragmented, and TCP segments set Don't Fragment, as Linux sends them. A
@@ -428,7 +600,14 @@ The rules a change to the stack has to keep:
 | `drivers/src/usb/net.rs` | USB Ethernet adapters |
 | `net-core/` | Address types and `ip` parsing shared with user space, host-tested |
 | `userland/src/apps/ip/` | The `ip` command |
-| `tls-core/` | The TLS 1.3 client |
+| `userland/src/apps/netctl.rs` | The `netctl` command |
+| `settings-core/src/network/` | `/etc/network`'s format (`settings-core::network`) and the plan of an apply, host-tested |
+| `userland/src/network_settings.rs` | Reading and writing the file, reading the network, carrying a plan out |
+| `userland/src/apps/init/network.rs` | Init applying the settings at start and as adapters appear |
+| `assets/privd/actions` | The `org.slopos.net.*` and `org.slopos.network.*` actions |
+| `tls-core/` | The TLS 1.3 client and the cryptography under it |
+| `userland/src/tls.rs` | The blocking TLS stream programs use |
+| `http-core/` | HTTP parsing for `curl`, host-tested |
 
 The [System call ABI](/docs/abi/syscalls) lists the socket and
 network-configuration calls with their exact arguments.

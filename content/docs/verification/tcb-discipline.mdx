@@ -3,61 +3,79 @@ title: "Safety gates"
 description: "Every check that fails the SlopOS build when the kernel, an interface or the toolchain breaks one of its rules, and how to run each one."
 ---
 
-This page lists every gate: a script that fails the build when the source
+This page lists every gate: a check that fails the build when the source
 tree, the compiled kernel, the built userland or a test run breaks a rule.
-The scripts live in `scripts/` in the SlopOS repository, and each one's
-header comment is the authoritative description. The list of what
-`just check-framekernel-gates` runs is its recipe in the `justfile`.
-[The framekernel](/docs/verification/framekernel) explains why the main
-rules exist.
+Most gates are Rust. The source gates and the kernel image gates are modules
+of one host program, `slopos-xtask` in `tools/xtask`, and each module's
+leading `//!` comment is the authoritative description of the rule it holds.
+The gates on a test boot's log are part of the Go test runner
+(`tools/run_tests/gates/`). The gates that drive a compiler, a linker or a
+pinned source tree are shell scripts in `scripts/`, each described by its
+header comment and on [Toolchain gates](/docs/verification/toolchain-gates).
+The list of what `just check-framekernel-gates` runs is its recipe in the
+`justfile`. [The framekernel](/docs/verification/framekernel) explains why
+the main rules exist.
 
 ## Running the gates
 
 | Command | Runs |
 |---|---|
-| `just check-framekernel-gates` | The gates' self-tests, then the source, image, interface and toolchain gates below, with the image gates run on `builddir/kernel-dev.elf`. Of `check_loose_programs.sh` and the gates on a test boot it runs only the self-tests. Needs a prior `just build`. CI's gates job runs this recipe rather than its own copy of the list. |
-| `just check-framekernel` | The above, then `cargo fmt --check`, `just check-miri` and `just verify` |
-| Any kernel build (`just build`, `just iso`, a test boot) | `check_stack_sizes.sh`, `check_kernel_softfloat.sh`, `check_registry_sections.sh`, `check_bootstrap_stack_rewind.sh` and `check_kernel_pml4_writer.sh`, for the variant just built, through `scripts/check_kernel_elf_gates.sh`. The first four print `skipped` when neither the kernel nor the gates have changed since they last passed |
-| `KERNEL_BUILD_GATES=1` on a kernel build | Also `check_vendor_pin.sh`, `check_unsafe_outside_ostd.sh`, `check_no_kernel_async.sh`, `check_alloc_dep.sh`, `check_drop_panic_free.sh` and `tcb_ratio.sh --max 1.0` |
-| A userland build from the `justfile`, and `just extension` | `check_loose_programs.sh` on every program built outside the base |
-| `scripts/<gate>.sh --self-test` | One gate's self-test |
+| `just check-framekernel-gates` | The script gates' self-tests, then the pin, toolchain and interface scripts below, every source gate (`xtask lint`), and all five image gates on `builddir/kernel-dev.elf`. Needs a prior `just build`. CI's gates lane runs this recipe rather than its own copy of the list. |
+| `just check-framekernel` | The above, then `just clippy`, `cargo fmt --check`, `just check-miri` and `just verify` |
+| Any kernel build (`just build`, `just iso`, a test boot) | `xtask elf --variant V KERNEL` with no gate named, which runs the per-build set (`stack-sizes`, `softfloat`, `registry-sections`, `stack-rewind`), then `xtask lint kernel-pml4-writer`, for the variant just built |
+| A userland build from the `justfile`, and `just extension` | `xtask programs` on every program built outside the base |
+| `just clippy` | `xtask clippy` over the host, kernel and userland targets; name `host`, `kernel` or `userland` to run one. See [Clippy](#clippy) |
+| `just test-host` | Among the host tests, every Rust and Go gate's own tests |
+| `just check-capture` | Every log gate (`run_tests gate tests lockdep sched quota fsperf`) over one or more captured boots, by default `builddir/ci-test.log` |
+| `just ci` | Every CI lane on your machine, in CI's order: `ci-gates`, `ci-candidates`, `ci-suite`, `ci-toolchain`, `check-miri` and `verify`. Each CI job is one of these recipes, so a red job reproduces with the command it ran |
+| `cargo run -p slopos-xtask -- lint <gate>` | One source gate by name; with no name, all of them. `xtask list` prints every gate by command. The recipes add the pinned toolchain, `--locked`, `--release` and `--quiet` |
+| `scripts/<gate>.sh --self-test` | One script gate's self-test |
 
-Every gate has a `--self-test` mode except `check_unsafe_expansion.sh`
-(which instead fails on every run if a shape the compiler emits, and the gate
-filters out, stops appearing), `check_vendor_pin.sh`, `tcb_ratio.sh`,
-`check_test_count.sh` and `check_return_types.sh`. `check-framekernel-gates`
-runs the self-tests first, along with those of two image-building tools,
-`scripts/fs_tree.py` (which `check_fs_image.sh` also uses) and
-`scripts/gen_verity.py`. Source scanners must reject planted violations
-with exact hit counts and accept the forms they allow; image gates build small
-objects with `llc` (an oversized stack frame, a `movups`, an undeclared linker
-section) and must reject them. A failing self-test fails the run.
+Every Rust and Go gate carries its tests beside it. They plant violations and
+the forms the gate deliberately accepts, and demand exact hit counts on the
+first and silence on the second. The image gates' tests assemble the objects
+they are held against in memory, with the `object` crate's writer: an
+oversized stack frame, a `movups`, an undeclared linker section, a handler
+that tail-calls `reboot`. They are `#[test]`s of `slopos-xtask` and Go tests
+of `run_tests`, and `just test-host` runs them. The gates that remain shell
+scripts have a `--self-test` mode instead (`check_vendor_pin.sh` has none),
+and `check-framekernel-gates` runs those first, along with the self-tests of
+two image-building tools, `scripts/fs_tree.py` (which `check_fs_image.sh`
+also uses) and `scripts/gen_verity.py`. A failing self-test fails the run.
 
 The data gates compare against lives under `scripts/gates/`: per kernel
 variant (`dev`, `release`, `tests`, `release-tests`) for gates that read a
 kernel image or a boot log, per backend or linker for the toolchain probes,
 and files of their own for the interface gates (`base-interface.txt`,
-`libc/`, `syscall/`) and for `check_ui_literals.sh` (`ui-literals.txt`). An
-allowlist entry that matches nothing fails its gate, so an exemption that is
-no longer needed has to be removed. A ratchet failure is a measurement to take again with the gate's
-`--emit-allowlist`, never a number to raise by hand.
+`libc/`, `syscall/`), the tracked test list (`tests/tests.txt`) and the
+`ui-literals` gate (`ui-literals.txt`). The image gates take a required
+`--variant` and read `scripts/gates/{stack,vector,authority}/<variant>.txt`.
+Those files also carry the floors that prove the input was sane, so weakening
+a check is a diff on a tracked file, not an edit to a program. An allowlist
+entry that matches nothing fails its gate, so an exemption that is no longer
+needed has to be removed, and an image graded under the wrong `--variant`
+fails instead of passing on a list that happens to fit. A ratchet failure is
+a measurement to take again, never a number to raise by hand:
+`xtask elf --variant V KERNEL --emit-allowlist <gate>` prints the allowlist
+measured from KERNEL for `stack-sizes`, `softfloat` or `authority`, and
+`run_tests gate` takes `--emit-allowlist` for the log gates.
 
 ## Where `unsafe` may appear
 
 | Gate | Fails when |
 |---|---|
-| `check_unsafe_outside_ostd.sh` | A Rust file it scans contains an `unsafe` keyword (comments, `#[unsafe(...)]` attributes and `cfg`-gated code excepted), or a crate of this repository in the kernel binary's dependency closure lacks `#![forbid(unsafe_code)]`. The scan reads every Rust file in the repository except `slopos-ostd`, `slopos-ostd-derive`, `kernel/src/main.rs`, the two pinned annexes `vendor/unwinding` and `vendor/gimli`, `tools/` and the userland crates it names (`userland`, `slibc`, `cabi`, `slop-protocol`, `appkit`, `editor-core`, `http-core`, `tls-core`, `image`, `slopos-rt`, and `slibc-core`'s tests), so `apps/` and `windowing/` are held to it too |
-| `check_unsafe_expansion.sh` | A kernel crate's macro expansion (`-Zunpretty=expanded`, with and without the crate's test features) contains executable `unsafe`, or an `unsafe impl`, `#[unsafe(link_section)]`, `#[unsafe(no_mangle)]` or `#[unsafe(export_name)]` not on its allowlist; or a crate fails to expand. It does not expand OSTD, its derive macros or the kernel binary's crate. It also fails when no expansion contains the `unsafe impl ::core::clone::TrivialClone` that derives emit, the sign that the compiler-emitted shapes it filters out have changed. See [allowlists](#allowlists-outside-ostd) |
-| `check_safe_contract_surface.sh` | A safe `pub` or `pub(crate)` function in OSTD carries a `# Safety` doc section. The baseline is zero. A safe function with no such section is not checked, however unsound |
-| `check_registry_sections.sh` | The linked kernel contains a section `link.ld` doesn't declare, a linker registry's span is not a whole number of entries, the unwinder's search table (`.eh_frame_hdr`) is missing or malformed, or the linear unwind lookup that table replaces is linked in. The only gate that sees a `link_section` from a dependency |
-| `check_vendor_pin.sh` | `vendor/unwinding` or `vendor/gimli` differs from its pinned version, upstream commit, file count or content hash |
-| `tcb_ratio.sh --max 1.0` | Lines of `unsafe` in OSTD and the two annexes exceed 1.0 percent of kernel plus annex Rust lines. Without `--max` it only prints the ratio (`just tcb-ratio`) |
+| `unsafe-outside-ostd` | A Rust file it scans holds an `unsafe` block, `unsafe fn`, `unsafe impl`, `unsafe trait`, `unsafe extern` block, `unsafe fn` pointer type or the `unsafe` keyword inside a macro's tokens, or a crate of this repository in the kernel binary's dependency closure lacks `#![forbid(unsafe_code)]` at its root. The attribute form `#[unsafe(...)]` is not an unsafe block and passes, and an item under `#[cfg(...)]` is skipped whole, left to the configuration that compiles it. The scan reads every Rust file in the repository except `slopos-ostd`, `slopos-ostd-derive`, `kernel/src/main.rs`, the two pinned annexes `vendor/unwinding` and `vendor/gimli`, `tools/` and the userland crates it names (`userland`, `slibc`, `cabi`, `slop-protocol`, `appkit`, `editor-core`, `http-core`, `tls-core`, `image`, `slopos-rt`, and `slibc-core`'s tests), so `apps/`, `windowing/`, `settings-core/` and `settings-app/` are held to it too |
+| `unsafe-expansion` | A kernel crate's macro expansion (`-Zunpretty=expanded`, once per feature configuration: default features, and the `tests` or `test-hooks` feature of a crate that has one) contains executable `unsafe`, or an `unsafe impl`, `#[unsafe(link_section)]`, `#[unsafe(no_mangle)]` or `#[unsafe(export_name)]` not on its allowlist; or a crate fails to expand. The rule is a constant, not a recorded count. It does not expand OSTD, its derive macros or the kernel binary's crate. The shapes the compiler itself emits are accepted only inside `#[automatically_derived]` impls: a test expands a fixture with the pinned toolchain and fails if those shapes move, and a run in which no expansion contains the `unsafe impl ::core::clone::TrivialClone` that derives emit fails too. See [allowlists](#allowlists-outside-ostd) |
+| `unnecessary_safety_doc`, a clippy lint | A safe function carries a `# Safety` doc section, private functions included in the kernel's crates. The baseline is zero. A safe function with no such section is not checked, however unsound. See [Clippy](#clippy) |
+| `registry-sections` | The linked kernel contains a section `link.ld` doesn't declare (the `.stack_sizes` and DWARF sections the toolchain adds are accepted), a linker registry is not tiled exactly by its entries' symbols, the unwinder's search table (`.eh_frame_hdr`) is missing or malformed, or the linear unwind lookup that table replaces is linked in. The only gate that sees a `link_section` from a dependency. See [Kernel image gates](#kernel-image-gates) |
+| `scripts/check_vendor_pin.sh` | `vendor/unwinding` or `vendor/gimli` differs from its pinned version, upstream commit, file count or content hash |
+| `tcb-ratio` | Lines of `unsafe` in OSTD and the two annexes exceed 1.0 percent of the Rust lines of the kernel binary's crates plus the annexes. It prints the ratio either way (`just tcb-ratio`). Both counts are raw source lines, the vendored DWARF reader included, so read the figure as a trend |
 
 Crates from crates.io that the kernel links, such as `limine` and `libm`,
 are outside these gates: none of them scans their source, `Cargo.lock` pins
-them by checksum, `check_unsafe_expansion.sh` sees only what their macros
-expand to inside SlopOS crates, and `check_registry_sections.sh` sees the
-linker sections they add.
+them by checksum, `unsafe-expansion` sees only what their macros expand to
+inside SlopOS crates, and `registry-sections` sees the linker sections they
+add.
 
 OSTD's exported obligation surface, the items a reviewer reads to judge what
 OSTD asks of its callers, is the first three kinds below; the fourth is held
@@ -69,22 +87,22 @@ at zero. Count the first two with
 | `pub unsafe fn` | Callable only inside `unsafe`, so only from OSTD |
 | `pub unsafe trait` | An implementer's promise the compiler can't check; outside OSTD only the allowlisted traits are implemented |
 | `pub unsafe extern` naked entry points | The context switch, task entry, AP entry, the user-mode round trip and the SafeStack hook |
-| Safe `pub` or `pub(crate)` fn with a `# Safety` section | None; `check_safe_contract_surface.sh` holds the count at zero |
+| Safe `pub` or `pub(crate)` fn with a `# Safety` section | None; clippy's `unnecessary_safety_doc` holds the count at zero |
 
 ## Kernel crate rules
 
 | Gate | Fails when |
 |---|---|
-| `check_alloc_dep.sh` | A kernel crate other than OSTD declares a direct `alloc` dependency, or a kernel source file outside OSTD and `kernel/src/main.rs` names `alloc` (`extern crate alloc`, `use alloc::`) in code the kernel build compiles |
-| `check_no_kernel_async.sh` | A kernel crate contains `async fn`, an `async` block or `async move` |
-| `check_drop_panic_free.sh` | A `Drop` implementation contains a direct panic, assert, `unwrap` or `expect`, beyond the reviewed exceptions it names |
-| `check_wait_predicate_purity.sh` | `napi::wake_napi`, `force_napi_poll` or `sleep_current_task_ms` appears within 20 lines after a `wait_event` call, where it would sit in the wait's predicate; or `.lock()`, `.wait()`, `sleep_current_task_ms` or `yield_with_deadline` appears within 20 lines after an epoch is entered (`Epoch::enter`). A predicate should only observe state, and an epoch's read section must not block; this is a text scan, not a proof |
-| `check_wait_result_handling.sh` | A wait result is silenced (`let _ =`, `.ok()`, `.unwrap_or*()`) in a way that can drop `Killed` |
-| `check_task_ownership.sh` | A raw task pointer is bound, stored or passed through `c_void` outside the sanctioned OSTD primitives, an accessor turns one back into a reference (`task_borrow`), an `unsafe impl Send` or `Sync` rests on a task's reference count, a task's reference count is changed by hand, a panic or fault path looks a task up or upgrades a task reference, or a function returns a borrow with a lifetime none of its arguments supplies ([Task lifetimes](/docs/architecture/task-ownership)) |
-| `check_frame_ownership.sh` | A function takes a bare physical address, creates the owning frame from it, and can then fail; a fault or map path frees a page by address; or a constructor decides at run time whether it claims a fresh page or aliases a live one |
-| `check_process_designator.sh` | A process-keyed table entry point in `mm/src/process_vm.rs` or `fs/src/fileio/` takes a bare `u32` process id instead of a generation-checked designator (`ProcessId`, `FdTable`), or a loop scans those tables for a matching id |
-| `check_charge_linearity.sh` | A resource `Charge` can be separated from the object it accounts for: `mem::forget`, `ManuallyDrop` or `.leak()` on it, an `Option<Charge<_>>` field, `.take()` on a charge field, a non-minting function returning one by value, or `Clone`/`Copy` derived on a struct holding one |
-| `check_kernel_pml4_writer.sh` | Anything outside OSTD other than `mm/src/kernel_mappings.rs` takes a mutating cursor on the kernel's master page tables, names the master space where it isn't defined or installed, or writes a page-table word it reached through OSTD's atomic page helper. Runs with the image gates on every build |
+| `alloc-dep` | A kernel crate other than OSTD declares a direct `alloc` dependency in any dependency table of its manifest, or a kernel source file outside OSTD and `kernel/src/main.rs` writes `extern crate alloc` (under any name) or a `use` of `alloc::` or `::alloc::`, macro bodies included. An item under `#[cfg(...)]` is skipped whole |
+| `no-kernel-async` | A kernel crate contains `async fn`, an `async` block, `async move`, an `async` closure or `async gen` |
+| `drop-panic-free` | The `fn drop` of a kernel `Drop` implementation (`Drop::drop`) contains a direct panic: `panic!`, `todo!`, `unimplemented!`, `unreachable!`, an assert, `unwrap` or `expect`, beyond the reviewed exceptions the module names. A helper that panics is not followed |
+| `wait-predicate-purity` | The predicate closure handed to a `wait_event` call wakes the network poller (`napi::wake_napi`), forces a poll (`force_napi_poll`) or sleeps (`sleep_current_task_ms`); or, between entering an epoch (`Epoch::enter`) and the end of its block or its `drop`, code takes a lock (`.lock()`), waits (`.wait()`), sleeps or yields (`yield_with_deadline`). A predicate should only observe state, and an epoch's read section must not block |
+| `wait-result-handling` | A wait result is silenced with one token (`let _ =`, `.ok()`, `.unwrap_or*()`) in a way that erases `WaitAbort::Killed`, so a dying task would keep waiting; or `unused_must_use` is allowed or expected. A written-out `match` that folds the ways a wait can end together passes |
+| `task-ownership` | A raw task pointer is bound, stored or passed through `c_void` outside the sanctioned OSTD primitives, an accessor turns one back into a reference (`task_borrow`), an `unsafe impl Send` or `Sync` rests on a task's reference count, a task's reference count is changed by hand, a panic or fault path looks a task up or upgrades a task reference, or a function returns a borrow with a lifetime none of its arguments supplies ([Task lifetimes](/docs/architecture/task-ownership)) |
+| `frame-ownership` | A function takes a bare physical address, creates the owning frame from it, and can then fail; a fault or map path frees a page by address; or a constructor decides at run time whether it claims a fresh page or aliases a live one. Any of these lets a page be freed twice when a mapping is refused |
+| `process-designator` | A `pub` function in `mm/src/process_vm.rs` or `fs/src/fileio/` takes a bare `u32` process id instead of a generation-checked designator (`slopos_ostd::process::ProcessId`, `slopos_fs::fileio::FdTable`), or a loop scans the process tables for a matching id. Process ids are recycled, so a stale `u32` names whichever process holds the number now, and the kernel would serve the call against a stranger's memory or open files; a designator can only be built from a live process, and a stale one fails its generation check. A `u32` id stays correct at the ABI boundary, as in `getpid` |
+| `charge-linearity` | A resource `Charge` or `Reservation` can be separated from the object it accounts for: `mem::forget`, `ManuallyDrop` or `.leak()` on it, an `Option` of one as a field, `.take()` on a charge field, a non-minting function returning a `Charge` by value, or `Clone`/`Copy` derived on a struct holding one |
+| `kernel-pml4-writer` | Anything outside OSTD other than `mm/src/kernel_mappings.rs` (`slopos_mm::kernel_mappings`) takes a mutating cursor (`CursorMut`) on the space `kernel_vm_space()` hands out, names `KERNEL_VM_SPACE` anywhere but where `kernel-services` defines it and the boot step installs it, or does more than load a page-table word it reached through `ptr_buf::with_atomic_u64_in_page`. It matches identifiers in the token stream, so comments and strings never count and macro bodies do. The proof of OSTD's `vm_space` module assumes this one writer ([Proofs](/docs/verification/verus-status#what-is-deliberately-not-proven)). Runs with the image gates on every build |
 
 ## Interfaces between the kernel, the base and programs
 
@@ -93,50 +111,117 @@ and programs built outside the base change on separate schedules.
 
 | Gate | Fails when |
 |---|---|
-| `check_syscall_abi.sh` | A syscall number disagrees with Linux x86-64's table (vendored in `scripts/gates/syscall/`), the Linux-numbered range does not end where that table does, the private numbers leave a hole, a number or name is defined twice, or a private call shares a Linux call's name without a reason in the allowlist there |
-| `check_base_interface.sh` | The private call surface (every private syscall's number and documented signature, and every `slopos-abi` item those reach, as rustdoc's JSON describes them) no longer matches the digest recorded for the current `BASE_INTERFACE` number in `scripts/gates/base-interface.txt`, or a private call's documentation states no signature. A changed surface takes the next number; `--record` appends its row, and an issued row is never rewritten |
-| `check_libc_exports.sh` | A dynamic symbol `libc.so` exports disappears or changes kind or size, or a struct or union `slibc/include` defines disappears or changes size, alignment or a field offset, against `scripts/gates/libc/`; or a new export or structure has not been recorded there. `--record` records additions and refuses while anything recorded was removed or changed. Skipped without a built library, and the layout half without the host clang; CI's toolchain job passes `--require` |
-| `check_loose_programs.sh` | A program shipped outside the base (the apps, an extension's programs) is static, names an interpreter other than `/lib/ld-slopos.so.1`, lacks `libc.so` in `DT_NEEDED`, or contains a `syscall` instruction of its own |
-| `check_app_deps.sh` | A crate under `apps/` depends on anything but `slopos-appkit`, `slopos-editor-core` and `slopos-image` (dev-dependencies aside) |
-| `check_ui_literals.sh` | An app constructs or derives a colour, or gives a spacing or inset a number, instead of naming the theme's roles and tokens; or appkit constructs a colour outside its tests. A file whose colours are its content takes a line in `scripts/gates/ui-literals.txt` |
+| `syscall-abi` | A syscall number disagrees with Linux x86-64's table (vendored as `scripts/gates/syscall/linux-x86_64.tbl`), the Linux-numbered range does not end where that table does, the private numbers leave a hole, a number or name is defined twice, or a private call shares a Linux call's name without a reason in the allowlist there |
+| `scripts/check_base_interface.sh` | The private call surface (every private syscall's number and documented signature, and every `slopos-abi` item those reach, as rustdoc's JSON describes them) no longer matches the digest recorded for the current `BASE_INTERFACE` number in `scripts/gates/base-interface.txt`, or a private call's documentation states no signature. A changed surface takes the next number; `--record` appends its row, and an issued row is never rewritten |
+| `scripts/check_libc_exports.sh` | A dynamic symbol `libc.so` exports disappears or changes kind or size, or a struct or union `slibc/include` defines disappears or changes size, alignment or a field offset, against `scripts/gates/libc/`; or a new export or structure has not been recorded there. `--record` records additions and refuses while anything recorded was removed or changed. Skipped without a built library, and the layout half without the host clang; CI's toolchain job passes `--require` |
+| `xtask programs` | A program shipped outside the base (the apps, an extension's programs) is static, names an interpreter other than `/lib/ld-slopos.so.1`, lacks `libc.so` in `DT_NEEDED`, or contains a `syscall` instruction of its own |
+| `app-deps` | A crate under `apps/` depends on anything but `slopos-appkit`, `slopos-editor-core` and `slopos-image` (dev-dependencies aside) |
+| `ui-literals` | An app constructs or derives a colour, or gives a spacing or inset a number, instead of naming the theme's roles and tokens; or appkit constructs a colour outside its tests. Apps are the files under `apps/`, the Settings panels in `settings-app/` and the modules of `userland/src/apps/` that implement appkit's `App`. A file whose colours are its content takes a line in `scripts/gates/ui-literals.txt` |
 
 [Installed software](/docs/architecture/software) explains why programs
 outside the base reach the system only through `libc.so`, and
 [Desktop](/docs/architecture/desktop) the theme the last gate protects.
+[Toolchain gates](/docs/verification/toolchain-gates) describes the two
+scripts and `xtask programs` in full.
 
 ## Kernel image gates
 
-These read the linked kernel ELF, so they see the effect of inlining, generics
-and dependencies. All but the last run after every kernel build, for every
-variant (`builddir/kernel-{dev,release,tests,release-tests}.elf`).
+These read the linked kernel ELF with the `object` crate and decode its code
+with `iced-x86`, never a disassembler's text, so they see the effect of
+inlining, generics and dependencies. The build writes one ELF per variant
+(`builddir/kernel-{dev,release,tests,release-tests}.elf`) because the
+variants' machine code differs: one shared path would let whichever build
+ran last answer for all of them, to the gates, to gdb and to the ISO
+builder. All but the last gate run after every kernel build, for the variant
+just built.
 
 | Gate | Fails when |
 |---|---|
-| `check_stack_sizes.sh` | A function's stack frame, read from `.stack_sizes`, exceeds the 2 KiB threshold and is not on the variant's allowlist, or is larger than the cap the allowlist records for it; or any frame is larger than the 4 KiB guard page, which no allowlist can exempt; or the image carries fewer stack records than the allowlist's floor |
-| `check_kernel_softfloat.sh` | An x87, MMX, SSE or AVX instruction appears outside the sanctioned save and restore. Kernel entry doesn't save user vector state, so one stray instruction corrupts the interrupted program. Allowlist `scripts/gates/vector/<variant>.txt` |
-| `check_registry_sections.sh` | See above |
-| `check_bootstrap_stack_rewind.sh` | Anything other than its one writer changes the boot CPU's bootstrap data-stack pointer |
-| `check_authority_reachability.sh` | A syscall handler can reach a power primitive (reboot, shutdown) in the call graph without being classified `Power` or listed with a reason in `scripts/gates/authority/<variant>.txt`. Indirect calls are not followed. Run by `check-framekernel-gates` on the dev kernel and by CI on the release and tests kernels, not on every build |
+| `stack-sizes` | A function's stack frame, read from `.stack_sizes`, exceeds the 2 KiB threshold and is not on the variant's allowlist, or is larger than the cap the allowlist records for it; or any frame is larger than the 4 KiB guard page, which no allowlist can exempt; or the image carries fewer stack records than the allowlist's `min-records` floor. Allowlist `scripts/gates/stack/<variant>.txt` |
+| `softfloat` | An instruction touches register state that XCR0 manages, outside the sanctioned save and restore: x87, MMX, SSE or AVX, the opmask, AMX tile and MPX bound registers, or an unreviewed instruction of the `xsave` and `xrstor` family. Kernel entry doesn't save user vector state, so one stray instruction corrupts the interrupted program. Allowlist `scripts/gates/vector/<variant>.txt` |
+| `registry-sections` | See [above](#where-unsafe-may-appear) |
+| `stack-rewind` | Anything other than its one writer changes the boot CPU's bootstrap data-stack pointer |
+| `authority` | A syscall handler can reach a power primitive (reboot, shutdown) in the call graph without being classified `Power` or listed with a reason in `scripts/gates/authority/<variant>.txt`; a finding prints the path it found. The graph's edges are direct calls and tail `jmp` or `jcc` branches into another function; indirect calls (`call *%rax`) are not followed. Run by `check-framekernel-gates` on the dev kernel and by CI on the release and tests kernels. It is not in the per-build set only because `release-tests` keeps no allowlist |
+
+### What the image gates rely on
+
+**Stack frames.** The 2 KiB threshold is the default of Linux's
+`CONFIG_FRAME_WARN` on x86-64, but Linux warns where SlopOS fails the build
+(`STACK_SIZE_THRESHOLD` in the environment overrides it). The sizes come from
+the section the compiler writes under `-Zemit-stack-sizes`, so inlining,
+values the compiler failed to build in place and calls through trait objects
+all count, which a source-level estimate would miss. The `min-records` floor
+is what stops a build that dropped the flag from reading as a kernel with no
+large frames. The kernel target sets `"stack-probes": {"kind": "none"}`, so a
+frame larger than the guard page steps over it in one instruction. That is
+why the guard page is a limit no allowlist raises: a measured cap records how
+big a frame is, not whether that size can be survived. The source calls the
+rule S-5, bounded kernel stack use, numbered apart from the Asterinas paper's
+own invariant 5.
+
+**Vector state.** A syscall or an exception that enters from a user program
+doesn't save that program's floating-point and vector registers. Only a full
+context switch does, with `xsave` and `xrstor`. So the kernel is built
+`+soft-float` and must never touch that register file. The gate's scope is
+everything XCR0 enumerates because x87 and MMX share one register file with
+the vector registers and `xrstor64` overwrites the whole area at once. It
+classifies instructions from the decoder's register and CPUID-feature
+information, not from a list of mnemonics. The guarantee itself lives in the
+kernel target, `targets/x86_64-slos.json` (`features: …,-sse,…,+soft-float`
+and `rustc-abi: softfloat`): `.cargo/config.toml` names no kernel codegen
+flag, and the `RUSTFLAGS` that `build_kernel.sh` sets name no target feature.
+A `RUSTFLAGS` override or a hand-written `asm!` block sidesteps the target's
+features, and this scan of the linked code is the only check that sees
+either. OSTD's helpers that test the save and restore, built into the tests
+kernel, are one allowlist entry with a measured instruction budget, so a
+vector instruction anywhere else in that kernel still fails.
+
+**Registries.** A registry is an output section `link.ld` brackets with
+`__start_<name> = .` and `__stop_<name> = .`. The gate reads the registries
+from the linker script and the entry sizes from the image, so a new registry
+or a resized entry type needs no edit to the gate. Each must be tiled by its
+entries' symbols: one size, no byte uncovered, no overlap. OSTD's
+`registry_slice` derives the entry count from the section's span with
+`offset_from`, which requires a whole number of elements, so a wrong-sized
+entry, reachable from a crate that forbids `unsafe`, would be undefined
+behaviour at boot.
+
+**Power.** The compile-time check on the syscall table
+(`core/src/syscall/handlers.rs`) covers each handler's classification, not
+what the handler can reach: `roulette_result` is classified `Fate`, which
+that check passes, while its losing arm reaches the reboot primitive two
+calls away. The linked ELF is the input because inlining, generic
+instantiation and trait objects all change who really calls whom. Indirect
+calls are the seam the walk can't see, which is why the kernel's own callers,
+which reach power through OSTD's `PowerOps` function table, are a reviewed
+list. The tests kernel is the only variant whose allowlist carries
+`run_userland_tests`, which powers the machine off to end the run.
+[Capabilities](/docs/architecture/authority) explains the classification.
 
 ## Gates on a test boot
 
-These grade what a test boot leaves behind. The ratchets read the boot's log,
-booting the test image themselves or reading a captured log with `--log`,
-and compare what the kernel reports with tracked limits; the two filesystem
-gates read the disk image the boot wrote. CI runs the first three on the log
-of its full test run, and the two filesystem gates after it.
+These grade what a test boot leaves behind. The log gates are subcommands of
+the test runner, `run_tests gate NAME --log FILE`, and read one or more
+captured logs (`run_tests --raw`), each a whole run of the suite; the two
+filesystem gates read the disk image the boot wrote. CI runs the first three
+on the log of its suite run, and the two filesystem gates after it.
+`just check-capture` runs all five log gates over a capture.
 
 | Gate | Recipe | Fails when |
 |---|---|---|
-| `check_test_count.sh` | `just check-test-count` | The number of planned tests falls below the baseline written in the script |
-| `check_lockdep_headroom.sh` | `just check-lockdep-headroom` | The lock-order validator is not `ACTIVE` in every phase, reports a violation, exceeds a cap in `scripts/gates/lockdep/` (lock classes in every phase, edges and chains at boot), fills a pool past the file's `max-fill-pct`, or records fewer classes, edges or chains than the file's floors. Test-phase edge and chain counts carry bands, and leaving one only prints `DRIFT` |
-| `check_sched_spread.sh` | `just check-sched-spread` | An online CPU is not eligible for task placement (the boot CPU may lag until it starts scheduling, at the end of boot), a CPU has dispatched nothing by the end of the userland tests, or fewer than two CPUs came online |
-| `check_fs_image.sh` | `just check-fs-image` | `e2fsck -fn` rejects an image a boot wrote, or the image is not at rest (clean, no journal to replay); with `--map`, the default for the tests image, also a root that breaks the ownership map ([Users and file permissions](/docs/architecture/users)) |
-| `check_fs_replay.sh` | `just test-rude-exit` | The image a killed boot left does not need recovery, or the file that boot wrote can be reached without the journal; or, once `e2fsck -E journal_only` has replayed the journal, the image fails `e2fsck -fn`, is not at rest or does not hold the file's contents |
-| `check_quota_headroom.sh` | `just check-quota-headroom` | A resource account's peak exceeds its cap in `scripts/gates/quota/`, a denial is recorded, or the charge path's cost ratio moves past its bounds. Not run by CI beyond its self-test |
-| `check_fs_throughput.sh` | `just check-fs-throughput` | A write costs more transactions, journal commits, device requests or barriers per MiB than `scripts/gates/fsperf/<variant>.txt` allows, the filesystem's write rate falls below its floor as a share of the same run's raw device rate, or a measurement floor is not met. Not run by CI beyond its self-test |
+| `run_tests gate tests` | `just check-capture` | A test on the tracked list `scripts/gates/tests/tests.txt` ran in no log, a test ran that the list lacks, or a name was reported twice in one phase of one boot |
+| `run_tests gate lockdep` | `just check-capture` | The lock-order validator is not `ACTIVE` in a required phase, reports a violation, fills a pool (lock classes, edges or chains) past the `max-fill-pct` in `scripts/gates/lockdep/`, or records fewer than the file's floors. The counts themselves are not graded, because they move between runs of the same code |
+| `run_tests gate sched` | `just check-capture` | An online CPU is not eligible for task placement beyond the lag `scripts/gates/sched/` allows for that phase (the boot CPU may lag until it starts scheduling, at the end of boot), an online CPU has dispatched nothing in a phase that requires it, or fewer CPUs came online than the file's floor |
+| `scripts/check_fs_image.sh` | `just check-fs-image` | `e2fsck -fn` rejects an image a boot wrote, or the image is not at rest (clean, no journal to replay); with `--map`, also a root that breaks the ownership map ([Users and file permissions](/docs/architecture/users)) |
+| `scripts/check_fs_replay.sh` | `just test-rude-exit` | The image a killed boot left does not need recovery, or the file that boot wrote can be reached without the journal; or, once `e2fsck -E journal_only` has replayed the journal, the image fails `e2fsck -fn`, is not at rest or does not hold the file's contents |
+| `run_tests gate quota` | `just check-capture` | A resource account's peak exceeds its cap in `scripts/gates/quota/`, a denial is recorded that the file does not expect, or the charge path's cost ratio moves past its bounds. Not graded by CI: the caps are measured maxima, so grade them by hand before a commit |
+| `run_tests gate fsperf` | `just check-capture`, `just test-capacity` | A write costs more transactions, device requests or barriers per MiB than `scripts/gates/fsperf/<variant>.txt` allows, the filesystem's write rate falls below its floor as a share of the same run's raw device rate, or a measurement floor is not met. Not graded by CI |
 
 ## Toolchain and build-input gates
+
+[Toolchain gates](/docs/verification/toolchain-gates) describes each of
+these scripts in `scripts/`: what it holds, the silent failure it exists for
+and when it skips. In short:
 
 | Gate | Fails when |
 |---|---|
@@ -152,15 +237,14 @@ of its full test run, and the two filesystem gates after it.
 | `check_recipes.sh` | A recipe under `toolchain/recipes/` isn't a pinned upstream tarball with a licence, built by a template, with arguments that carry no code and patches that only teach the project the SlopOS target; or a built GPL-2.0-only program links a library under a licence it can't be combined with |
 | `check_libc_license.sh` | A crate built into the C library has a licence MIT alone doesn't satisfy, or a source file there includes a file from outside the library's directories |
 
-The rustc-target, LLVM-port, clang-driver and bootstrap gates report
-`skipped` when the source tree they check hasn't been fetched, the LLVM-port
-and bootstrap gates also before a tests userland build has made the C++
-runtime they compile against, and the C library export gate when no
-`libc.so` has been built. `--require` turns that skip into a failure. The
-C++ runtime gate takes no `--require`: with no runtime built it checks only
-its pin and passes. CI's toolchain job fetches the sources and builds the
-tests userland first, so there they all run for real, and it passes
-`--require` to each gate that takes it.
+`check_codegen_backend.sh` and `check_linker_script.sh` build a probe and
+inspect what came out, so they run from `check-framekernel-gates` and CI
+only, never from a kernel build. Some of the others report `skipped` when
+the source tree or the built runtime they check is absent, and where a gate
+takes `--require` it turns that skip into a failure; CI's toolchain job
+fetches the sources and builds the tests userland first, so there they run
+for real. [Toolchain gates](/docs/verification/toolchain-gates) says which
+gate skips on what and which take `--require`, and
 [The toolchain](/docs/self-hosting/toolchain) explains what these pieces are.
 
 ## Proofs and Miri
@@ -172,23 +256,82 @@ tests userland first, so there they all run for real, and it passes
 
 CI runs both in the `ostd-verify` job.
 
-## Manual audits
+## Clippy
 
-Not run by `check-framekernel-gates` or CI.
+`xtask clippy` (`just clippy`) runs clippy over every target the tree
+builds, each with the toolchain, target, features and flags of the build it
+stands for, so a lint sees the code that build compiles and nothing else.
+Each target checks into its own `builddir/clippy-<target>`, leaving the real
+builds' caches alone.
 
-| Script | Recipe | Reports |
+| Target | Checks |
+|---|---|
+| `host` | The crates `just test-host` tests and the `tools/` crates, with `--all-targets` |
+| `kernel` | The kernel binary's crate graph as `build_kernel.sh` builds it, once with the dev variant's features and once with the tests variant's |
+| `userland` | Every cargo invocation `build_userland.sh` makes |
+
+The lint levels are `[workspace.lints.clippy]` in the root `Cargo.toml`. It
+denies the `correctness` and `suspicious` groups, `missing_safety_doc`,
+`unnecessary_safety_doc` and the `disallowed_*` family. The `style`,
+`complexity` and `perf` groups are allowed because the tree predates clippy
+and carries many findings in each: they are held back, not endorsed. The
+workspace also denies compiler warnings, so any warning fails the run.
+
+`kernel/clippy.toml` applies to the `kernel` target alone, through
+`CLIPPY_CONF_DIR`. It makes the documentation lints read private items, so a
+`pub(crate)` function with a `# Safety` section fails like a `pub` one, and
+it denies `core::mem::forget` and `ManuallyDrop::new`, because a kernel
+object's destructor gives back what it owns: a frame, a charge, a
+registration, a reference.
+
+An exception is a site-local `#[expect(lint, reason = "...")]`, never a
+blanket `allow`. OSTD is also checked by the host and userland runs, which
+`kernel/clippy.toml` doesn't reach, so it writes an exception to a kernel
+ban as `#[cfg_attr(target_os = "none", expect(...))]`. OSTD's `ptr_buf`,
+framebuffer and frame-pointer helpers carry
+`expect(clippy::not_unsafe_ptr_arg_deref)` by design: their callers are
+crates that forbid `unsafe`, so the functions can't be `unsafe fn`, and the
+contract lives in the types around them.
+
+## Agent instructions
+
+| Gate | Fails when |
+|---|---|
+| `agents-doc` (`xtask lint agents-doc`) | The root `AGENTS.md` is larger than 8 KiB, a nested `AGENTS.md` larger than 4 KiB, a `SKILL.md` larger than 3 KiB or a `pending.md` larger than 8 KiB; a skill is not named in the root file; or one of those files names a `docs/<section>/<page>` that doesn't resolve, when a docs checkout sits beside the repository |
+
+## Adding a gate
+
+A check is Rust, never a shell script. The source gates match `syn` syntax
+trees, so a brace in a char literal, a `//` inside a string or a header split
+across lines reads as the compiler reads it, which a text scan can't promise.
+A new check is therefore a module with its fixtures as tests beside it:
+
+| The check reads | It goes in | Run as |
 |---|---|---|
-| `check_return_types.sh` | `just check-return-types` | Kernel `pub fn`s that return large structs by value (a heuristic regex scan) |
+| Source files or manifests | `tools/xtask/src/lint/`, listed in `GATES` in `mod.rs` | `xtask lint` |
+| A linked kernel | `tools/xtask/src/elf/`, listed in `GATES` in `mod.rs`, which also says whether it joins the per-build set | `xtask elf` |
+| A boot's serial log | `tools/run_tests/gates/`, one file that registers itself | `run_tests gate` |
+
+A new `scripts/check_*.sh` is refused in review. The scripts that remain
+drive toolchains and pinned sources (compilers, linkers, bootstrap, recipes,
+the C++ runtime, the base interface) and don't read source text or an ELF.
+The tests must plant what the gate rejects as well as what it accepts: a
+check that has never been seen to reject has not been seen to work. The
+module's `//!` comment states the invariant it holds and why, so change it
+with the check.
 
 ## Allowlists outside OSTD
 
-Each entry is listed, with its reason, in the gate that allows it.
+Each entry is listed, with its reason, in the gate that allows it. The
+`unsafe-expansion` lists are the constants `TRAIT_ALLOWLIST`,
+`SECTION_ALLOWLIST` and `SYMBOL_ALLOWLIST` in
+`tools/xtask/src/lint/unsafe_expansion.rs`.
 
 | Allowed | Where | Gate |
 |---|---|---|
-| Global allocator and alloc-error handler | `kernel/src/main.rs` | `check_unsafe_outside_ostd.sh`, `check_alloc_dep.sh` |
-| `#[unsafe(link_section)]` on the base-interface note | `kernel/src/main.rs`: the note describes the kernel file, so the binary's own crate places it | `check_unsafe_outside_ostd.sh` skips the file and `check_unsafe_expansion.sh` the crate |
-| `#[unsafe(no_mangle)]` on `kernel_main`, `common_exception_handler`, `isr_iret_frame_corrupt` | Called from assembly | `check_unsafe_expansion.sh` |
-| `#[unsafe(link_section)]` on the twelve registry sections and three Limine request sections | Emitted only by `registry_entry!` and `limine_request!` | `check_unsafe_expansion.sh` |
-| `unsafe impl` of `Pod`, `Zeroable`, `HermeticState`, `PcrStackTy`, and compiler-emitted `TrivialClone` | `Pod`/`Zeroable` derived; `HermeticState::restore` is the one allowed `unsafe fn` | `check_unsafe_expansion.sh` |
-| Executable `unsafe` in `vendor/unwinding`, `vendor/gimli` | Pinned annexes | `check_vendor_pin.sh` |
+| Global allocator and alloc-error handler (`#[global_allocator]`, `#[alloc_error_handler]`), which need a direct `extern crate alloc` | `kernel/src/main.rs` | `unsafe-outside-ostd`, `alloc-dep` |
+| `#[unsafe(link_section)]` on the base-interface note | `kernel/src/main.rs`: the note describes the kernel file, so the binary's own crate places it | `unsafe-outside-ostd` skips the file and `unsafe-expansion` the crate |
+| `#[unsafe(no_mangle)]` on `kernel_main`, `common_exception_handler`, `isr_iret_frame_corrupt` | `boot/src/ffi_boundary.rs`: called from assembly, so the names must resolve at link time | `unsafe-expansion` |
+| `#[unsafe(link_section)]` on the twelve registry sections and three Limine request sections | Emitted only by `registry_entry!` and `limine_request!` | `unsafe-expansion` |
+| `unsafe impl` of `Pod`, `Zeroable`, `HermeticState`, `PcrStackTy`, and compiler-emitted `TrivialClone` | `Pod`/`Zeroable` derived. `HermeticState` is written by hand in the crates that save and restore state around a test, through the registry the `hermetic` crate walks; its `HermeticState::restore` is the one allowed `unsafe fn` | `unsafe-expansion` |
+| Executable `unsafe` in `vendor/unwinding`, `vendor/gimli` | Pinned annexes | `scripts/check_vendor_pin.sh` |

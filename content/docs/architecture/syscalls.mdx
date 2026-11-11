@@ -308,9 +308,10 @@ assertions recompute the counts from the tables and fail when they differ, so
 a change to who can make a privileged call has to edit that row too. Counts
 cover registered entry points only, so adding an unrelated Linux call doesn't
 move every row. The histogram can't see an ungated handler that reaches a
-privileged primitive indirectly; `scripts/check_authority_reachability.sh`
-covers that by walking the linked kernel's call graph to the power
-primitives, with stated exceptions under `scripts/gates/authority/`.
+privileged primitive indirectly; the `authority` gate
+(`xtask elf --variant <variant> <kernel> authority`) covers that by walking
+the linked kernel's call graph to the power primitives, with stated
+exceptions under `scripts/gates/authority/`.
 
 ## Further reading
 
@@ -344,6 +345,7 @@ primitives, with stated exceptions under `scripts/gates/authority/`.
 | `abi/src/syscall/numbers.rs` | Every call number |
 | `abi/src/caps.rs`, `slopos-ostd/src/authority/` | The capability bits, and what each one gates |
 | `abi/src/base_interface.rs`, `scripts/check_base_interface.sh` | The base interface number and the gate that holds the private surface to it |
+| `tools/xtask/src/elf/authority.rs`, `tools/xtask/src/lint/syscall_abi.rs` | The call-graph gate, and the gate that holds the numbers to Linux's table |
 | `slibc/src/pal/raw.rs`, `slibc/src/error.rs` | The C library's side: the `syscall` instruction and turning results into `errno` |
 
 [System call ABI](/docs/abi/syscalls) is the reference for numbers and

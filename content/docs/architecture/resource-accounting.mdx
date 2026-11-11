@@ -155,6 +155,9 @@ like this:
    or any other service holding a power the program lacks. Unlike `kill`,
    it doesn't look at user ids: the process it picks may belong to another
    person. Init, kernel threads and processes already dying are never chosen.
+   The shield is absolute, as `oom_score_adj=-1000` is on Linux, so a
+   privileged service that leaks memory is taken only by its own access,
+   once it is the heaviest process it may take.
 2. Of those, it picks the one holding the most of what ran out: promised
    memory if the ceiling was reached, RAM if RAM was. A memfd counts against
    the process that sized it, so mapping someone else's doesn't make you look
@@ -246,6 +249,15 @@ during a dying task's unwind. Tokens are unique by type, but only
 errno. `Process` and `CommitPages` count the whole subtree, the rest one
 process.
 
+**The commit ceiling** is the limit of the `CommitPages` kind on the root
+account. The `commit ledger` boot step installs it as `mem.commit=<percent>`
+of the usable frames (`0` records promises without refusing any) and
+registers the task half of the OOM killer. The same step derives the
+per-process `PinnedBytes` default from the same frame count: the share of
+the file map one owner may hold, and never less than the default in
+`slopos_abi::quota`, which is sized for an appliance. It logs the result in
+one `commit:` line.
+
 **The account tree** has its own parent edge, separate from the wait parent.
 When a parent's account is released, its children's edges move up to the
 grandparent's, so an orphan stays counted against the same ancestors instead
@@ -266,9 +278,15 @@ moves onto the zombie leader, held by the person's row
 move too when its sizer dies (`ChargeSlot::bequeath`), to the root, which is
 never released.
 
-**Commit classes** decide how each memory region is charged. A class never
-moves back; only `Unreserved` changes, the first time a protection lets its
-pages be populated.
+**Commit classes** decide how each memory region is charged, and
+`VmaRegion::commit` holds a region's class. A class never moves back:
+`commit_under`, which answers the class a region holds under a new
+protection, moves only an `Unreserved` region, the first time a protection
+lets its pages be populated. `MAP_NORESERVE` is recorded on the region, so
+such a region becomes `Frames` and never `Extent`, however `mprotect` later
+rewrites its protection. A `Forked` region has paid for exactly its present
+pages that are not marked copy-on-write, so a second fork that marks them
+again, an unmap and teardown each refund them.
 
 | Class | Regions | Charged |
 |---|---|---|
@@ -279,6 +297,16 @@ pages be populated.
 
 **The OOM path** (`mm::oom`) weighs `CommitPages` when the ceiling refused the
 page and `ResidentPages` when the frame allocator was empty after reclaim.
+Both are read from the row's own share, which the ledger keeps beside the
+subtree total (`quota::held_by`), so a child's holdings never weigh on its
+parent. A shared memfd or SlopRing region is populated whole from `mmap` to
+unmap, so `VmaMap` subtracts its span from the present pages it reports as
+`ResidentPages`, and the memfd of the process that sized it holds the frame
+charge beside the commit one. Counting present pages alone would charge a
+shared page to every mapper and a held memfd to nobody, and then any process
+could pad another's count to make it the victim. A file page counts toward
+each process that faulted it in, which only that process's own faults can
+do.
 The victim unwinds through the kill flag in its own context (see
 [Scheduling and waiting](/docs/architecture/scheduler-wait-protocol)); a
 writer with nothing to take dies with `TaskFaultReason::UserOom`. Kernel
@@ -286,7 +314,12 @@ writes for a task (a system call's user copy, the signal frame) take the same
 path where they may block. A copy that cannot block (under a spinlock, in an
 interrupt handler, with interrupts masked) answers `EFAULT` at once; one the
 killer found nothing to free for answers `EFAULT` too, and a signal frame that
-cannot be pushed ends the task with `SIGSEGV`.
+cannot be pushed ends the task with `SIGSEGV`: at once for a fault signal's
+frame, after one deferral for any other, as Linux's `force_sigsegv` does,
+because a signal retried forever is never reported. The frame is pushed on
+a trap's way out, so delivery first steps out of interrupt nesting and turns
+interrupts on, as the page fault (`#PF`) path does. That is what lets the
+push wait for the killer.
 
 ## Further reading
 

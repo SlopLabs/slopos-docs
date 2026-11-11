@@ -11,9 +11,11 @@ it takes and the gate or test that fails when the rule is broken. Files that
 one base program keeps on the root for its own later runs, such as
 `bootctl`'s slot records under `/var/lib/slopos/slots` and the saved keyboard
 layout in `/etc/keymap`, are unversioned in the same way and are not listed. A script
-under **Checked by** runs from `just check-framekernel-gates`, which CI runs,
-unless the entry says otherwise; a name ending in `_test` is a userland test
-that `just test` runs.
+or an `xtask lint` gate under **Checked by** runs from
+`just check-framekernel-gates`, which CI runs, unless the entry says
+otherwise ([Toolchain gates](/docs/verification/toolchain-gates) describes
+the gates themselves); a name ending in `_test` is a userland test that
+`just test` runs.
 
 ## Levels
 
@@ -102,7 +104,7 @@ interface lasts.
   call that takes Linux's idea but not yet its shape goes in the private range
   with a line in `scripts/gates/syscall/private-allowlist.txt` saying why, and
   moves to Linux's number once it takes Linux's shape.
-- **Checked by:** `scripts/check_syscall_abi.sh`, against
+- **Checked by:** `xtask lint syscall-abi`, against
   `scripts/gates/syscall/linux-x86_64.tbl` (the `common` and `64` rows of
   Linux's `syscall_64.tbl`). It fails on a constant sitting on a number Linux
   gave another name, a number past `SYSCALL_LINUX_MAX`, a number or name
@@ -367,7 +369,7 @@ interface lasts.
   call, without the library between.
 - **Level:** grows only, because the one interface it uses is the
   [C library](#c-library).
-- **Checked by:** `scripts/check_loose_programs.sh`, after every host
+- **Checked by:** `xtask programs`, after every host
   userland build on `builddir/apps/bin/*` and on the tests' extension
   programs, and in `scripts/build_extension.sh`. `extctl` refuses an
   extension's program that is static, or that binds a name neither `libc.so`
@@ -387,7 +389,7 @@ interface lasts.
 - **Held by:** an app names neither the kernel's ABI, the drawing internals
   nor the compositor connection beneath appkit, which all change with the
   base.
-- **Checked by:** `scripts/check_app_deps.sh`.
+- **Checked by:** `xtask lint app-deps`.
 - **See:** [Write an app](/docs/development/writing-an-app),
   [Desktop](/docs/architecture/desktop).
 
@@ -833,12 +835,12 @@ interfaces are the ones that cross that gap.
 - **What:** the lines the kernel prints for the ratchets: `LOCKDEP[`,
   `LOCKDEP-CLASS[`, `QUOTA[`, `SCHEDCPU[`, `FSPERF[`, `FSCAP[` and `PROF[`,
   each followed by a phase or label.
-- **Between:** the kernel and the scripts that read a test run's capture:
-  `scripts/check_lockdep_headroom.sh`, `scripts/check_quota_headroom.sh`,
-  `scripts/check_sched_spread.sh`, `scripts/check_fs_throughput.sh` and
+- **Between:** the kernel and the host tools that read a test run's capture:
+  the log gates of `tools/run_tests` (`run_tests gate lockdep`, `quota`,
+  `sched` and `fsperf`, which `just check-capture` runs together) and
   `scripts/prof_report.py`.
 - **Level:** private.
-- **Checked by:** each ratchet's `--self-test`, which drives crafted logs
-  through its parser.
+- **Checked by:** the gates' Go tests (`just check-tests-host`), which drive
+  crafted logs through each parser.
 - **See:** [Safety gates](/docs/verification/tcb-discipline),
   [Diagnostics](/docs/development/diagnostics).
