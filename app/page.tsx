@@ -101,9 +101,9 @@ export default function HomePage() {
               <div className="hero__photo">
                 <Image
                   src="/images/slopos-on-hardware.jpg"
-                  alt="The SlopOS desktop running on a Lenovo laptop, showing the terminal, file manager, system monitor and image viewer"
-                  width={1680}
-                  height={1045}
+                  alt="The SlopOS desktop running on a Lenovo laptop, showing the terminal, text editor, settings, file manager, system monitor and image viewer"
+                  width={1536}
+                  height={1054}
                   priority
                   sizes="(max-width: 1023px) 100vw, 58vw"
                 />
