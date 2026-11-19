@@ -128,8 +128,8 @@ belongs to an [extension](/docs/architecture/extensions), the new program
 starts with `AT_SECURE` set. That is a flag in the startup information the
 kernel gives every program (the *auxiliary vector*), and it tells the C library and the loader not to
 trust the environment the caller left: the loader ignores `LD_LIBRARY_PATH`
-and `$ORIGIN` and skips the libraries under `/usr/local/lib` and
-`~/.local/lib`, and `secure_getenv` returns nothing. An extension's program
+and `$ORIGIN` and skips the libraries under `~/.local/lib`, and
+`secure_getenv` returns nothing. An extension's program
 is marked whoever starts it, because it speaks as its extension, which its
 starter does not: a library taken from where the starter points would act
 under the extension's name.

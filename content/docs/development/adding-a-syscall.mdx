@@ -273,26 +273,27 @@ exported symbols and the layout of every structure its headers define only
 ever grow. Check the library you just built against the recorded list:
 
 ```bash
-scripts/check_libc_exports.sh
+just libc-exports
 ```
 
 A new function is reported until you record it:
 
 ```
-check_libc_exports: exports are not recorded yet (run with --record):
-    sigpending: not recorded
+libc-exports: sigpending: added — not recorded
+libc-exports: FAIL — 1 finding
+libc-exports: added: exports are not recorded yet (run `just libc-exports --record`)
 ```
 
 ```bash
-scripts/check_libc_exports.sh --record
+just libc-exports --record
 ```
 
 `--record` adds `sigpending func` to `scripts/gates/libc/exports.txt` (and a
 new header structure to `scripts/gates/libc/layouts.txt`); commit that change
 with the function. It only adds lines: it refuses while anything recorded
-was removed or changed, because that breaks programs already built. It needs
-the host clang the C++ runtime build uses (`scripts/cxx_host_tools.sh`) to
-measure the header layouts.
+was removed or changed, because that breaks programs already built. It
+measures the header layouts with the host clang `scripts/cxx_host_tools.sh`
+resolves, and neither half is ever skipped. The gate runs on SlopOS too.
 
 ### A SlopOS-only call: a wrapper for base programs
 
@@ -313,36 +314,35 @@ pub fn caps_get(pid: u32) -> super::error::SyscallResult<u64> {
 
 slibc makes a private call only to implement a C function; `getlogin` reads
 `login_tag` that way. The apps outside the base never make one:
-`xtask programs`, which every userland build on the host runs over them,
-fails any that holds a `syscall` instruction, so a function they need goes
-into `libc.so` as above.
+`xtask programs`, which runs over them as their image is packed, fails any
+that holds a `syscall` instruction, so a function they need goes into
+`libc.so` as above.
 
 ## 6. Take the next base interface number
 
-Skip this step for a Linux-numbered call that changes no SlopOS structure.
-
-A base is built against one interface number and a kernel serves a range of
-them, so a private call's number, signature and structures may not change
-while the number stays. Adding `caps_get` changed that surface, and the gate
-says so, naming the number the tree is at:
+Every new call takes this step. The base interface covers the private calls
+and which Linux calls the kernel answers, because a base that starts using a
+call the kernel has just gained would otherwise run on a kernel without it.
+Registering `rt_sigpending` in `SYSCALL_TABLE` changed that surface as surely
+as adding `caps_get` did, and the gate says so, naming the number the tree is
+at:
 
 ```bash
-scripts/check_base_interface.sh
+just base-interface
 ```
 
 ```
-check_base_interface: the private call surface changed under an issued number:
-    interface <n> is recorded as …, but the surface now digests to …
+base-interface: scripts/gates/base-interface.txt: bump: interface <n> is recorded as …, but the surface now digests to …
+base-interface: FAIL — 1 finding
 ```
 
-1. Raise `BASE_INTERFACE` in `abi/src/base_interface.rs` by one.
-2. Decide `BASE_INTERFACE_MIN`. It rises only when the change reshapes
-   something an older base calls. An addition like `caps_get` leaves it, and
-   so does a call taken away, whose slot then answers `ENOSYS`.
-3. Record the new number:
+1. Raise `BASE_INTERFACE` in `abi/src/base_interface.rs` by one. Leave
+   `BASE_INTERFACE_MIN` alone: before version 1 it is `BASE_INTERFACE`, so a
+   kernel serves only its own tree's base.
+2. Record the new number:
 
    ```bash
-   scripts/check_base_interface.sh --record
+   just base-interface --record
    ```
 
    This appends `interface <n> <sha256>` to the ledger at the end of
@@ -352,14 +352,15 @@ check_base_interface: the private call surface changed under an issued number:
 Run the gate again and it passes:
 
 ```
-check_base_interface: OK — <calls> private calls, <lines> surface lines, digest <first 16 hex digits>…
-check_base_interface: matches the ledger's row for BASE_INTERFACE
+base-interface: OK — <calls> private calls, <linux> Linux calls, <lines> surface lines in all, digest <first 16 hex digits>…, the ledger's row for interface <n>
 ```
 
-To see exactly what moved, compare `scripts/check_base_interface.sh --print`
+To see exactly what moved, compare `just base-interface --print`
 before and after your change. If your call reads or writes a record behind a
 byte buffer, or takes an op word from a family of constants, add a `root`
 line for it to `scripts/gates/base-interface.txt` so the gate covers it.
+`just install` runs both gates on SlopOS before it writes anything, and the
+gates' own fixtures are `cargo test -p slopos-xtask`.
 
 ## 7. Test it
 
@@ -470,12 +471,13 @@ Finally, add the call to [System call ABI](/docs/abi/syscalls).
 
 - **The build fails on `CAP_COUNTS`.** You added a row but didn't update the
   counts, or gave the call a different class than you counted. See step 4.
-- **`check_base_interface` reports a changed surface.** You added or changed
-  a private call, or a structure one reaches, without a new number. See
-  step 6. A private call whose doc comment has no backticked signature fails
-  the same gate with `its docs carry no ... code span`.
-- **`check_libc_exports` reports an export not recorded.** Record it with
-  `--record`. If it reports one removed or changed, a function was renamed or
+- **`base-interface` reports `bump` or `unrecorded`.** You added or changed
+  a call, or a structure a private one reaches, without a new number, or
+  raised the number without recording it. See step 6. A private call whose
+  doc comment has no backticked signature fails the same gate with a
+  `signature` finding.
+- **`libc-exports` reports an export `added`.** Record it with
+  `--record`. If it reports one `removed`, a function was renamed or
   a structure moved, which breaks programs built outside the base; put it
   back.
 - **A test passes but a program gets `EFAULT`.** The handler read program

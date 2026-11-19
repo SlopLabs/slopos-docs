@@ -238,6 +238,15 @@ The rules any change to this boundary must keep:
   privilege and nested-task flags on `SYSCALL`, and the trampoline re-enables
   interrupts. `STAR` follows the AMD64 selector order, with user data before
   user code in the GDT.
+- **Every IDT stub clears the direction flag.** Each enters through the
+  `INTERRUPT_ENTER` macro of `slopos-ostd/src/irq/asm/handlers.s`, which
+  runs `cld` before it calls `common_exception_handler`. A program may set
+  the flag, and the kernel's own backward `memmove` runs with it set; a
+  handler entered that way would run every forward `rep movs` and `rep stos`
+  downwards, and a context switched out there would resume the same way.
+  `IRETQ` gives the interrupted code its flag back. `SFMASK` is the same
+  rule for `SYSCALL`. `test_interrupt_handler_runs_with_direction_flag_clear`
+  holds it.
 - **Every context switch** points `TSS.RSP0` and the per-CPU `SYSCALL` stack
   at the incoming task's kernel stack, so no entry can land on another task's
   stack.

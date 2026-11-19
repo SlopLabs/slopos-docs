@@ -115,31 +115,40 @@ installs one called `hello`, whose daemon `hellod` runs as its own user and
 whose command `hello` goes on the `PATH`:
 
 1. **Read and check, as the person.** `extctl install hello.ext` opens the
-   image, computes its root, reads its declaration and works out the grant:
+   image, computes its root, reads its declaration and works out the grant.
+   If `hello.meta.sig` lies beside it, it also notes which key signed the
+   image, trusted or not; otherwise the signer is nobody:
 
    ```text
    grant - unasked - users hello commands hello
    ```
 
    It then checks the request against the store as it stands, so the person
-   is only ever asked about something that would go in.
+   is only ever asked about something that would go in. That check is what
+   the image says (its name, grant, signer, ceilings and clashes); the
+   contents are the mechanism's to check, after the copy.
 2. **Ask.** `extctl` asks privd for the action
    `org.slopos.extension.install`. The command line privd runs names the
-   image's root and the grant in full, so that is what the person approves:
+   image's root, its signer and the grant in full, so that is what the
+   person approves (privd shows the signer as *Signed by*):
 
    ```text
-   /bin/extctl install hello.ext 3f9c…e1 name hello grant - unasked - users hello commands hello
+   /bin/extctl install hello.ext 3f9c…e1 name hello signer nobody grant - unasked - users hello commands hello
    ```
 
    An administrator approves it when privd asks; a person who is not an
    administrator needs an administrator's password.
 3. **Check again, as the mechanism.** privd runs `extctl` again as uid 0
    holding two capabilities, `ExtensionUpdate` and `Seal`. It reads the
-   image itself and refuses it if it is not the root that was approved or
-   asks for anything the grant line does not say. It holds the image to the
-   rules every install keeps:
+   image itself and refuses it if it is not the root that was approved, was
+   not signed by the signer named, or asks for anything the grant line does
+   not say. It holds the image to the rules every install keeps:
 
    - the name is valid, not reserved for the system, and not a person's;
+   - a name's images are one publisher's: an image signed by another key
+     than the one that signed the installed images (or by a key, when nobody
+     signed them) is refused as *another publisher's image of hello*, even
+     when a person approves it;
    - the version is above every version installed before (the same version
      only with the same bytes);
    - every capability asked for is inside the *base's ceiling*
@@ -149,10 +158,14 @@ whose command `hello` goes on the `PATH`:
    - every program binds only what `libc.so` and the image's own libraries
      export;
    - no other installed extension declares the same command or user.
-4. **Store.** The image is copied into the store, sealed, and read back whole
-   against its root, so damage on the way in is found now rather than at
-   some later read. A new record says what was installed and what it was
-   granted, and gives `hello` a uid.
+4. **Store.** The image is read once. `extctl` copies it into the store in
+   large chunks while another thread hashes each block into the tree and
+   each file against the manifest as the chunks pass, and the copy is
+   refused unless the tree's root is the one named. The copy is sealed and
+   read back as far as its tree, so damage on the way in is found now: every
+   later reader holds each data block to that tree anyway. A new record says
+   what was installed, who signed it and what it was granted, and gives
+   `hello` a uid.
 5. **Show.** `extctl` asks the kernel to activate the image at `/opt/hello`
    (next section). Then it writes the user database, links
    `/opt/bin/hello`, and tells init, which starts `hellod`.
@@ -163,17 +176,37 @@ The terminal says what happened:
 hello 1 installed; it runs as activation 3
 ```
 
+On a terminal, `extctl install` keeps one line on standard error up to date
+while it works: reading the image, copying it with a progress bar, saving
+the copy, checking its files, starting it and finishing, each with how long
+it has run. The line is taken back before the result, which ends with how
+long the install took.
+
 A second way in needs no question. The owner can trust an Ed25519 SSH key
 with `extctl key add`, giving it two limits: a *ceiling* of capabilities its
 extensions may hold, and a `user` ceiling for what their unasked actions may
 hold (below). An image packed with a *sidecar*, a three-line file naming the
 extension, its version and its root, and signed with that key goes in with
 `extctl install-signed` with no question to an administrator who runs it, as
-long as it fits both ceilings and the base's. Updates signed by the key that installed an
-extension go in the same way. Any other update is a first install: the
-person approves it, and from then on the record names no key. A signed
-update does not turn back on an extension the person turned off, and does
-not bring back one the person removed.
+long as it fits both ceilings and the base's. The record keeps the key that
+signed a name's images, and a name's images are one publisher's: that key's
+updates go in unasked while it is trusted, the person can approve one by
+hand like a first install, and an image another key signed is refused. A
+signed update does not turn back on an extension the person turned off, and
+does not bring back one the person removed.
+
+A third way is for software the system itself ships. An image uid 0 puts in
+`/var/lib/slopos/offered`, as `<name>.ext` beside its sidecar, goes in at
+boot with nobody asked: init runs `extctl install-offered` after the user
+database is brought up to date and before the extensions start (not with
+`extensions=off`), and a live boot offers the install medium's `images/`.
+Only uid 0 can write that directory, the ones above it and the files in it.
+An offered image must ask for nothing: no user, service, action, state,
+settings or runtime directory. It must be signed by nobody, and it never
+goes in over a name a key's images hold, a name that was removed, or a
+version that was rolled back from. A version the record already has is
+passed over without opening the image, and an extension the person turned
+off stays off.
 
 **Versions only go up.** The record keeps a *version floor*: each install
 raises it to the version installed, and only a rollback lowers it. A version
@@ -181,8 +214,10 @@ below the floor is refused, and so is the floor's own version with other
 bytes. `extctl rollback hello` makes the previous image current again and
 lowers the floor to it, but the version it left is refused to signed
 installs until a newer one goes in, so an update withdrawn for a fault
-cannot come back unasked. Removing an extension keeps its record, floor and
-uids.
+cannot come back unasked. `extctl remove hello` takes the extension away
+with its data, settings and log, and gives up the name: its record keeps
+only its retired uids and its settings' serial number, and any publisher's
+image of `hello` then goes in as a first install, never unasked.
 
 ### How an image appears under /opt
 
@@ -224,18 +259,21 @@ in secure mode (`AT_SECURE`, which
 [Capabilities](/docs/architecture/authority) describes). A program of an
 extension speaks as that extension to privd and to its peers, so it must not
 load a library from wherever the person or program starting it points. In
-secure mode the loader ignores `LD_LIBRARY_PATH`, `$ORIGIN` and relative
-directories, `$HOME/.local/lib` and `/usr/local/lib`, and searches
-`/opt/<name>/lib` after `/lib` and `/usr/lib`, once the kernel has confirmed
-that the program is a file of that extension's activation.
+secure mode the loader ignores `LD_LIBRARY_PATH`, `$ORIGIN`, relative
+directories and `$HOME/.local/lib`, and searches `/opt/<name>/lib` after
+`/lib` and `/usr/lib`, once the kernel has confirmed that the program is a
+file of that extension's activation.
 
 Replacing an extension with a new image swaps the mount in one step. Whatever
 still uses the old one (an open file, a mapping, a program running from it)
 keeps it, and the kernel frees it once nothing does, as it does for a
-replaced base generation. The kernel holds at most 32 activations at once,
-counting those still held after being replaced, so with all of them in use
-an extension can be turned off but not updated until one is freed. The log
-records each step:
+replaced base generation. There is no fixed number of activations: the ones
+held at once (counting those still held after being replaced) may use up to
+an eighth of usable memory for their indexes, the tree blocks they keep and
+their bookkeeping. Past that, showing another image fails with `EBUSY`, so
+an extension can be turned off but not updated until one is freed. A
+volume's block cache is not counted, since the kernel can reclaim it. The
+log records each step:
 
 ```text
 EXT: activation 3 is hello
@@ -247,6 +285,10 @@ Activation is not a one-time check. At every boot init runs
 `extctl activate-all`, before privd and the services start, and that holds
 each enabled extension's stored image to its record, to its key if a key
 installed it, to the base's ceiling and to the running `libc.so` again.
+The last check does not read the image's programs: an install keeps the
+names they bind that none of the image's own libraries export, in a sealed
+list beside the image, and each activation holds the base's `libc.so` to
+that list, so an older base's smaller `libc.so` still stops it.
 `enable` and `rollback` do the same, and so does trusting or removing a key,
 for the extensions that key installed. An extension that no longer fits (its
 key was removed, a ceiling was lowered, a new base's ceiling is smaller) is
@@ -256,11 +298,14 @@ stopped, and its record says why.
 
 An extension gets users of its own. The record gives the extension's name and
 each user it declares a uid between 100 and 999, the lowest one no record
-holds, and keeps it for good, even after removal, so files the extension left
-keep their owner. The user database lists installed extensions' users after
-the people, each with a group of its own and its home at `/var/lib/<name>`.
-An extension never runs as uid 0, and never as a person except for its
-session services.
+holds; an extension that declares no user takes no uid. Removal does not free
+the uids at once. They stay *retired* while a program runs as one of them or
+something they own is left: `extctl remove` takes away what they own directly
+in `/tmp`, `/var/tmp` and `/dev/shm`, and gives the uids back only when
+nothing of theirs is found deeper. Until then a later `remove` tries again.
+The user database lists installed extensions' users after the people, each
+with a group of its own and its home at `/var/lib/<name>`. An extension
+never runs as uid 0, and never as a person except for its session services.
 
 Init runs each service an enabled extension declares
 ([Init and services](/docs/architecture/init) covers the general rules):
@@ -344,15 +389,15 @@ the extension's other actions still load.
 
 **Commands.** For each `command` an extension declares, `extctl` keeps a link
 in `/opt/bin` to `/opt/<name>/bin/<command>`. `/opt/bin` comes last on the
-default `PATH` (`/bin:/sbin:/usr/local/bin:/opt/bin`), so an extension's
-command never shadows a base tool or software in
-[`/usr/local`](/docs/architecture/software). Two extensions declaring the
-same command are refused at install.
+default `PATH` (`/bin:/sbin:/opt/bin`), so an extension's command never
+shadows a base tool. Two extensions declaring the same command are refused
+at install. The shell finds a command's completions in its image's
+`share/shell/completions`, through its `/opt/bin` link, before the base's.
 
 **Apps.** The dock reads an extension's app entries from
-`/opt/<name>/share/slopos/apps` before the base's, `/usr/local`'s and the
-person's own, so an extension adds apps but replaces none. It shows only
-the apps the extension declares.
+`/opt/<name>/share/slopos/apps`, and an entry the base or the person's
+`~/.local` has of the same id wins, so an extension adds apps but replaces
+none. It shows only the apps the extension declares.
 
 **Settings.** An extension that declares `config` gets `/etc/<name>`, a
 sealed directory of sealed files that everyone can read and only a holder of
@@ -372,7 +417,8 @@ Everything `extctl` keeps lives in `/var/lib/slopos/extensions`: the trusted
 keys as `keys.<n>`, and for each extension a directory of its own, `<name>/`,
 holding its record as `record.<n>` beside its current and previous images,
 each named by its root (`<root>.ext`, with `<root>.meta` and
-`<root>.meta.sig` when a key signed it).
+`<root>.meta.sig` when a key signed it, and `<root>.needs`, the names its
+programs need from `libc.so`).
 
 Nothing in the store is ever renamed or rewritten in place. A changed record
 or key list goes in as the next numbered generation, is sealed and read back,
@@ -388,8 +434,9 @@ The seal is what protects it: a process that may override file permissions
 key, and anything unsealed in the store is not believed. The kernel keeps the
 store's directory, and each directory on the way to it, where it is: nothing
 can rename or remove them, and no mount can cover them. A filesystem in
-memory can set a seal but never take it off again, which a writer has to do
-to add a generation, so extensions need a disk root.
+memory takes a seal off as a disk's does, so the store also works on a live
+boot's RAM root; the user database does not, so an offered image is all a
+RAM root installs.
 
 ## What it means in practice
 
@@ -401,10 +448,12 @@ something are privd [actions](/docs/abi/privd-actions):
 | `extctl status [<name>]` | Lists the trusted keys and each extension: enabled or not, running or not, its floor, uids and images | Nobody |
 | `extctl install <image>` | A first install, granting what the image declares | An administrator confirms |
 | `extctl install-signed <image>` | Installs or updates an image signed by a trusted key | Nobody, for an administrator |
+| `extctl install-offered [<dir>]` | Installs what uid 0 offers in `/var/lib/slopos/offered`, run by init at boot | Nobody; init runs it |
 | `extctl key add <key.pub> ceiling <caps> user <caps>`, `key remove <fingerprint>` | Trusts or stops trusting a signing key | An administrator confirms |
-| `extctl enable`, `disable`, `remove`, `rollback <name>` | Turns an extension on or off, removes its images, or goes back to the previous one | An administrator confirms |
+| `extctl enable`, `disable`, `rollback <name>` | Turns an extension on or off, or goes back to the previous one | An administrator confirms |
+| `extctl remove <name>` | Removes an extension with its data, settings and log, giving up the name | An administrator confirms |
 | `extctl config edit <name> <file>` | Edits a settings file in `/etc/<name>` | An administrator confirms |
-| `extctl config apply <file>` | Installs a settings file the extension's key signed | Nobody, for an administrator |
+| `extctl config apply <file>` | Installs a settings file signed by the key of the extension's current image | Nobody, for an administrator |
 | `extctl build <dir> [<out-dir>]` | Packs a laid-out tree into an image and sidecar | Nobody |
 
 A person who is not an administrator needs an administrator's password for
@@ -422,8 +471,8 @@ nothing in userland can override it). From the install medium's
 
 For a developer, an extension is the way to ship anything that needs a
 daemon, a capability or a privileged helper without rebuilding the base.
-Ordinary apps don't need one: they install into `/usr/local` or `~/.local`
-as [installed software](/docs/architecture/software).
+Ordinary apps don't need one: they install into `~/.local` as
+[installed software](/docs/architecture/software).
 
 ## Differences from systemd-sysext
 
@@ -466,9 +515,17 @@ that meets it to fail. On the host, the hash tree is checked against what
 - **Read `SO_PEEREXTENSION` before `SO_PEERPROGRAM`.** A recorded identity
   only ever lapses, so reading the label first means a lapse between the two
   reads gives no program rather than a path that looks like the base's.
-- **Locks nest as the layers do.** An activation's lock comes before its
-  device's (`EXT_VERITY`), which comes before the filesystem holding the image
-  file. Nothing below a disk's filesystem may read an activation.
+- **Locks nest as the layers do, and none is held across a read.** An
+  activation's lock comes before the filesystem holding the image file, and
+  only reads that go through that filesystem take it. A sealed image file
+  whose every block is at its home (`FileSystem::file_runs`, mapped once at
+  activation) is read straight off its filesystem's device by those runs.
+  The verifying device checks each block it reads (`verity::check`); the
+  levels above the leaves, up to 256 blocks, are read and checked at open
+  and kept, and 64 leaves are kept under `EXT_VERITY_KEPT`, a spinlock never
+  held across I/O. A seal taken off the file later fails reads with `EIO`,
+  never other bytes. Nothing below a disk's filesystem may read an
+  activation.
 - **Store writers never rename.** They lock
   `/var/lib/slopos/extensions.lock` (`EXTENSION_STORE.lock`, mode 0600),
   ignore the termination signals privd relays, write a new generation, seal
@@ -487,14 +544,27 @@ that meets it to fail. On the host, the hash tree is checked against what
   mount under the mount table's lock (`vfs::mount::mount_replacing`), keeping
   the mount's id, and mounts it read-only and `MOUNT_PINNED`. A mount at
   `/opt/<name>` that is not an activation is neither replaced (`EBUSY`) nor
-  taken away by `ext_deactivate` (`ENOENT`). The mount table has one slot for
-  each of the pool's `MAX_ACTIVATIONS` beside its own, so raising one means
-  nothing for the other.
+  taken away by `ext_deactivate` (`ENOENT`). One filesystem,
+  `extension::ACTIVATIONS`, serves every activation at a mount of its own;
+  a call finds its activation by the number in the inode's high half, and
+  `is_activation` is one identity compare. An activation's `Ext4Mount`,
+  index and device are kernel heap made at `ext_activate` and freed by the
+  reaper, held to `extension::budget()`; the reclaimer only `try_lock`s the
+  activations. The mount table is a heap vector sorted by path, grown
+  outside its IRQ lock, with no fixed size.
 - **The kernel's volume cache is small on purpose.** An activation's
   `Ext4Mount` keeps no name cache, looks for no CRC trailer, and its block
   cache starts at `READ_ENTRIES_MIN` frames and grows no further than the
   volume, because many activations may be resident at once and none is ever
-  written.
+  written. A mapping's page fills (`read_pages`) keep nothing in that cache:
+  the file map is the one cache of what a mapping reads. Lookups (but for
+  `.` and `..`) and `stat` are answered from the activation's index, which
+  keeps each entry's `stat` from its walk, without the volume's lock.
+- **`verity-core` is optimized in dev builds too.** Every block an image
+  serves is hashed, so `[profile.dev.package.slopos-verity-core]` builds it
+  at `opt-level = 3`. It hashes through the `sha256::Compress` a source
+  chooses; `extctl` takes `sha256::ni`, the CPU's SHA instructions, when
+  `ni::present()` finds them (userland only: the kernel is soft-float).
 - **Every extension program starts `AT_SECURE`.** `exec_image` sets it for
   any image the kernel attests as an extension's, whatever the caller asked
   for. Without it, a library that maps nothing executable, loaded from the
@@ -509,9 +579,14 @@ that meets it to fail. On the host, the hash tree is checked against what
 - **An `ExtensionUpdate` holder is not held to a `DiskBlocks` ceiling.** It
   stores whole images in one process, as the installer fills a root, so the
   per-process disk quota does not bind it. Every image it stores is copied
-  with its holes kept, sealed, and held whole to its root; a copy that fails
-  is removed, and an image already in the store is held to its root again
+  with its holes kept, sealed, and read back against its tree
+  (`image::verify_tree`); a refused copy is taken away by the store's
+  collect, and an image already in the store is held to its tree again
   before it is reused.
+- **Install checks split into what an image says and what it holds.**
+  `admit::install` judges name, grant, signer, ceilings and clashes, and is
+  all a requester checks before privd asks; `admit::contents`, the manifest
+  and the symbol check, runs in the mechanism after the copy.
 - **The kernel keeps the store's directories in place.** They are
   `slopos_abi::fs::KEPT_DIRS`, made once the root and the `mount=` volumes
   are mounted, so a `/var` on a volume of its own holds the store. Renaming
@@ -587,7 +662,7 @@ that meets it to fail. On the host, the hash tree is checked against what
 |---|---|
 | `extension-core/` | The image (`slopos_extension_core::image`), volume, declaration (`slopos_extension_core::declare`), grant, sidecar, record, keys and ceiling as data, the uids (`accounts.rs`), and the install and activation checks (`admit.rs`); host-tested |
 | `verity-core/` | SHA-256 and the dm-verity hash tree (`slopos-verity-core`), shared by the kernel and the tools |
-| `fs/src/extension/` | Activations: the verifying device (`extension::device`), the path index (`extension::index`), the pool of 32 |
+| `fs/src/extension/` | Activations: the verifying device (`extension::device`), the path index (`extension::index`), the shared filesystem and memory budget (`extension::ACTIVATIONS`, `extension::budget`) |
 | `fs/src/vfs/mount.rs` | Swapping an activation's mount in one step |
 | `core/src/syscall/fs/base_handlers.rs` | `ext_activate` and `ext_deactivate` |
 | `core/src/exec/mod.rs` | Starting an extension's program in secure mode (`exec_image`) |

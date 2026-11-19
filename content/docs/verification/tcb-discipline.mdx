@@ -112,8 +112,8 @@ and programs built outside the base change on separate schedules.
 | Gate | Fails when |
 |---|---|
 | `syscall-abi` | A syscall number disagrees with Linux x86-64's table (vendored as `scripts/gates/syscall/linux-x86_64.tbl`), the Linux-numbered range does not end where that table does, the private numbers leave a hole, a number or name is defined twice, or a private call shares a Linux call's name without a reason in the allowlist there |
-| `scripts/check_base_interface.sh` | The private call surface (every private syscall's number and documented signature, and every `slopos-abi` item those reach, as rustdoc's JSON describes them) no longer matches the digest recorded for the current `BASE_INTERFACE` number in `scripts/gates/base-interface.txt`, or a private call's documentation states no signature. A changed surface takes the next number; `--record` appends its row, and an issued row is never rewritten |
-| `scripts/check_libc_exports.sh` | A dynamic symbol `libc.so` exports disappears or changes kind or size, or a struct or union `slibc/include` defines disappears or changes size, alignment or a field offset, against `scripts/gates/libc/`; or a new export or structure has not been recorded there. `--record` records additions and refuses while anything recorded was removed or changed. Skipped without a built library, and the layout half without the host clang; CI's toolchain job passes `--require` |
+| `base-interface` (`just base-interface`) | The call surface no longer matches the digest recorded for the current `BASE_INTERFACE` number in `scripts/gates/base-interface.txt`. The surface is every private syscall's number and documented signature, and every `slopos-abi` item those reach, as rustdoc's JSON describes them, plus one `linux <n> <SYSCALL_NAME>` line for each Linux-numbered call the kernel answers (the rows of `static SYSCALL_TABLE` in `core/src/syscall/handlers.rs`). It also fails when a private call's documentation states no signature, a name resolves to no item (`unresolved`), a Linux row's number is at or above `SYSCALL_PRIVATE_BASE` (`range`), or fewer than 100 rows were read. A changed surface takes the next number; `--record` appends its row, and an issued row is never rewritten |
+| `libc-exports` (`just libc-exports`) | A dynamic symbol `libc.so` exports disappears or changes kind or size, or a struct or union `slibc/include` defines disappears or changes size, alignment or a field offset, against `scripts/gates/libc/`; or a new export or structure has not been recorded there. It reads `.dynsym` with the `object` crate and the layouts from the record-layout dump of the clang `$CLANG` names. `--record` records additions and refuses while anything recorded was removed or changed. Neither half is ever skipped: a missing library or clang is an error |
 | `xtask programs` | A program shipped outside the base (the apps, an extension's programs) is static, names an interpreter other than `/lib/ld-slopos.so.1`, lacks `libc.so` in `DT_NEEDED`, or contains a `syscall` instruction of its own |
 | `app-deps` | A crate under `apps/` depends on anything but `slopos-appkit`, `slopos-editor-core` and `slopos-image` (dev-dependencies aside) |
 | `ui-literals` | An app constructs or derives a colour, or gives a spacing or inset a number, instead of naming the theme's roles and tokens; or appkit constructs a colour outside its tests. Apps are the files under `apps/`, the Settings panels in `settings-app/` and the modules of `userland/src/apps/` that implement appkit's `App`. A file whose colours are its content takes a line in `scripts/gates/ui-literals.txt` |
@@ -122,7 +122,9 @@ and programs built outside the base change on separate schedules.
 outside the base reach the system only through `libc.so`, and
 [Desktop](/docs/architecture/desktop) the theme the last gate protects.
 [Toolchain gates](/docs/verification/toolchain-gates) describes the two
-scripts and `xtask programs` in full.
+contract gates and `xtask programs` in full. Both contract gates are
+modules of `tools/xtask/src/contract`, run on SlopOS as on the host, and
+`just install` runs both before it writes anything.
 
 ## Kernel image gates
 
@@ -314,7 +316,7 @@ A new check is therefore a module with its fixtures as tests beside it:
 
 A new `scripts/check_*.sh` is refused in review. The scripts that remain
 drive toolchains and pinned sources (compilers, linkers, bootstrap, recipes,
-the C++ runtime, the base interface) and don't read source text or an ELF.
+the C++ runtime) and don't read source text or an ELF.
 The tests must plant what the gate rejects as well as what it accepts: a
 check that has never been seen to reject has not been seen to work. The
 module's `//!` comment states the invariant it holds and why, so change it
@@ -332,6 +334,6 @@ Each entry is listed, with its reason, in the gate that allows it. The
 | Global allocator and alloc-error handler (`#[global_allocator]`, `#[alloc_error_handler]`), which need a direct `extern crate alloc` | `kernel/src/main.rs` | `unsafe-outside-ostd`, `alloc-dep` |
 | `#[unsafe(link_section)]` on the base-interface note | `kernel/src/main.rs`: the note describes the kernel file, so the binary's own crate places it | `unsafe-outside-ostd` skips the file and `unsafe-expansion` the crate |
 | `#[unsafe(no_mangle)]` on `kernel_main`, `common_exception_handler`, `isr_iret_frame_corrupt` | `boot/src/ffi_boundary.rs`: called from assembly, so the names must resolve at link time | `unsafe-expansion` |
-| `#[unsafe(link_section)]` on the twelve registry sections and three Limine request sections | Emitted only by `registry_entry!` and `limine_request!` | `unsafe-expansion` |
+| `#[unsafe(link_section)]` on the twelve registry sections, three Limine request sections and `.slopos.cmdline` | Emitted only by `registry_entry!`, `limine_request!` and `cmdline_section!`. `.slopos.cmdline` holds the kernel's built-in boot words; `link.ld` asserts it is 512 bytes, and kernel code reads it only through `black_box`, since `bootctl` rewrites it after link | `unsafe-expansion` |
 | `unsafe impl` of `Pod`, `Zeroable`, `HermeticState`, `PcrStackTy`, and compiler-emitted `TrivialClone` | `Pod`/`Zeroable` derived. `HermeticState` is written by hand in the crates that save and restore state around a test, through the registry the `hermetic` crate walks; its `HermeticState::restore` is the one allowed `unsafe fn` | `unsafe-expansion` |
-| Executable `unsafe` in `vendor/unwinding`, `vendor/gimli` | Pinned annexes | `scripts/check_vendor_pin.sh` |
+| Executable `unsafe` in `vendor/unwinding`, `vendor/gimli` | Pinned annexes. `vendor/gimli` is its crates.io release unmodified and keeps its own `Cargo.lock`. `vendor/unwinding` is its release with three edits, which an upgrade re-applies before the pin row in `scripts/check_vendor_pin.sh` is refreshed: gimli's `read` feature in place of `read-core`; `StoreInVec` in `src/unwinder/frame.rs`, which keeps the unwind tables on the heap rather than in stack arrays; and no `stmxcsr`, `fnstcw`, `ldmxcsr` or `fldcw` in `src/unwinder/arch/x86_64.rs`, instructions the soft-float rule forbids the kernel. It omits the crate's `Cargo.lock`. Both keep cargo's `.cargo-ok` | `scripts/check_vendor_pin.sh` |

@@ -71,13 +71,14 @@ log:
 SYSCALL: Unknown syscall 1999 -> ENOSYS
 ```
 
-The private calls, with every structure they take, form the *base
-interface*: a numbered contract between the kernel and the base, the
-read-only userland it runs. A change to any private call takes the next
-number, and a kernel says which numbers it serves, so at boot it runs only a
-base built for a surface it has. [Base system](/docs/architecture/base)
-explains how that choice is made, and [System call ABI](/docs/abi/syscalls)
-lists every number and how the private range is organised.
+The private calls, with every structure they take, and the list of which
+Linux calls the kernel answers form the *base interface*: a numbered
+contract between the kernel and the base, the read-only userland it runs. A
+change to any of it takes the next number, and a kernel says which numbers
+it serves, so at boot it runs only a base built for a surface it has.
+[Base system](/docs/architecture/base) explains how that choice is made, and
+[System call ABI](/docs/abi/syscalls) lists every number and how the private
+range is organised.
 
 ### 4. The kernel checks permission
 
@@ -215,8 +216,9 @@ registers and returns to user mode with the `IRETQ` instruction.
   and the program ends with `SIGSEGV`.
 - **Private calls are held to the base interface.** A private call's number,
   arguments and structures don't change without the interface number
-  changing. A call that is taken away keeps its number and answers
-  `ENOSYS`, so an older base still boots without what that call did.
+  changing. Before version 1 a kernel serves only its own tree's interface,
+  so a call that is taken away keeps no number: the calls after it move
+  down, and the base and the kernel are replaced together.
 - **A crash in a handler usually costs only the caller.** If a handler
   panics, the kernel catches the panic at the dispatcher, logs it and ends
   the calling task, and the rest of the system keeps running. A boot
@@ -241,9 +243,10 @@ capability and fail the build when a count changes without the recorded
 number changing with it, so widening who can make a privileged call is always
 a visible, reviewed edit. A separate check reads the call graph of the linked
 kernel and fails if any handler can reach the power-off or reboot code
-without being classified for it or listed with a stated reason, and another
-holds the private calls and their structures, as the compiler's own
-documentation output describes them, to the digest recorded for the current
+without being classified for it or listed with a stated reason, and another,
+`just base-interface`, holds the private calls and their structures, as the
+compiler's own documentation output describes them, and the Linux calls the
+table answers, to the digest recorded for the current
 base interface number. Kernel tests that check whether a call is reachable go
 through the table entry, the same way a program does, because calling a
 handler directly skips the capability check. And the kernel and userland
@@ -344,7 +347,7 @@ exceptions under `scripts/gates/authority/`.
 | `core/src/syscall/macros.rs`, `core/src/syscall/args.rs` | `define_syscall!` and the argument types |
 | `abi/src/syscall/numbers.rs` | Every call number |
 | `abi/src/caps.rs`, `slopos-ostd/src/authority/` | The capability bits, and what each one gates |
-| `abi/src/base_interface.rs`, `scripts/check_base_interface.sh` | The base interface number and the gate that holds the private surface to it |
+| `abi/src/base_interface.rs`, `tools/xtask/src/contract/base_interface/` | The base interface number and the gate that holds the call surface to it |
 | `tools/xtask/src/elf/authority.rs`, `tools/xtask/src/lint/syscall_abi.rs` | The call-graph gate, and the gate that holds the numbers to Linux's table |
 | `slibc/src/pal/raw.rs`, `slibc/src/error.rs` | The C library's side: the `syscall` instruction and turning results into `errno` |
 

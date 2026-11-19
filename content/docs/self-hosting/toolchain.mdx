@@ -7,9 +7,10 @@ With the SlopOS toolchain you can build the kernel and its programs on your
 Linux machine, and, once you have cross-built it, compile Rust, C and C++
 inside SlopOS itself. On the host, `just setup` prepares the Rust half of the
 normal build: a copy of the Rust standard library that knows about SlopOS. With
-`just toolchain` (hours of CPU, once) you also get `rustc`, `cargo`, `clang`,
-`git`, `ssh`, `cmake`, `ninja`, `bash` and the libraries behind them, compiled
-to run inside SlopOS, which is what the
+`just toolchain` (hours of CPU, once) you also get `rustc`, `cargo`,
+`rustdoc`, `rustfmt`, `clippy`, `clang`, `git`, `ssh`, `cmake`, `ninja`,
+`bash`, `just` and the libraries behind them, compiled to run inside SlopOS
+and packed into one image, `slopos-toolchain`, which is what the
 [development machine](/docs/self-hosting/development-machine) uses to build
 SlopOS from inside SlopOS.
 
@@ -103,6 +104,14 @@ build_userland: <sysroot> carries the std fork stamped <old>, not the <new> this
   On the host, scripts/ensure_toolchain.sh or just toolchain rebuilds it.
 ```
 
+Before that, a toolchain image is held to its identity
+([below](#building-the-toolchain)), which covers every pin and not only the
+forks:
+
+```text
+build_userland: the toolchain at <sysroot> is <have>; this tree needs <want>, which just toolchain builds on the host
+```
+
 ## The compiler
 
 A JSON target file is enough to build programs *for* SlopOS on Linux. Building
@@ -120,13 +129,27 @@ A handful of crates that rustc and cargo use (`getrandom`, `errno`, `rustix`,
 `nix`, `libloading`, `socket2`, `stacker`) also need to know about SlopOS, and
 get small patches of their own. Cargo itself needs none.
 
+Besides `rustc` and `cargo`, the cross-build makes `rustdoc`, `rustfmt` (with
+`cargo fmt`) and clippy (with `cargo clippy`); `build.tools` in the
+bootstrap configuration names them. rustdoc is what the base-interface gate
+reads SlopOS's system call surface through, so a build on SlopOS can run that
+gate. The forked standard library names the target in `std::env::consts`
+(`OS` is `slopos`, `FAMILY` `unix`, libraries end in `.so`), which programs
+such as `just` read to tell one system from another, and its
+`env::current_exe()` reads `AT_EXECFN`, the absolute path the kernel opened,
+which is how `cargo-fmt` and `cargo-clippy` find `rustfmt` and
+`clippy-driver` beside themselves.
+
 `just rustc-src` (`scripts/make_rustc_src.sh`) downloads the pinned nightly's
 source (a few hundred megabytes) and applies the patches, into
 `third_party/slopos-rustc-src`. This is a second tree, separate from the
 sysroot above: the sysroot is a clone of a *built* toolchain and has no
 compiler sources to patch. Each tree records the inputs it was made from, so
 editing a compiler patch doesn't remake the sysroot, and editing the standard
-library's forks doesn't unpack the compiler again.
+library's forks doesn't unpack the compiler again. The stamp `just toolchain`
+leaves on rustc's bundled LLVM covers the compiler source tarball's checksum
+as well as the LLVM port, so moving to a new nightly rebuilds that LLVM even
+when the port's patch didn't have to change.
 
 ## LLVM and clang
 
@@ -250,11 +273,12 @@ as Redox's cookbook.
 | OpenSSH | programs | `ssh`, which git runs for an `ssh://` remote, and `ssh-keygen` for the key it uses |
 | CMake, Ninja | programs | C and C++ builds in the guest |
 | bash | a program | Scripts that need bash, the userland build among them |
+| just | a program | The command runner the tree's justfile is written for, so a recipe means the same on the host and on SlopOS |
 | e2fsprogs | programs | `mke2fs`, `e2fsck`, `resize2fs`, `tune2fs`, `debugfs` and `dumpe2fs`, which every base carries at `/sbin` |
 
 `just recipes` builds them on the host into `builddir/slopos-recipes/prefix`
 (`just recipes git` builds one and what it depends on), and `just toolchain`
-builds them too and installs them with the compiler. Tarballs are cached under
+builds them too and puts them in the toolchain image. Tarballs are cached under
 `third_party/recipes/`; an offline machine fills that directory first, or
 points `<NAME>_URL` (`ZLIB_URL` and so on) at a local copy.
 `scripts/build_recipes.sh --fetch-source` fetches and checks the tarballs
@@ -270,10 +294,13 @@ A library finds the libraries it needs beside itself (its run path is
 `$ORIGIN`), so it works wherever it is copied. A program can't always work
 that way: git finds its helper programs, templates and configuration through
 the directory it was configured for. So every program is configured for
-`/usr/local`, where the toolchain lands in the guest, and looks for its
-libraries in its `lib/`. A recipe that builds only programs installs no
-headers or libraries, so e2fsprogs's internal libraries reach neither another
-recipe nor the sysroot that programs are built against.
+`/opt/slopos-toolchain`, where the toolchain image shows in the guest, and
+looks for its libraries in its `lib/`. An image holds only `bin`, `libexec`,
+`lib` and `share`, so every template puts configuration in `share/etc` and
+system programs (e2fsprogs's, `sshd`) in `libexec/`. A recipe that builds
+only programs installs no headers or libraries, so e2fsprogs's internal
+libraries reach neither another recipe nor the sysroot that programs are
+built against.
 
 OpenSSH installs everything it builds: the server, `scp`, `sftp` and the agent
 arrive beside `ssh` and `ssh-keygen`, though nothing on SlopOS runs them.
@@ -291,6 +318,7 @@ that calls it works too. Each port left slibc larger:
 | bash, CMake, Ninja | `ppoll`, `pselect`, `getloadavg`, `getopt_long`, `ttyname` |
 | e2fsprogs | `system`, `popen`, `daemon`, `random`, `<libgen.h>`, `secure_getenv`, `PR_GET_DUMPABLE`, `si_addr`, the block device requests in `<sys/ioctl.h>` and the network interface requests in `<net/if.h>`, which slibc answers from the kernel's network query |
 | OpenSSH | DNS lookups through `<resolv.h>` (`res_init`, `res_query` and `dn_expand`, with `<arpa/nameser.h>`), `initgroups`, `getitimer` and `setitimer`, `<paths.h>`, `<netinet/in_systm.h>`, the type-of-service values in `<netinet/ip.h>`, the BSD `timeval` macros, `caddr_t`, `IPPORT_RESERVED`, `IN_LOOPBACKNET` and the `%[` conversion in `scanf`, without which `ssh` rejects every server's greeting |
+| just | Linux's whole `_SC_*` and `_PC_*` tables (`sysconf` and `pathconf` still answer only what they know, and `EINVAL` for the rest), the declarations of `getpwnam_r`, `getgrgid_r`, `getgrnam_r`, `getgrouplist` and `initgroups` in the `libc` fork, and `mkfifoat`. just also took the port of `nix` 0.31.3 |
 
 Three of those behave in ways worth knowing. SlopOS has no interval timers,
 so `setitimer` can disarm a timer but refuses to arm one, as `alarm` does, and
@@ -339,19 +367,34 @@ recipe's tarball in its clone.
 just rustc-src     # the patched compiler sources
 just test          # any test build: the toolchain reuses its libraries
 just toolchain     # the cross-build: hours of CPU
-just boot          # installs the result at /usr/local in the guest
+just boot          # offers the image to the guest's root, where init installs it
 ```
 
 `just toolchain` runs Rust's bootstrap with Linux as the machine doing the
 build and SlopOS as the machine the compiler will run on. Around that it
-assembles what the bootstrap doesn't provide: a SlopOS C library and headers
-to link against, the C++ runtime, the recipes, clang and its support files,
-`cc`, `c++` and `ld.lld` links, and every project's licence text. The result
-goes into `builddir/slopos-toolchain/install`, and only once the build has
-finished, so a failed run never leaves a half toolchain that `just boot` would
-pick up. Bootstrap's build directory lies outside the patched sources, so
-re-running after a patch keeps what it has already built, the host's LLVM
-among it, and rebuilds only what the patch changes.
+assembles what the bootstrap doesn't provide: SlopOS's C headers and startup
+files, the C++ runtime, the recipes, clang and its support files, `cc` and
+`c++` links, copies of `ld.lld` and `llvm-ar`, and every project's licence
+text. The result is laid out in `builddir/slopos-toolchain/install` the way
+`/opt/slopos-toolchain` shows it, then `scripts/build_extension.sh` packs it
+into the image `builddir/slopos-toolchain/image/slopos-toolchain.ext` and
+its sidecar `slopos-toolchain.meta`, checking it as an install would. A
+toolchain those checks refuse leaves no image, and a failed run never leaves
+a half toolchain that `just boot` would offer. `--stage <dir>` also copies
+the image directory there, for `TOOLCHAIN_STAGE`. Bootstrap's build
+directory lies outside the patched sources, so re-running after a patch
+keeps what it has already built, the host's LLVM among it, and rebuilds only
+what the patch changes.
+
+The image's release names the toolchain's *identity*: a hash over
+`toolchain/PIN`, the standard library and `libc` forks, the compiler patches,
+the crate ports, both LLVM ports, the C++ runtime's pin, the recipes and the
+shared compiler settings (`tp_toolchain_identity` in
+`scripts/lib/toolchain_identity.sh`). Its version is the time of the build.
+`build_userland.sh`, and `just setup` on SlopOS, hold a toolchain image to
+the identity the tree needs and name that identity when it differs, so a
+guest whose toolchain is older than the tree's pins says so before it
+builds.
 
 It is expensive: hours of CPU, many gigabytes of disk, and a first run that
 downloads the compiler bootstrap starts from. `just check-bootstrap-config` is
@@ -442,14 +485,16 @@ component, which `scripts/ensure_toolchain.sh` installs.
 
 ## How it is tested
 
-`just test-toolchain` boots a root carrying the toolchain and climbs a ladder,
-each rung using more of it: `rustc` alone, then linking through `cc`, cargo
-with a build script and a procedural macro, a git dependency through libgit2,
-a crate from a registry served over TLS, C and C++ with clang, git against the
+`just test-toolchain` boots a root offered the toolchain image and first
+holds the installed toolchain to that image. Then it climbs a ladder, each
+rung using more of it: `rustc` alone, then linking through `cc`, cargo with a
+build script and a procedural macro, a git dependency through libgit2, a
+crate from a registry served over TLS, C and C++ with clang, git against the
 host's checkout, `ssh`, `ssh-keygen` and git over SSH to an `sshd` the host
 runs, a clone of the GitHub repository, cargo resolving crates.io, a bash
-script, a Ninja graph and a CMake project. The last rung checks that the
-toolchain carries the standard library fork the clone pins.
+script, a Ninja graph, a CMake project, the toolchain's identity against the
+clone's pins, `just` running a justfile, `cargo fmt` formatting a crate and
+`cargo clippy` linting one.
 [Development machine](/docs/self-hosting/development-machine#how-it-is-tested)
 describes the other checks that use the toolchain.
 
@@ -579,24 +624,53 @@ and the Rust ones with `-Bsymbolic-functions`, so calls inside a library
 don't go through the loader.
 
 `x.py install` ships no clang and no sysroot, so the script completes the
-prefix: clang, `libclang-cpp.so` and clang's resource directory, the `cc`,
-`c++` and `ld.lld` links, clang configuration files that name `<CFGDIR>/..`
-as the sysroot, and the target sysroot itself in `lib/` and `include/`. It
-removes the Linux standard library, which a compiler running on SlopOS has no
-use for.
+prefix: clang, `libclang-cpp.so` and clang's resource directory, the `cc`
+and `c++` links, and the target sysroot itself, its libraries in `lib/` and
+its headers in `share/include`. It removes the Linux standard library, which
+a compiler running on SlopOS has no use for.
+
+The image carries no `libc.so` or `libc.a`: a program links the running
+base's `/lib/libc.so`, which only grows, so what a machine builds runs on its
+base and every later one. clang's configuration files make `share` the
+sysroot, so the driver's own `<sysroot>/include` and
+`<sysroot>/include/c++/v1` name the headers and `-nostdinc++` and
+`-nostdlibinc` still drop them; `-B<CFGDIR>/../lib` finds `crt0.o` and
+`libbuiltins.a`, and `-L/lib -L<CFGDIR>/../lib` searches the base's `/lib`
+first. `scripts/check_bootstrap_config.sh` resolves `libc.so` to the base's,
+`builddir/libc.so`, for the same reason.
+
+No link in the image leads out of the directory holding it. `bin/ld.lld` and
+`bin/llvm-ar` are copies, and a recipe's link that climbs becomes a copy of
+the file it reaches, or a link to a sibling holding that copy (git's names in
+`bin/` are one program). The image also ships the empty SafeStack archive
+the kernel's target links,
+`lib/rustlib/x86_64-slos/lib/librustc-nightly_rt.safestack.a`, since
+`build_kernel.sh` writes one only where none is and can't write into an
+image.
 
 ### Recipes
 
 A recipe is `key=value` lines. `template=` is one of `cmake`, `meson`,
-`openssl` or `autotools` (the `./configure` projects). A recipe that builds
-programs lists each in a `program=` line, and one that builds libraries
-lists each library's file name. The Meson and `./configure` templates pass
-`--prefix` as the guest path of the toolchain, since a program finds its own
-files through the prefix compiled into it. The CMake template builds for
-`CMAKE_SYSTEM_NAME=SlopOS`. `build_recipes.sh --install-programs` copies what
-a program recipe installed into the toolchain, and the libraries travel with
-the target sysroot. Only the libraries' stamps make `just toolchain` rebuild
-cargo.
+`openssl`, `autotools` (the `./configure` projects) or `cargo`. A recipe that
+builds programs lists each in a `program=` line, and one that builds
+libraries lists each library's file name. The recipes are configured for
+`GUEST_PREFIX=/opt/slopos-toolchain`: the Meson and `./configure` templates
+pass it as `--prefix`, since a program finds its own files through the
+prefix compiled into it, and bootstrap's `sysconfdir` is `share/etc`. The
+CMake template builds for `CMAKE_SYSTEM_NAME=SlopOS`.
+`build_recipes.sh --install-programs` copies what a program recipe installed
+into the toolchain, and the libraries travel with the target sysroot. Only
+the libraries' stamps make `just toolchain` rebuild cargo.
+
+The `cargo` template builds a crates.io `.crate` with `cargo +slopos` for
+the target JSON, the standard library from the owned sysroot, linked (and a
+build script's C compiled) by the SlopOS compiler wrapper, `--locked` to the
+`lock=` file beside the recipe. A package that lock takes with no source is
+the `libc` fork or a `toolchain/crates/` port of that name and version,
+staged beside the build and patched in for crates.io, and the recipe's stamp
+adds the standard library's stamp and the ports. Its `program`s are
+`bin/<binary>`. just is the first such recipe. The root workspace excludes
+`builddir/`, where the template unpacks the crate.
 
 A `./configure` script tests many things by compiling a program and running
 it, which a cross build can't do. Those recipes give the answers as
@@ -681,7 +755,8 @@ cache can't stand in for a missing crate.
 | `scripts/make_slopos_cross.sh` | The target sysroot and the compiler wrappers |
 | `toolchain/recipes/`, `scripts/build_recipes.sh`, `scripts/check_recipes.sh` | Third-party programs and the patch and licence checks |
 | `scripts/check_libc_license.sh` | The C library's licence check |
-| `scripts/bootstrap_slopos_toolchain.sh` | `just toolchain` |
+| `scripts/bootstrap_slopos_toolchain.sh`, `scripts/build_extension.sh` | `just toolchain`, and packing its result into the image |
+| `scripts/lib/toolchain_identity.sh` | The toolchain's identity and the check that holds an image to it |
 | `scripts/lib/rustc_build_settings.sh`, `scripts/make_toolchain_profile.sh`, `scripts/rustc_neutral_metadata.sh` | The settings both compiler builds share, `just toolchain-profile` and the metadata wrapper |
 | `scripts/make_vendor.sh`, `.cargo/vendor.toml` | Offline builds |
 | `userland/src/bin/tests/toolchain_test.rs` | The toolchain ladder |

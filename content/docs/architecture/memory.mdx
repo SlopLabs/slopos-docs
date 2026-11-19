@@ -218,6 +218,15 @@ after it has handed the machine over, and nothing in SlopOS needs it.
 gate refuses any other. Every constructor is fallible, so running out of
 memory is an error the caller handles, not a panic.
 
+**The large tier.** An allocation over 2048 bytes is served whole pages from
+the buddy allocator (`mm/src/slab/large.rs`), and only a region of exactly
+the page count asked for. A freed region of up to 16 pages waits on the free
+list for its size, while the lists hold no more than 4 MiB together
+(`CACHE_PAGES`); any other region goes back to the buddy and off the root
+account's `KernelMeta` charge. A request never takes a larger cached region,
+since the pages it left unused would stay with the allocation as long as it
+lives, and nothing freed stays out of the buddy beyond that cache.
+
 **Building in place.** A large object must never exist as a value on the
 caller's stack, so it is written straight into its allocation. The type
 offers a constructor that returns a recipe instead of a value (by convention

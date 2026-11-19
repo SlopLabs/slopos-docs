@@ -360,7 +360,11 @@ checked by booting the laptop.
 - **One layout, loaded by init.** `keymap::follow` in userland picks the
   layout wanted for the session in front and loads it only when it differs
   from the one in use. `/run/init`'s `keymap` command makes init look again;
-  a person or root may send it. A layout's title is the `title` line of its
+  a person or root may send it. The kernel does not answer which layout it
+  holds: init writes the name of each layout it loads to `/run/keymap`
+  (uid 0's, replaced by a rename), and `keymap::current_name` reads it; no
+  file means the kernel's built-in `us`. A program that loads a layout
+  itself with `keymap_load` leaves the file stale. A layout's title is the `title` line of its
   file, read by `keymap-core::title`. A `keymap-core` test holds each
   shipped layout to what three of its keys type, so a new layout file adds
   its row there.

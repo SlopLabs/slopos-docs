@@ -178,8 +178,9 @@ Whether `/` is a writable disk or memory, the system's own programs come
 from the base that Limine loaded, not from the disk: the kernel mounts the base read-only over `/bin`, `/sbin`,
 `/lib`, `/usr/bin`, `/usr/share` and `/etc/ssl`, where no program can unmount
 or cover it, whatever the disk holds at those paths. The disk holds
-everything else: settings, home directories, software installed under
-`/usr/local` and on the development machine a checkout of the source.
+everything else: settings, home directories, the images of software
+installed for everyone (shown under `/opt`), a person's own programs in
+`~/.local`, and on the development machine a checkout of the source.
 [Filesystem](/docs/architecture/filesystem) explains the mounts, and
 [Crash recovery](/docs/architecture/crash-recovery) explains what happens when
 the disk was not shut down cleanly.
@@ -301,12 +302,16 @@ The two slots are there so that installing a new kernel can't leave you with
 a machine that doesn't boot. Which slot boots by default is recorded in a
 firmware variable, not in Limine's configuration, and after an install it is
 slot a. `bootctl` writes a new kernel into the other slot and asks Limine to
-boot it once. The installer gives an installed system `panic=reboot` unless
-its `--cmdline` says otherwise, so if the new kernel panics, the machine
-resets onto the old default, and on an NVMe drive
+boot it once. The boot options travel inside the kernel: `bootctl` stamps
+the machine's words (`/etc/kernel/cmdline`) into each kernel it writes, and
+the installer writes `panic=reboot` there unless its `--cmdline` says
+otherwise, while the menu's entries carry only `root=`. So if the new kernel
+panics, the machine resets onto the old default, and on an NVMe drive
 the next boot saves the panic's record. If the new kernel comes up,
-`bootctl commit` makes it the default. A new base goes beside the old one
-too, and runs without a reboot when the running kernel serves it.
+`bootctl commit` makes it the default. A new base is tried from memory
+without a reboot when the running kernel serves it, and kept with
+`bootctl base commit`; one it doesn't serve goes to the disk with the kernel
+that does, and the two are tried together.
 [Updating SlopOS](/docs/self-hosting/updating) walks through both, and
 [Development machine](/docs/self-hosting/development-machine) shows the
 setup `just boot` starts, where SlopOS rebuilds and installs itself; there

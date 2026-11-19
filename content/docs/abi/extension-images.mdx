@@ -21,7 +21,12 @@ how images are installed and run, and
 
 `extctl install-signed <image>` looks for the sidecar and signature beside
 the image, at the image's path with `.ext` replaced by `.meta` and
-`.meta.sig`, unless both are named on its command line.
+`.meta.sig`, unless both are named on its command line. `extctl install
+<image>` reads `<stem>.meta.sig` beside the image too, when there is one,
+trusted key or not, and names its signer on the command line privd runs
+(`signer <fingerprint>` or `signer nobody`). An image `extctl
+install-offered` takes lies in `/var/lib/slopos/offered`
+(`slopos_extension_core::OFFERED`) as `<name>.ext` beside `<name>.meta`.
 
 ## Image file
 
@@ -156,8 +161,8 @@ What the extension asks for. The file is at most 64 KiB.
 | `state` | The extension has `/var/lib/<name>`, owned by its first user, the home the user database gives each of its users | No |
 | `config` | The extension has `/etc/<name>` for settings | No |
 | `runtime` | The extension has `/run/<name>`, where its unix sockets go | No |
-| `command <command>` | Links `/opt/<name>/bin/<command>` into `/opt/bin` | Each command once |
-| `app <id>` | Shows the app entry `/opt/<name>/share/slopos/apps/<id>.app` in the dock, unless an extension earlier in name order, the base, `/usr/local` or the person's `~/.local` has an entry of that id | Each app once |
+| `command <command>` | Links `/opt/<name>/bin/<command>` into `/opt/bin`, which comes after `/bin` and `/sbin` on the default `PATH` (`/bin:/sbin:/opt/bin`). Its shell completions come from `/opt/<name>/share/shell/completions`, ahead of the base's | Each command once |
+| `app <id>` | Shows the app entry `/opt/<name>/share/slopos/apps/<id>.app` in the dock, unless an extension earlier in name order, the base or the person's `~/.local` has an entry of that id | Each app once |
 | `service <service>` | Starts a service block | Each service once |
 | `action <action>` | Starts an action block, the privd action `ext.<name>.<action>` | Each action once |
 
@@ -226,10 +231,12 @@ has the exact rules), with these differences for an extension:
   other in a circle.
 - No two services listen on the same socket.
 - At most 16 services.
-- Every program a service, an action, a `program` principal of the
-  extension's own or a command names must be an executable regular file of
-  the image; every app must have its `.app` entry; every `reads` path under
-  `/opt/<name>` must exist.
+- Every program a service, an action or a `program` principal of the
+  extension's own names must be an executable regular file of the image at
+  the path named. A command may also be a symlink in `bin/` that resolves,
+  through the image's own links and at most 7 of them, to an executable
+  regular file of the image. Every app must have its `.app` entry; every
+  `reads` path under `/opt/<name>` must exist.
 
 ### Example
 
@@ -275,7 +282,8 @@ because of its `program` line. Its grant line is
 | User | `<name>` or `<name>-<suffix>`, at most 32 bytes; the suffix a lowercase letter, then lowercase letters, digits and `-`. Not a person's name, and not one another installed extension declares |
 | Service, action, exclusive group | A lowercase letter, then lowercase letters, digits and `-`, at most 32 bytes |
 | Action, as privd names it | `ext.<name>.<action>`, at most 64 bytes, no part starting with a digit |
-| Command, app, unix socket | A lowercase letter or digit, then lowercase letters, digits, `-`, `_` and `.`, at most 32 bytes. A command another installed extension declares is refused |
+| Command | A lowercase letter or digit, then lowercase letters, digits, `-`, `_`, `.` and `+` (`c++`, `clang++`), at most 32 bytes. A command another installed extension declares is refused |
+| App, unix socket | A lowercase letter or digit, then lowercase letters, digits, `-`, `_` and `.`, at most 32 bytes |
 | Settings file in `/etc/<name>` | Letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 64 bytes |
 
 ## Programs and libraries
@@ -296,6 +304,14 @@ installed and at every activation:
 Relocatable objects and core files are not checked. `just extension` also
 runs `xtask programs` over every ELF file outside `lib/`,
 which refuses one containing a `syscall` instruction.
+
+An install keeps, beside the image, `<root>.needs`: each name the image's
+programs bind that none of its own libraries export, one per line with a
+program that binds it, bytes outside `!`..`~` and `\` written `\xNN`
+(`symbols::Needs`), sealed. Each activation, a boot's included, holds the
+running `libc.so` to that list rather than reading the programs again. An
+image kept without the list is read, and the list is kept then when the
+store can be changed.
 
 ## What a service runs with
 
@@ -448,6 +464,7 @@ signer SHA256:bbXpuKG6zhzdmnxq256TlqzFBzRl2f6OOg722cYNbU8
 floor 3 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 refused 4
 uids hello=100,hello-worker=101
+retired 102
 config 2
 image current
   version 3
@@ -459,13 +476,21 @@ image current
 | Line | Meaning |
 |---|---|
 | `enabled` | `yes` or `no` |
-| `signer` | The fingerprint of the key whose updates go in unasked, or `-` |
+| `signer` | The fingerprint of the key that signed the extension's images, or `-` for nobody. An install sets it and a rollback keeps it; an install under another signer is refused as *another publisher's image of `<name>`* |
 | `floor` | The version floor and its image's root: the highest version installed, or after a rollback the version it made current. An older version is refused, and so is this version with other bytes |
 | `refused` | Versions a rollback left, refused to signed installs; `-` for none |
-| `uids` | Every uid ever given the extension, kept after removal; the uid of its own name is its number |
+| `uids` | The uids given the extension's name and users, present only when its images are granted a user; the uid of its own name is its number |
+| `retired` | Uids a removal gave up that are not free yet, because a program still ran as one or something they own was left; given back by a later `extctl remove` |
 | `config <n>` | The last serial of a signed settings file, when there has been one. It is written before the file goes in |
 | `why` | Why a check stopped it, when one did |
-| `image current`, `image previous` | Each image kept: its version, root, signer and grant |
+| `image current`, `image previous` | Each image kept: its version, root, the key that let it in unasked (`-` when nobody did), and grant |
 
-`<root>.ext`, `<root>.meta` and `<root>.meta.sig` beside the record are the
-images and sidecars it names.
+`<root>.ext`, `<root>.meta`, `<root>.meta.sig` and `<root>.needs` beside the
+record are the images, sidecars and lists of needed names it names.
+
+`extctl remove` (`org.slopos.extension.remove`) leaves a record of the name
+with only its `retired` uids and its `config` serial, kept for good, so any
+image of the name then goes in as a first install, never unasked. It takes
+away `/etc/<name>` if `extctl` made it, and `/var/lib/<name>`,
+`/var/log/<name>` and `/run/<name>` if a uid of the extension owns them,
+after init stops the services; a first install waits while any is left.

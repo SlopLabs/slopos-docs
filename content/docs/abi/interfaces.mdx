@@ -61,8 +61,8 @@ interface lasts.
 | [Programs outside the base](#programs-outside-the-base) | Apps, extensions, toolchain; kernel and base | Grows only (through `libc.so`) |
 | [App toolkit](#app-toolkit) | Each app and the crates compiled into it | Private |
 | [Window protocol](#window-protocol) | Compositor and every app | Versioned (`PROTOCOL_VERSION`) |
-| [App entries](#app-entries) | Dock and installed trees or extensions | Unversioned |
-| [Shell completion rules](#shell-completion-rules) | Shell and installed trees | Unversioned |
+| [App entries](#app-entries) | Dock and installed images | Unversioned |
+| [Shell completion rules](#shell-completion-rules) | Shell and installed images | Unversioned |
 | [Extension images](#extension-images) | `tools/extension`; `extctl`, init, privd and kernel | Unversioned |
 | [Extension programs at run time](#extension-programs-at-run-time) | Init, privd and loader; an extension's programs | Unversioned |
 | [Extension configuration](#extension-configuration) | `extctl` and init; an extension's programs | Unversioned |
@@ -76,10 +76,9 @@ interface lasts.
 | [Volume format](#volume-format) | Host e2fsprogs, kernel, the root | Stable |
 | [Verity trailer](#verity-trailer) | Host image builder and kernel | Unversioned |
 | [Ownership map](#ownership-map) | Host image builders, installer and init | Private (map), Unversioned (record) |
-| [Tree manifests](#tree-manifests) | Host and guest installers of trees | Unversioned |
 | [Accounts record and extension store](#accounts-record-and-extension-store) | Every base that runs on one root | Unversioned |
 | [Remote control protocol](#remote-control-protocol) | `remoted` and the host's broker | Versioned (`proto`) |
-| [Toolchain target and link line](#toolchain-target-and-link-line) | Installed toolchain and the tree | Private |
+| [Toolchain target and link line](#toolchain-target-and-link-line) | Toolchain image and the tree | Private |
 | [Clang configuration files](#clang-configuration-files) | The toolchain's clang and the sysroot beside it | Private |
 | [C++ runtime](#c-runtime) | `libc++.so` and `libc.so` | Private |
 | [KTAP results](#ktap-results) | Test harness and host runner | Private |
@@ -119,13 +118,16 @@ interface lasts.
 
 ### Private call surface
 
-- **What:** every SlopOS-only system call, numbered `1024 + k`: its number,
+- **What:** every SlopOS-only system call, numbered from
+  `SYSCALL_PRIVATE_BASE` (1024) upwards: its number,
   the signature its documentation states (`name(args) -> result`), every
   `slopos_abi` structure and constant that signature names or that
   documentation links, everything those reach through field and alias types,
   and the `root` lines of `scripts/gates/base-interface.txt`, which add what
   no signature names (records behind a byte buffer, families of operations and
-  flags, SlopRing's layout, the directories the kernel keeps in place).
+  flags, SlopRing's layout, the directories the kernel keeps in place). Also
+  the Linux-numbered calls the kernel answers, the rows of `SYSCALL_TABLE` in
+  `core/src/syscall/handlers.rs`, one `linux <n> <SYSCALL_NAME>` line each.
 - **Between:** a kernel and the bases it boots. Kernels sit in the boot
   partition's slots and the bases beside them, and either can be replaced
   without the other; a base can also be activated while the system runs.
@@ -137,22 +139,33 @@ interface lasts.
   `NT_SLOPOS_BASE_INTERFACE`, the two numbers as 32-bit words), which can be
   read from the file without booting it. `link.ld` fails a link whose note is
   missing or the wrong size. [Base images](#base-images) lists who reads the
-  two numbers.
-- **A change:** any change to the surface takes the next `BASE_INTERFACE` and
-  a new ledger row, `interface <n> <sha256>`, which only
-  `scripts/check_base_interface.sh --record` appends; an issued row is never
-  rewritten. `BASE_INTERFACE_MIN` rises only when a change reshapes something
-  an older base calls. A change that only adds leaves it where it is, and a
-  call taken away keeps its slot and answers `ENOSYS`, so an older base still
-  boots, without what that call did.
-- **Checked by:** `scripts/check_base_interface.sh`. It renders the surface
-  from rustdoc's JSON description of `slopos-abi`, so documentation prose,
-  comments, formatting and the order of items change nothing, and holds the
-  SHA-256 of the rendering to the ledger row for the current number. It also
-  fails on a private call whose documentation states no signature, a `root`
-  line that reaches nothing, and a ledger that skips a number. A parser
-  failure, or a rustdoc `format_version` the parser was not written for, exits
-  2. `--print` writes the rendering, to diff before and after a change.
+  two numbers. Before version 1, `BASE_INTERFACE_MIN` is `BASE_INTERFACE`:
+  a kernel serves the base of its own tree alone, and `info` prints
+  `Base interfaces: <n>-<n>`.
+- **A change:** any change to the surface, a call the kernel starts or stops
+  answering among them, takes the next `BASE_INTERFACE` and a new ledger
+  row, `interface <n> <sha256>`, which only `just base-interface --record`
+  appends; an issued row is never rewritten. Before version 1 a change
+  weighs no older base: a call may change shape or be removed, and a retired
+  call keeps no slot. A kernel and a base on either side of such a change go
+  in as a pair (`bootctl base try <img> --kernel <kernel.elf>`, see
+  [Base system](/docs/architecture/base#replacing-the-base-while-the-system-runs)).
+  From version 1, `BASE_INTERFACE_MIN` becomes a number of its own, raised
+  only when a change reshapes something an older base calls.
+- **Checked by:** `just base-interface` (`xtask base-interface`), on the host
+  and on SlopOS. It renders the surface from rustdoc's JSON description of
+  `slopos-abi`, so documentation prose, comments, formatting and the order
+  of items change nothing, adds the Linux calls `SYSCALL_TABLE` registers, and
+  holds the SHA-256 of the rendering to the ledger row for the current
+  number. It also fails on a private call whose documentation states no
+  signature (`signature`), a capitalised name in a signature that names no
+  abi item (`unresolved`), a Linux row at or above `SYSCALL_PRIVATE_BASE`
+  (`range`), a `root` line that reaches nothing (`dead`), a ledger that
+  skips a number, a table or constant it cannot read (`meta`), and a parse
+  that reads too little (`floor`, among others fewer than 100 Linux calls).
+  `--print` writes the rendering, to diff before and
+  after a change. `just install` runs it before writing anything, and so
+  does `just install-kernel`. Its fixtures are `cargo test -p slopos-xtask`.
 - **Not held:** Linux's structures a private call passes through, and facts a
   private call takes from outside `slopos-abi` (the font's glyph ranges, the
   diagnostic console's keys, EFI GUIDs, limits written into a handler). Such a
@@ -172,7 +185,7 @@ interface lasts.
 - **Held by:** the `root slopos_abi::ring::*` and
   `root slopos_abi::syscall::numbers::RING_*` lines of
   `scripts/gates/base-interface.txt`.
-- **Checked by:** `scripts/check_base_interface.sh`; `ring_test` runs the
+- **Checked by:** `just base-interface`; `ring_test` runs the
   opcodes against real descriptors.
 - **See:** [SlopRing](/docs/abi/slopring).
 
@@ -345,14 +358,17 @@ interface lasts.
 - **Level:** grows only.
 - **Held by:** `scripts/gates/libc/exports.txt` and
   `scripts/gates/libc/layouts.txt`.
-- **A change:** an addition is recorded with
-  `scripts/check_libc_exports.sh --record`, which only adds lines and refuses
-  while anything recorded is gone or changed. A removal or a changed layout
-  lands only as a hand edit of those files.
-- **Checked by:** `scripts/check_libc_exports.sh` (the layout half needs the
-  host clang `scripts/cxx_host_tools.sh` finds; CI's toolchain job runs it
-  with `--require`); `libc_abi_test`, which holds slibc to the declarations of
-  the `libc` crate fork that Rust's standard library for SlopOS is built on.
+- **A change:** an addition is recorded with `just libc-exports --record`
+  (`xtask libc-exports <libc.so> --record`), which only adds lines and
+  refuses while anything recorded is gone or changed. A removal or a changed
+  layout lands only as a hand edit of those files.
+- **Checked by:** `just libc-exports`, on the host and on SlopOS. It reads
+  `libc.so`'s dynamic symbol table itself, and the layouts from the clang
+  `scripts/cxx_host_tools.sh` resolves (`$CLANG`); neither half is ever
+  skipped. `just install` runs it before writing anything. Its fixtures are
+  `cargo test -p slopos-xtask`. `libc_abi_test` holds slibc to the
+  declarations of the `libc` crate fork that Rust's standard library for
+  SlopOS is built on.
 - **Not held:** a function's prototype (only its name and kind are recorded),
   and an alignment set on a typedef rather than on its record.
 - **See:** [Installed software](/docs/architecture/software),
@@ -369,9 +385,9 @@ interface lasts.
   call, without the library between.
 - **Level:** grows only, because the one interface it uses is the
   [C library](#c-library).
-- **Checked by:** `xtask programs`, after every host
-  userland build on `builddir/apps/bin/*` and on the tests' extension
-  programs, and in `scripts/build_extension.sh`. `extctl` refuses an
+- **Checked by:** `xtask programs`, on the apps as
+  `scripts/build_extension.sh` packs `slopos-essentials`, on the tests'
+  extension programs, and on any image `build_extension.sh` packs. `extctl` refuses an
   extension's program that is static, or that binds a name neither `libc.so`
   nor one of the extension's own libraries exports
   (`slopos_extension_core::symbols`).
@@ -420,8 +436,10 @@ interface lasts.
 - **What:** `share/slopos/apps/<id>.app`, lines of `key=value`: `id`,
   `name`, `exec`, `icon` (a PNG in the same share's `slopos/icons/`) and
   `boot=medium`.
-- **Between:** the dock, in the base, and the trees in `/usr/local` and
-  `~/.local` and the extensions that ship entries.
+- **Between:** the dock, in the base, and the images and `~/.local` that
+  ship entries. The dock reads each image's `share` (only the apps it
+  declares), then `/usr/share`, then `~/.local/share`; a later entry with the
+  same id replaces an earlier one.
 - **Level:** unversioned.
 - **Held by:** the reader passes over a key it does not know, so a key can be
   added. A `boot` value it does not know makes no entry.
@@ -431,13 +449,14 @@ interface lasts.
 
 ### Shell completion rules
 
-- **What:** a file named after a command in a directory of
-  `SHELL_COMPLETION_PATH` (by default `/usr/local/share/shell/completions`,
-  then `/usr/share/shell/completions`): a script of `complete` lines, which
-  the shell runs the first time Tab completes one of that command's
-  arguments.
-- **Between:** the shell, in the base, and the trees in `/usr/local` that
-  ship rules for their own programs.
+- **What:** a file named after a command, a script of `complete` lines,
+  which the shell runs the first time Tab completes one of that command's
+  arguments. It is read from the directories of `SHELL_COMPLETION_PATH`, or
+  with none named, from the `share/shell/completions` of the image whose
+  command `/opt/bin/<command>` links into, then from the base's
+  `/usr/share/shell/completions`.
+- **Between:** the shell, in the base, and the images that ship rules for
+  their own commands.
 - **Level:** unversioned.
 - **Held by:** `shell-core::complete::spec`, which parses `complete`'s
   arguments.
@@ -515,8 +534,8 @@ interface lasts.
 - **What:** `/opt/bin`, holding a link `/opt/bin/<command>` to
   `/opt/<name>/bin/<command>` for each command the grant of every extension
   activated at `/opt/<name>` names. `/opt/bin` is last on the default search path
-  (`slopos_abi::fs::DEFAULT_PATH`, `/bin:/sbin:/usr/local/bin:/opt/bin`), so
-  an extension's command shadows no command of the base or of `/usr/local`.
+  (`slopos_abi::fs::DEFAULT_PATH`, `/bin:/sbin:/opt/bin`), so
+  an extension's command shadows no command of the base.
 - **Between:** `extctl`, in the base, which rewrites the links after every
   change, and the shell, slibc's `execvp` and every other program that
   searches `PATH`; the extension's declaration names the commands.
@@ -685,9 +704,9 @@ interfaces are the ones that cross that gap.
 ### Ownership map
 
 - **What:** which directories of a root belong to whom
-  (`slopos_abi::fs::ROOT_LAYOUT` and `PERSON_TREES`), and the owners record,
-  `/var/lib/slopos/owners`, one `<uid>:<gid> <tree>` line per tree a person
-  holds.
+  (`slopos_abi::fs::ROOT_LAYOUT` and `PERSON_TREES`, the first person's home
+  and `/src`), and the owners record, `/var/lib/slopos/owners`, one
+  `<uid>:<gid> <tree>` line per tree a person holds.
 - **Between:** the host's image builders (`scripts/lib/root_layout.sh`,
   `scripts/fs_tree.py`), `tools/initramfs`, the installer and init. The
   record outlives all of them on the root.
@@ -698,23 +717,6 @@ interfaces are the ones that cross that gap.
   equal; `scripts/check_fs_image.sh --map` holds an image to the map and its
   record.
 - **See:** [Users and file permissions](/docs/architecture/users).
-
-### Tree manifests
-
-- **What:** `/var/lib/slopos/trees/<name>`, or
-  `~/.local/share/slopos/trees/<name>` for a person's own: an `identity` line,
-  an `at` line naming where the tree went, then `<kind> <size> <path>` per
-  entry (`-` for no size), parents first. An install under way carries an
-  identity of 64 zeros.
-- **Between:** the host's `scripts/fs_tree.py`, which installs host trees
-  into images, and `tree-core` in the guest (the installer, init and
-  `tree-install`), which install and replace trees on the same root.
-- **Level:** unversioned.
-- **Held by:** `tree-core`. A manifest that does not parse is not believed,
-  and stands for an install that did not finish.
-- **Checked by:** `tree-core`'s host tests, one of which parses what
-  `fs_tree.py` writes; `fs_tree.py --self-test`; `tree_install_test`.
-- **See:** [Installed software](/docs/architecture/software).
 
 ### Accounts record and extension store
 
@@ -764,16 +766,16 @@ interfaces are the ones that cross that gap.
   compiler and stated again in `targets/x86_64-unknown-slopos.json`; and the
   link line, written by hand in `scripts/build_userland.sh` and again by the
   clang driver's `toolchains::SlopOS`.
-- **Between:** the cross-built toolchain installed at `/usr/local`
-  (`just toolchain`), which is replaced apart from the tree, and the tree it
-  builds.
+- **Between:** the toolchain image, `slopos-toolchain` at
+  `/opt/slopos-toolchain` (`just toolchain`), which is replaced apart from
+  the tree, and the tree it builds.
 - **Level:** private: each fact has two copies in one tree, held equal.
 - **Checked by:** `scripts/check_rustc_target.sh`, which compares rustc's
   own JSON form of the two target specs (skipped without the compiler's
   source tree; CI's toolchain job runs it with `--require`);
   `scripts/check_clang_driver.sh`, which builds the driver for the host and
-  grades its link jobs; `toolchain_test` (`just test-toolchain`), which holds
-  an installed toolchain to the manifest it was installed with.
+  grades its link jobs; `toolchain_test` (`just test-toolchain`), which
+  holds the image a root shows to the one the host built.
 - **See:** [Toolchain](/docs/self-hosting/toolchain).
 
 ### Clang configuration files

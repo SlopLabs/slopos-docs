@@ -1,6 +1,6 @@
 ---
 title: "Write an app"
-description: "Write a small app with appkit, ship it with SlopOS at /usr/local with a dock entry and an icon, and check it the way the shipped apps are checked."
+description: "Write a small app with appkit, ship it with SlopOS in the slopos-essentials image with a dock entry and an icon, and check it the way the shipped apps are checked."
 ---
 
 By the end of this page you will have written a stopwatch app, built it with
@@ -8,8 +8,8 @@ the system, started it from the dock, held it to the same tests and layout
 audit as the apps SlopOS ships, and looked at a screenshot of it.
 
 The app lives in `apps/`, the crate that holds the apps installed outside the
-base at `/usr/local` (the editor, Files, the image viewer and the widget
-gallery). [Desktop](/docs/architecture/desktop) explains the theme and the
+base, in the image `slopos-essentials` (the editor, Files, the image viewer,
+Breach and the widget gallery). [Desktop](/docs/architecture/desktop) explains the theme and the
 components you'll use, and [Windowing](/docs/architecture/userland-windowing)
 what happens underneath.
 
@@ -178,13 +178,13 @@ And add it to the list of apps in `scripts/lib/base.sh`, which the host build
 and the guest build both read:
 
 ```sh
-APPS="editor file_manager image_viewer widget_gallery stopwatch"
+APPS="breach editor file_manager image_viewer widget_gallery stopwatch"
 ```
 
-The app may depend on `slopos-appkit`, `slopos-editor-core` and
-`slopos-image` and nothing else; the `app-deps` gate fails any other
-dependency, so an app never reaches past the toolkit into the kernel's
-interface.
+The app may depend on `slopos-appkit`, `slopos-editor-core`,
+`slopos-image` and `slopos-shooter-core` and nothing else; the `app-deps`
+gate fails any other dependency, so an app never reaches past the toolkit
+into the kernel's interface.
 
 ## 3. Give it a dock entry and an icon
 
@@ -194,7 +194,7 @@ The dock shows an app because an *app entry* names it. Create
 ```
 id=org.slopos.stopwatch
 name=Stopwatch
-exec=/usr/local/bin/stopwatch
+exec=/opt/slopos-essentials/bin/stopwatch
 icon=org.slopos.stopwatch.png
 ```
 
@@ -266,20 +266,22 @@ its keyline or fills too little of it.
 just build
 ```
 
-The userland build compiles the apps against SlopOS's C library and stages
-them as one tree. When the userland part of the build finishes, before the
-disk image and the kernel are built, you should see:
+The userland build compiles the apps against SlopOS's C library, stages
+them as one tree and packs that tree as the image `slopos-essentials`. When
+the userland part of the build finishes, you should see:
 
 ```
-Apps built: builddir/apps
-loose-programs: OK — 5 program(s) reach the system through libc.so alone
+Apps built: builddir/apps (slopos-essentials …)
+loose-programs: OK — 6 program(s) reach the system through libc.so alone
 ```
 
 The second line is a check on every app outside the base: it must load
 through `/lib/ld-slopos.so.1`, link `libc.so`, and make no system call of its
 own, because apps are updated on their own schedule and the C library is the
 one interface that only grows. `builddir/apps` now holds `bin/stopwatch`, the
-entry and both icons.
+entry and both icons, and its `.extension/declare` names `stopwatch` as a
+command and `org.slopos.stopwatch` as an app; the build writes those lines
+itself from `APPS` and the entries.
 
 ## 5. Run it
 
@@ -288,13 +290,16 @@ just boot
 ```
 
 This boots the [development machine](/docs/self-hosting/development-machine),
-after installing `builddir/apps` at `/usr/local` on the root it boots. The
+whose root is offered the `slopos-essentials` image in
+`/var/lib/slopos/offered`; init installs it at boot, so the app is at
+`/opt/slopos-essentials/bin/stopwatch`. The
 desktop reads the app entries when it starts, so *Stopwatch* is in the dock:
 click it. A window titled *Stopwatch* opens, centred, with the menu bar naming it,
 `0:00.0` in large type, *Reset* greyed out on the left and *Start* filled on
 the right. Press Enter and the time runs; press it again and it stops, and
 *Reset* comes alive. You can also start it by typing `stopwatch` in the
-terminal, since `/usr/local/bin` is on everyone's `PATH`.
+terminal, since the image's commands are linked into `/opt/bin`, which is
+on everyone's `PATH`.
 
 ## 6. Hold it to the tests
 
@@ -306,18 +311,19 @@ launching a program and showing its icon at both sizes. Add the app to
 `INSTALLED` in `userland/src/bin/tests/dock_test.rs`, keeping the list sorted:
 
 ```rust
-    ("org.slopos.image-viewer", "/usr/local/bin/image_viewer"),
-    ("org.slopos.stopwatch", "/usr/local/bin/stopwatch"),
+    ("org.slopos.image-viewer", "/opt/slopos-essentials/bin/image_viewer"),
+    ("org.slopos.settings", "/bin/settings"),
+    ("org.slopos.stopwatch", "/opt/slopos-essentials/bin/stopwatch"),
     ("org.slopos.sysmon", "/bin/sysmon"),
 ```
 
 `apps_test` starts each app against a stand-in compositor and checks that it
-names its window as its entry does, and that a program in `/usr/local` names
-SlopOS's loader, `/lib/ld-slopos.so.1`, as its interpreter. Add a row at the
+names its window as its entry does, and that a program of `slopos-essentials`
+names SlopOS's loader, `/lib/ld-slopos.so.1`, as its interpreter. Add a row at the
 end of `APPS` in `userland/src/bin/tests/apps_test.rs`:
 
 ```rust
-    ("/usr/local/bin/stopwatch", "org.slopos.stopwatch"),
+    ("/opt/slopos-essentials/bin/stopwatch", "org.slopos.stopwatch"),
 ```
 
 and two cases: one that runs it, and one that holds its page to appkit's
@@ -327,7 +333,7 @@ small to hit, focus that doesn't show and text under its contrast floor:
 
 ```rust
 fn the_stopwatch_runs() -> bool {
-    run(APPS[5].0, APPS[5].1)
+    run(APPS[7].0, APPS[7].1)
 }
 
 /// The stopwatch's page reads whole at a phone's, a laptop's and a monitor's
@@ -340,8 +346,8 @@ fn the_stopwatch_reads_whole() -> bool {
 }
 ```
 
-`APPS[5]` is the row you just added, the sixth. List both cases in `CASES`,
-after the terminal's:
+`APPS[7]` is the row you just added, the eighth. List both cases in `CASES`,
+after Breach's:
 
 ```rust
     ("the_stopwatch_runs", the_stopwatch_runs),
@@ -366,8 +372,8 @@ builddir/run_tests --raw --filter '*utest_apps,*utest_dock'
 ```
 
 ```
-KTAP	  ok 6 - the_stopwatch_runs
-KTAP	  ok 7 - the_stopwatch_reads_whole
+KTAP	  ok 7 - the_stopwatch_runs
+KTAP	  ok 8 - the_stopwatch_reads_whole
 ```
 
 A failing audit names each finding with the width it was found at. Squeezed
@@ -410,37 +416,33 @@ lists the recipes it is made of, for when you want one lane alone.
 
 ## Install it for yourself alone
 
-`just boot` installs every app in `apps/` for everyone. To try a build as one
-person on a running SlopOS instead, install it as a *tree* of your own in
-`~/.local`, whose `bin` is on your `PATH`, whose `lib` the loader searches
-and whose `share` the dock reads ([Installed software](/docs/architecture/software) explains trees).
-On the development machine, with the toolchain installed (`just toolchain`
-on the host before `just boot`) and your change committed on the host:
+`just boot` installs every app in `apps/` for everyone, in the image
+`slopos-essentials`. To try a build as one person on a running SlopOS
+instead, copy it into your own `~/.local`, whose `bin` is on your `PATH`,
+whose `lib` the loader searches and whose `share` the dock reads
+([Installed software](/docs/architecture/software)). On the development
+machine, whose root carries the toolchain, with your change committed on
+the host:
 
 ```sh
 cd /src/slopos
 git pull
-scripts/selfhost.sh build
-mkdir -p $HOME/stopwatch/bin $HOME/stopwatch/share/slopos/apps $HOME/stopwatch/share/slopos/icons
-cp -p builddir/apps/bin/stopwatch $HOME/stopwatch/bin/
-cp builddir/apps/share/slopos/icons/org.slopos.stopwatch.png builddir/apps/share/slopos/icons/org.slopos.stopwatch@2x.png $HOME/stopwatch/share/slopos/icons/
-printf 'id=org.slopos.stopwatch\nname=Stopwatch\nexec=%s/.local/bin/stopwatch\nicon=org.slopos.stopwatch.png\n' $HOME > $HOME/stopwatch/share/slopos/apps/org.slopos.stopwatch.app
-tree-install stopwatch $HOME/stopwatch $HOME/.local
+just build
+mkdir -p $HOME/.local/bin $HOME/.local/share/slopos/apps $HOME/.local/share/slopos/icons
+cp -p builddir/apps/bin/stopwatch $HOME/.local/bin/
+cp builddir/apps/share/slopos/icons/org.slopos.stopwatch.png builddir/apps/share/slopos/icons/org.slopos.stopwatch@2x.png $HOME/.local/share/slopos/icons/
+printf 'id=org.slopos.stopwatch\nname=Stopwatch\nexec=%s/.local/bin/stopwatch\nicon=org.slopos.stopwatch.png\n' $HOME > $HOME/.local/share/slopos/apps/org.slopos.stopwatch.app
 ```
 
-`scripts/selfhost.sh build` builds the whole system in the guest, the apps
-among it, which takes a while. For the first person, whose home is
-`/home/user`, the last command prints
-`tree-install: installed stopwatch at /home/user/.local (… bytes copied)`.
-SlopOS's `cp` makes a new file with the default mode unless `-p` keeps the
-source's, so the program is copied with `-p` to stay executable: a tree is
-installed with the modes it has.
+`just build` in the guest builds the kernel and the base, the apps among
+them, which takes a while. SlopOS's `cp` makes a new file with the default
+mode unless `-p` keeps the source's, so the program is copied with `-p` to
+stay executable.
 
 The entry's `exec` must be an absolute path, here inside your home. An entry
-in `~/.local/share` replaces one with the same id from `/usr/local/share`,
-and the dock picks it up the next time your desktop starts (*Log out…* and
-log in again). Installing the same tree again replaces what its last install
-put down and keeps anything else.
+in `~/.local/share` replaces one with the same id from an image's share or
+from `/usr/share`, and the dock picks it up the next time your desktop
+starts (*Log out…* and log in again).
 
 ## What usually goes wrong
 

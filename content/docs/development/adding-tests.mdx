@@ -114,6 +114,27 @@ among the userland tests, for a check that needs init and the services up:
 slopos_testing::stest!(name = init_is_told_apart_by_its_task_id, flags = 0, kind = Userland);
 ```
 
+A kernel test that needs a disk reaches one the suite attaches only by its
+identity, through `slopos_fs::tests::suite_disks` (feature `tests`). Never
+claim, write, mount or partition a disk by node name: on real hardware
+`nvme0n2`, `vdb` or `sda` is somebody's disk. `scratch_disk(TestDisk::…)`
+and `scratch_disk_by_id(b"<by-id name>")` answer the node of the one
+registered whole disk whose identity matches the table, built with
+`DiskId::nvme`, `DiskId::virtio` or `DiskId::usb` from the serials
+`scripts/qemu_run.sh` gives:
+
+| Disk | Kind |
+|------|------|
+| `slopos-root` namespace 2, `slopos-4kn` namespace 2, `slopos-spare`, `slopos-scratch`, `slopos-usb` | Scratch: `scratch_disk` hands them out |
+| `slopos-root` namespace 1 (the root), `slopos-4kn` namespace 1 (the media volume), `slopos-verified` | Kept: reached only through `suite_disk` |
+
+Anything else is a `Refusal`: `Absent` (no disk carries the identity),
+`Ambiguous` (more than one does), `NotScratch` (a kept disk asked for as
+scratch) or `Unknown` (a by-id name the suite attaches nothing as). A test
+whose subject is node naming may still spell names. A disk added to
+`qemu_run.sh` gets a `TestDisk` variant, and
+`test_block_scratch_refuses_other_disks` holds the refusals.
+
 ## 2. Write a userland test
 
 A userland test is a program. On a test boot, init starts a copy of itself
@@ -128,24 +149,23 @@ them with the other results. This is
 use slopos_userland as _;
 
 use slopos_userland::keymap::current_name as current;
-use slopos_userland::syscall::keymap::keymap_get_name;
+use slopos_userland::syscall::keymap::keymap_load;
 
-/// The boot default layout is `us`.
-fn get_name_returns_default() -> bool {
+/// A test boot keeps no `/etc/keymap`, so init loaded nothing and answers the
+/// kernel's built-in `us`.
+fn init_answers_us_at_boot() -> bool {
     current().as_deref() == Some("us")
 }
 
-/// A 1-byte buffer gets exactly one byte, never an overrun.
-fn get_name_respects_buflen() -> bool {
-    let mut one = [0u8; 1];
-    let n = keymap_get_name(&mut one);
-    n == 1 && one[0] == b'u'
+/// A malformed (wrong-size) blob is rejected with `EINVAL`, never installed.
+fn load_rejects_bad_blob() -> bool {
+    keymap_load(&[0u8; 16]) < 0
 }
 
 fn main() {
     slopos_slibc::test_harness::run(&[
-        ("get_name_returns_default", get_name_returns_default),
-        ("get_name_respects_buflen", get_name_respects_buflen),
+        ("init_answers_us_at_boot", init_answers_us_at_boot),
+        ("load_rejects_bad_blob", load_rejects_bad_blob),
     ]);
 }
 ```

@@ -105,7 +105,7 @@ preserve: the image is damaged, or a boot left it dirty (see above)
 
 The development machine's disk holds whatever you did inside it, so the build
 never deletes it. Before each boot it updates what the host installs there
-(the toolchain and the apps under `/usr/local`), and it stops when it cannot
+(the toolchain and apps images it offers in `/var/lib/slopos/offered`), and it stops when it cannot
 do that safely: `e2fsck` finds the image damaged, it cannot be grown, it
 falls short of the ext4 features every SlopOS volume has, or it carries a
 kind of integrity trailer the build would not keep. (A disk that was only
@@ -154,8 +154,9 @@ If the repair loses what you needed, `just reset root` gives you a fresh disk.
 
 A write under `/bin`, `/sbin`, `/lib`, `/usr/bin`, `/usr/share` or `/etc/ssl`
 fails on every boot, which is a different thing: those directories belong to
-the read-only base. Software you add goes under `/usr/local` or `~/.local`
-([Installed software](/docs/architecture/software)).
+the read-only base. Software for everyone comes as an image, shown under
+`/opt`, and a program you build for yourself goes in `~/.local`, copied there
+with `cp` ([Installed software](/docs/architecture/software)).
 
 ## A command says it needs your password
 
@@ -164,7 +165,7 @@ This needs your password, and you haven't set one.
 ```
 
 Commands that install or change the system (`bootctl install`,
-`scripts/selfhost.sh install`, `users add` and others) ask the person at the
+`just install`, `users add` and others) ask the person at the
 machine first. At the
 desktop that is a dialog, which the first person, who has no password, answers
 with a click. At a text console, such as the serial console `VIDEO=0` gives
@@ -172,6 +173,30 @@ you, the only answer is a password, so a person without one is refused. Run
 the command from the terminal on the desktop instead, or set a password there
 with `users passwd` and then use it at the console. [Privileged
 actions](/docs/architecture/privd) explains who is asked and how.
+
+## A `just` recipe refuses in the guest
+
+```text
+just boot: runs on a Linux or macOS host; SlopOS builds with just build and puts a build to use with just install and just install-kernel
+```
+
+The justfile runs on both systems, but a recipe that emulates a machine or
+needs the host's images or cross-build tools refuses on SlopOS. Run it on
+your machine instead; in the guest, `just build`, `just install`,
+`just install-kernel` and `just precommit` do the work. The reverse,
+`just install: installs into the SlopOS machine it runs on`, means you ran
+`install` on your machine; `just remote-install` installs on a paired one.
+
+If the guest has no `just` at all, the root was offered no toolchain image:
+run `just toolchain` on your machine, then `just boot` again. If the build
+says
+
+```text
+build_userland: the toolchain at <sysroot> is <have>; this tree needs <want>, which just toolchain builds on the host
+```
+
+the toolchain image is older than the tree's pins; `just toolchain` on your
+machine and a new `just boot` bring the one the tree needs.
 
 ## Boot keeps restarting at the Wheel of Fate
 
@@ -189,7 +214,7 @@ Test boots never spin it.
 
 | Message | Fix |
 |---------|-----|
-| `FAIL: no toolchain at builddir/slopos-toolchain/install — run just toolchain` | `just test-selfhost`, `test-install-guest`, `bench-selfhost` and `test-installer` need the cross-built toolchain: run `just toolchain`, or for `test-installer` set `INSTALLER_PAYLOAD=0` |
+| `FAIL: no toolchain image at builddir/slopos-toolchain/image — run just toolchain` | `just test-selfhost`, `test-install-guest`, `bench-selfhost` and `test-installer` need the cross-built toolchain image: run `just toolchain`, or for `test-installer` set `INSTALLER_PAYLOAD=0` |
 | A `FAIL:` line ending `commit or stash first` | `just test-selfhost` and `test-install-guest` build `HEAD` in the guest, so the working tree must have no uncommitted changes |
 
 ## QEMU stops with "the git peer cannot serve the path"

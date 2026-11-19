@@ -154,9 +154,10 @@ host installs unasked either way). Sign it, and an administrator or the
 paired host installs updates signed by the same key with no question, within
 limits the owner set for the key.
 
-Decide before the first install. A key only ever updates an extension whose
-first install it signed: once a person has approved an install, the record
-names no key, and that stays so even after the extension is removed.
+Decide before the first install. A name's images are one publisher's: the
+record keeps the key that signed the first one (or nobody), and every later
+image of that name must be signed by the same key, even one a person
+approves. Changing publisher means `extctl remove` first.
 
 Make an Ed25519 key on the host if you have none for this:
 
@@ -251,8 +252,11 @@ extctl install hello.ext
 The terminal prints `extctl: waiting for you to allow this on the screen`.
 The desktop asks whether to install an extension and give it what it asks
 for. The details under the question show the command line, which names the
-image's root and the grant, `grant - unasked - users hello commands hello`.
-Choose *Install*:
+image's root, its signer (`signer nobody`, or the key's fingerprint when
+`hello.meta.sig` lies beside the image) and the grant,
+`grant - unasked - users hello commands hello`. Choose *Install*. While it
+works, one line on the terminal shows what it is doing and how far it got,
+then gives way to the result:
 
 ```text
 hello 1 installed; it runs as activation 2
@@ -277,14 +281,14 @@ extctl status hello
 ```
 
 ```text
-hello: enabled, running, floor 1
+hello: enabled, running, floor 1, signed by nobody
   uids hello=100
   current 1 3f9c2a1b7d4e by the person: grant - unasked - users hello commands hello
 ```
 
-A signed install names the key's fingerprint instead of `the person`, and the
-uid is the lowest free one from 100. The command is on everyone's `PATH`
-through a link in `/opt/bin`:
+A signed install names the key's fingerprint instead of `nobody` and
+`the person`, and the uid is the lowest free one from 100. The command is on
+everyone's `PATH` through a link in `/opt/bin`:
 
 ```bash
 hello
@@ -345,12 +349,17 @@ extctl remove hello
 floor to it, but refuses the version it left to a signed install, so the
 next signed update has to be version 3. `disable` takes the
 extension away from `/opt/hello`, stops its service and removes its command
-until `enable`. `remove` deletes its images but keeps its record, so its
-version floor (1, after the rollback) and uids stay:
+until `enable`. `remove` takes away its images, its data, settings and log,
+and gives up the name: the record keeps only its retired uids, and the next
+image of `hello`, from any publisher, goes in as a first install:
 
 ```text
-hello removed; its record keeps version floor 1
+hello removed; any publisher's image of it goes in as a first install; its uids are free again
 ```
+
+If a program still runs as one of its uids, or something they own is left
+in a shared directory, the uids stay retired and the message says why; run
+`extctl remove hello` again once that is gone.
 
 ## What usually goes wrong
 
@@ -373,9 +382,9 @@ hello removed; its record keeps version floor 1
   Raise the version.
 - **`it is signed by SHA256:…, which the owner does not trust`.** Trust the
   key first (step 3).
-- **`the store's record names another authority than this key, so a person
-  approves it`.** The extension's first install was not signed by this key.
-  Install the update with `extctl install`, which asks the person.
+- **`it is another publisher's image of hello`.** The installed images were
+  signed by another key, or by nobody. Sign with the key that signed them,
+  or `extctl remove hello` first.
 - **`hello is a person's name`.** The extension or one of its users has the
   same name as a person on the machine. Rename it in `release`.
 - **The install fails reading the image although your session can read

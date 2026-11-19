@@ -16,10 +16,11 @@ what they control. The parsers are authoritative: `boot/src/early_init.rs`
 
 ## How to pass options
 
-The command line is a list of options separated by spaces. The boot loader
-(Limine) hands it to the kernel from its configuration, which the build
-scripts write when they build an image, so changing it means rebuilding the
-image.
+The command line is a list of options separated by spaces. It has two
+parts: the line the boot loader (Limine) hands the kernel from its
+configuration, which the build scripts write when they build an image, and
+the words the kernel carries inside itself, which it appends to the
+loader's (see [below](#where-the-words-come-from)).
 
 | How you boot | Command line |
 |---|---|
@@ -31,27 +32,45 @@ image.
 | `just test-installer` | The live ISO: `tests=on tests.shutdown=on tests.verbosity=summary boot.debug=off roulette=skip root=initramfs watchdog.miss_threshold=300 tests.run=*installer*`. The systems it installs are given the same words through `installer --cmdline`, with `panic=reboot` in place of `root=initramfs` |
 | `just test-remote` | `tests=off roulette=skip`, its slots with `root=PARTUUID=` of the disk's root partition |
 | `just test-toolchain`, `test-selfhost`, `bench-selfhost`, `test-install-guest` | `test_cmdline` with `boot.debug=off`, plus `watchdog.miss_threshold=300` and a `tests.run=` naming their tests. All but `test-install-guest` append `TEST_CMDLINE_EXTRA`; `bench-selfhost` also adds `prof=on` unless `BENCH_PROF` is set |
-| An installed system | `root=PARTUUID=<root partition> panic=reboot`, where `installer --cmdline <words>` replaces `panic=reboot` |
+| An installed system | The loader's `root=PARTUUID=<root partition>`, then the machine's words stamped into each slot's kernel: `panic=reboot`, or what `installer --cmdline <words>` or `bootctl cmdline set` gave |
 
 ```sh
 BOOT_CMDLINE='tests=off root=initramfs lockdep=warn' just boot-live
 just test 'slopos_mm::*'    # tests=on ... tests.run=slopos_mm::*
 ```
 
-### Built-in command line
+### Where the words come from
 
-A kernel built with `SLOPOS_BUILTIN_CMDLINE` set carries that text and
-appends it to the loader's command line, so an option read by its last
-occurrence takes the built-in value. This is how a kernel installed into a
-slot whose loader entry is fixed still boots with an experiment's options:
+Every kernel has a section of its own, `.slopos.cmdline`: 512 bytes of
+words (printable ASCII, joined by single spaces) and then NULs, which
+`link.ld` asserts. The kernel appends those words to the loader's line, so
+an option read by its last occurrence takes their value, and they travel
+with the kernel into whatever slot it is installed in. A section that breaks
+the rule is dropped whole, and the boot log says
+`BOOT: built-in command line dropped: <reason>`.
+
+| Who writes the words | When |
+|---|---|
+| `SLOPOS_BUILTIN_CMDLINE` | When the kernel is built; the build fails on words that break the rule |
+| `bootctl install` and `bootctl clone` | As they write a slot of this machine: the machine's words, from `/etc/kernel/cmdline`, then `install --cmdline <words>`. A kernel going to another disk's slot (`bootctl --boot`) keeps its own words unless `--cmdline` names some |
+| `bootctl cmdline set <words>` | Writes `/etc/kernel/cmdline`, which the next kernel `bootctl` installs or clones carries; `bootctl cmdline` prints it. An administrator allows it in a dialog |
+| The installer | Writes `/etc/kernel/cmdline` from `--cmdline` (default `panic=reboot`) and stamps the kernel in both slots. The installed `limine.conf` carries `root=` alone |
+
+`bootctl` refuses to install while `/etc/kernel/cmdline` or its directory is
+writable by anyone but uid 0, and refuses words that name `root=`, because
+the loader's line holds the root and a stamped word after it would win.
+Words stamped by `bootctl` replace whatever the kernel was built with, so on
+a machine, an experiment's options go in with the kernel, after the
+machine's words, through `--cmdline`:
 
 ```sh
-SLOPOS_BUILTIN_CMDLINE='cpufreq=firmware prof=on' just remote-install
+bootctl install b builddir/kernel-release.elf --cmdline 'cpufreq=firmware prof=on'
 ```
 
-The boot log says `BOOT: built-in command line appended: <text>`. The two lines,
-with a space between them, must together be shorter than 1024 bytes; when they
-are not, the kernel uses the loader's alone and logs
+The words go with the slot's trial and are kept by its commit. The boot log
+says `BOOT: built-in command line appended: <text>`. The two lines, with a
+space between them, must together be shorter than 1024 bytes; when they are
+not, the kernel uses the loader's alone and logs
 `BOOT: built-in command line dropped: it does not fit beside the loader's`.
 
 ## How options are read
@@ -249,6 +268,8 @@ The output these options control is described in
 |---|---|
 | `boot/src/early_init.rs` | `root=`, `verity=`, the panic, logging, lockdep, quota, watchdog, scheduling, memory, `prof=`, `extensions=` and test-mode options |
 | `boot/src/limine_protocol.rs` | The loader's command line and the built-in one |
+| `boot-core/src/kernel.rs` (`CMDLINE_SECTION`, `stamp_cmdline`), `boot-core/src/layout.rs` (`MACHINE_CMDLINE`) | The kernel's words section, its rule and the machine's words file |
+| `userland/src/apps/bootctl.rs` (`cmdline`, `install --cmdline`) | Stamping the machine's words into a slot's kernel |
 | `boot/src/boot_drivers.rs` | `video=`, `serial_mirror=`, `tp.*`, `platform.debug` |
 | `boot/src/boot_services.rs` | What `root=` and `mount=` do at boot |
 | `cpufreq-core/src/config.rs` | `cpufreq=`, `cpufreq.epp=`, `sched.hybrid=` |

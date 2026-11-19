@@ -16,7 +16,7 @@ your Linux machine; nothing on SlopOS listens for connections.
 What the broker can make the computer do is bounded. Commands run as a person
 holding no special powers. On top of that, the policy of privd, the program
 that runs SlopOS's privileged actions, lets the agent change
-the boot slots and the bases, install extensions and software, change CPU
+the boot slots, the bases and the kernel's boot options, install and remove extensions, change CPU
 frequency settings, read the kernel's diagnostics, change the keyboard layout
 and restart or power off, without asking anyone at the machine. It can't
 manage accounts, change network settings, run the installer or open a root
@@ -114,10 +114,9 @@ and runs these actions without asking anyone:
 | Area | Actions |
 |------|---------|
 | Restarting and powering off | `org.slopos.power.reboot`, `org.slopos.power.poweroff` |
-| Kernels in the boot slots | `org.slopos.boot.*`: status, install, clone, one-shot boot, set the default, commit, spare, reboot |
-| Bases | `org.slopos.base.install`, `org.slopos.base.rollback` |
-| Extensions | `org.slopos.extension.*`: install, signed install, trust a key, manage, configuration |
-| Software in `/usr/local` | `org.slopos.software.install` |
+| Kernels in the boot slots | `org.slopos.boot.*`: status, install, clone, boot options, one-shot boot, set the default, commit, spare, reboot |
+| Bases | `org.slopos.base.*`: install, try, try with its kernel, commit, rollback |
+| Extensions | `org.slopos.extension.*`: install, signed install, trust a key, manage, remove, configuration |
 | Diagnostics and settings | `org.slopos.cpufreq.set`, `org.slopos.kconsole`, `org.slopos.prof`, `org.slopos.console.keymap` |
 
 privd refuses the agent every other action of the base's policy, and it never
@@ -189,9 +188,9 @@ That ISO carries your broker's token. Use it only for your own computers.
 ### Staying paired
 
 A computer stays paired across updates because the bases you install carry
-the pairing: `just remote-install` builds them that way, and
-`scripts/selfhost.sh`, building on the computer itself, copies the running
-base's pairing into the base it builds. `remote.py` refuses to serve or
+the pairing: `just remote-install` builds them that way, and `just build`
+on the computer itself copies the running base's pairing into the base it
+builds. `remote.py` refuses to serve or
 install a base paired with another broker, or with none, because the computer
 would boot unreachable.
 
@@ -249,16 +248,22 @@ builds and installs your current tree on the paired computer:
    it last installed under the running kernel's tag
    (`remote.py kernel-changed` prints `same` or `changed`). Only a kernel
    that changed is built again, under the new tag.
-3. It pushes the base and installs it with `bootctl base install`. When the
-   running kernel serves the new base, the computer switches to it at once,
-   and the recipe waits for `remoted` to report the new base's tag:
-   `remote: the base runs now, without a reboot: boot <boot id>, base tag <tag>`.
-   Otherwise (the base needs the new kernel) the recipe says the base does
-   not run yet, and it runs from the boot into that kernel in step 4.
-4. A changed kernel is pushed into the slot that isn't the default, armed for
-   one boot, and booted. The recipe waits for the computer to come back with
-   the new tag. If it comes back with another, the new kernel didn't boot
-   (the machine fell back to its default), and nothing is committed.
+3. It pushes the base, and a changed kernel beside it, and tries the base
+   with `bootctl base try` (with `--kernel` naming the pushed kernel, when
+   there is one). When the running kernel serves the new base, the computer
+   switches to it at once without writing it, the recipe waits for `remoted`
+   to report the new base's tag
+   (`remote: the base runs now, without a reboot: boot <boot id>, base tag <tag>; keeping it`),
+   and then keeps it with `bootctl base commit`. A restart before the commit
+   returns to the base that ran before. Otherwise (the base needs the new
+   kernel) `bootctl` writes the base to the partition and the kernel to the
+   slot that isn't the default, armed for one boot, and the base runs from
+   that boot in step 4.
+4. A changed kernel the base did not take with it goes into the slot that
+   isn't the default, armed for one boot. The armed slot is booted, and the
+   recipe waits for the computer to come back with the new tag. If it comes
+   back with another, the new kernel didn't boot (the machine fell back to
+   its default), and nothing is committed.
 5. With `just remote-install --commit`, the kernel that came back becomes the
    default. Without it, the next restart returns to the old kernel, and
    `just remote run -- bootctl commit` keeps the new one later.

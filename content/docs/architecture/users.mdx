@@ -140,7 +140,7 @@ Its identity matters in three places only:
   uid 0 unless the volume says otherwise (the superblock's `s_def_resuid` and
   `s_def_resgid` name the reserve's user and group).
 - **The loader.** A process running as uid 0 never loads libraries from
-  `/usr/local/lib` or `~/.local/lib`, where people can put them.
+  `~/.local/lib`, where people can put them.
 
 privd and init accept requests from "root" only from uid 0 running a program
 from the base, so a program from outside the base gets nothing by running as
@@ -155,6 +155,18 @@ uid 0 either ([Privileged actions](/docs/architecture/privd)).
 | 100 to 999 | extensions' users | each extension's services and actions, under users of its own ([Extensions](/docs/architecture/extensions)) |
 | 1000 to 59999 | people | everything a person runs: their desktop, terminal and shells, the commands `priv` runs for them |
 | 65534 | `nobody` | nothing; it is listed because Unix programs expect it |
+
+An extension takes uids only when its images are granted a user: then it
+keeps one for its own name too, its *number*, from which init makes its
+services' login tags. An extension granted no user takes no uid and has no
+number. Either way `users add` refuses an installed extension's name. When
+`extctl remove` takes an extension away, its uids become *retired* in the
+store's record. Once init has stopped its services, the removal deletes
+what those uids own directly in `/tmp`, `/var/tmp` and `/dev/shm`, and
+gives the uids back when nothing they own is found deeper and no task has
+run as one within 2 s. Until then they stay retired, and a later `remove`
+tries again. Something owned deeper is only reported, not deleted, since
+another uid's directory could put a link under the walk.
 
 uid 1000 is the *first person*, the one the installer creates. Their home is
 always `/home/user`, whatever name they chose, because the ownership map
@@ -176,8 +188,7 @@ boot whatever part of it a root lacks.
 | `/`, `/etc`, `/var`, `/var/lib`, `/var/lib/slopos`, `/var/log`, `/home`, `/media`, `/usr`, `/opt`, `/opt/bin` | uid 0 | `0755` |
 | `/root` | uid 0 | `0700` |
 | `/var/tmp` | uid 0 | `1777` |
-| `/usr/local` | the first person, with everything in it, while they are the only person; then uid 0 | `0755` |
-| `/home/user` | the first person, with everything in it | `0755`, then `0700` once a second person has an account |
+| `/home/user` | the first person, with everything in it | `0755` while the accounts record holds one person at most, `0700` otherwise |
 | `/home/<name>` for every later person | that person | `0700` |
 
 The workspace, `/src`, belongs to the first person with everything in it.
@@ -187,26 +198,30 @@ boot, `/tmp` as mode `1777`. The base's directories (`/bin`, `/sbin`, `/lib`,
 `/usr/bin`, `/usr/share`, `/etc/ssl`) are mounted read-only over the root and
 belong to uid 0 ([Base system](/docs/architecture/base)).
 
-The first person's three trees (their home, the workspace at `/src` and
-`/usr/local`) are theirs only while the record `/var/lib/slopos/owners` says
-so, one line per tree:
+The first person's two trees (their home and the workspace at `/src`) are
+theirs only while the record `/var/lib/slopos/owners` says so, one line per
+tree. A line naming any other tree is ignored:
 
 ```text
 1000:1000 /home/user
 1000:1000 /src
-1000:1000 /usr/local
 ```
 
 The image builders and the installer write this record when they make a root,
 and every base carries the one-person record for a root that boots in memory.
 A builder that reuses an image a guest has written follows the record that
-image carries and never writes a new one over it.
-A root without one, or with one that can't be read, gives the first person
-nothing. While the first person is alone, their home is `0755` and they install
-software into `/usr/local` themselves. Adding a second person changes both:
-the first person's home becomes `0700`, and `/usr/local` and everything in it
-becomes uid 0's, installed into through privd from then on. [Installed
-software](/docs/architecture/software) describes that hand-over.
+image carries and never writes a new one over it, and makes that image's
+home `0700` if it has to create it, since it reads none of the guest's
+accounts. A root without a record, or with one that can't be read, gives
+the first person nothing.
+
+Nothing is handed over between people: init's boot only lays out the root.
+Where something makes the first person's home, it is `0755` while the
+accounts record holds at most one person (`root_layout::alone`; a root with
+no record counts as one person) and `0700` otherwise. No person writes
+where others' programs are found: software for everyone is an extension
+image, and a person's own builds go in their `~/.local`
+([Installed software](/docs/architecture/software)).
 
 Other things have owners too:
 
@@ -351,8 +366,9 @@ administrator to type their password into the desktop's dialog
 - Adding someone turns automatic login off unless `--keep-autologin` says
   otherwise. A shared machine shouldn't open anyone's desktop to whoever sits
   down.
-- Adding the second person hands `/usr/local` to uid 0, and adds nobody if
-  that fails.
+- The `users add` that makes the second person first closes the first
+  person's home to others (`root_layout::close_home`), before it records
+  anyone, and adds nobody if that fails. Nothing needs a restart.
 
 If the record changes but the database can't be written, `users` says so, and
 the old database (with a removed person's hash still in it) stands until the
@@ -380,17 +396,17 @@ A userland test drops to uid 1000 without `DacOverride` and checks the rules
 between real processes, each refusal next to a positive control one permission
 bit away: `/etc` refusing a new name, a file closed to others, the sticky bit,
 links in shared directories, terminal and socket ownership, uid 0 meeting the
-mode bits, and the hand-over of `/usr/local`. Run as the person instead, it
+mode bits, and the first home closing when a second person is added
+(`the_first_home_closes_for_a_second_person`). Run as the person instead, it
 holds the root to the ownership map. Kernel tests check the permission checks,
 `chmod` and `chown`, the signal rule's uid half and the id calls, and host
 tests check the credential arithmetic. Another userland test adds, renames,
 promotes and removes people, sets and checks passwords (including one typed
 at a terminal, which must never be echoed), and checks that `DacOverride` alone can't touch
 the record or the database. After the suite, the host checks the disk image it
-wrote against the ownership map and its owners record, and checks that a
-`/usr/local` the record doesn't name is uid 0's and writable by uid 0 alone
-down to its last entry (`check_fs_image.sh --map`), and the Argon2id
-code is held to RFC 9106's test vectors.
+wrote against the ownership map and its owners record
+(`check_fs_image.sh --map`), and the Argon2id code is held to RFC 9106's
+test vectors.
 
 ## For contributors
 

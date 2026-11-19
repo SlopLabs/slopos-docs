@@ -62,7 +62,7 @@ base.
 
 Everything else is linked dynamically against `libc.so`. That includes the
 apps that ship outside the base (the editor, the file manager, the image
-viewer and the widget gallery), the toolchain, and anything you build. The
+viewer, the widget gallery and Breach), the toolchain, and anything you build. The
 executable names the libraries it needs, and a *loader* finds them, maps
 them into memory and connects your calls to their functions when the program
 starts. Shared libraries, `dlopen` and `dlsym` work as they do on Linux.
@@ -74,7 +74,7 @@ live.
 A program outside the base changes on its own schedule, and the base and the
 kernel on theirs, so the program needs one interface that never takes
 anything away. That interface is `libc.so`. Its exports only grow:
-`check_libc_exports.sh` holds every function and variable it exports to a
+`just libc-exports` holds every function and variable it exports to a
 recorded list, and the size, alignment and field offsets of every structure
 its headers define to another, and fails when anything recorded is removed or
 changes, or when something new is not recorded yet. An addition is recorded
@@ -84,7 +84,7 @@ system calls behind the library can then change freely, as long as the
 library keeps its promises.
 
 So a program built outside the base should not make system calls itself.
-The apps are held to that: a check after every userland build on the host
+The apps are held to that: a check as their image is packed
 (`xtask programs`) fails one that is statically linked, names another loader,
 does not list `libc.so` among the libraries it needs, or contains a `syscall`
 instruction of its own. The desktop toolkit the apps use
@@ -109,7 +109,7 @@ one `malloc` and one `errno` to get confused about.
 The loader searches where Linux's does (`LD_LIBRARY_PATH`, the `RUNPATH` or
 `RPATH` of the object that needs the library, `/lib`, `/usr/lib`), then an
 extension's own `lib` directory for that extension's programs, and last
-`~/.local/lib` and `/usr/local/lib`, which it skips for a process running as
+`~/.local/lib`, which it skips for a process running as
 uid 0 or marked `AT_SECURE` (the kernel's mark on a program that starts
 holding a capability beyond those every program has, or running with ids
 other than the real ids of whoever started it, or that is an extension's
@@ -167,16 +167,16 @@ scripts, they run: `if`, `while`, `for`, `case`, functions, pipelines,
 and job control with `jobs`, `fg` and `bg`. Scripts start with `#!` as usual,
 and a file without one is run as a shell script, as POSIX requires.
 
-When nothing sets `PATH`, the search path is `/bin:/sbin:/usr/local/bin:/opt/bin`.
-The system's directories come first, so a program installed in
-`/usr/local/bin` is found but can't replace a system tool by accident, and
-the commands extensions provide come last. A person's session adds their own
-`~/.local/bin` after the system's directories (see
+When nothing sets `PATH`, the search path is `/bin:/sbin:/opt/bin`.
+The system's directories come first, so no installed command can replace a
+system tool by accident, and the commands extensions provide come last. A
+person's session adds their own `~/.local/bin` between the two (see
 [Installed software](/docs/architecture/software)). Only exported variables
 reach the programs the shell starts.
 
 Tab completes command names, and arguments for commands that have completion
-rules; rules ship for git, cargo, ninja, `keymap`, `mkdir` and `rmdir`.
+rules; rules ship in the base for git, cargo, ninja, `keymap`, `mkdir` and
+`rmdir`, and an extension's command may bring its own.
 
 The shell can also run holding power: `priv -s` starts one with the
 capabilities `priv` grants (see [Privileged actions](/docs/architecture/privd)),
@@ -213,17 +213,18 @@ may ask you first (see [Privileged actions](/docs/architecture/privd)).
 | Kind | Programs |
 |---|---|
 | People and sessions | `users` (the people on the machine, their passwords and who administers it), `session` (restart, end or lock your session, or show the login screen), `login` (the console's login prompt), `priv` (run a command with power over the machine's settings, the job `sudo` does elsewhere), `endtask` (end another person's program), `prefs` (your own preferences: the desktop's background and clock and your keyboard layout), `/sbin/authcheck` (checks a password) |
-| Booting, installing and updating | `bootctl` (kernel slots, bases and crash records), `installer` and `installer-ui`, `tree-install` (see [Installed software](/docs/architecture/software)), `extctl` (extensions), `halt` (power off or restart) |
+| Booting, installing and updating | `bootctl` (kernel slots, bases and crash records), `installer` and `installer-ui`, `extctl` (extensions), `halt` (power off or restart) |
 | Disks | `mke2fs`, `e2fsck`, `resize2fs`, `tune2fs`, `debugfs` and `dumpe2fs` in `/sbin`, from e2fsprogs |
 | Looking inside | `sysmon` (the System Monitor), `cpufreq`, `prof` (the kernel's profiler), `kconsole` (the diagnostic console's reports) |
 | Network | `ip` (interfaces, addresses and routes, until the next start), `netctl` (the network settings the computer keeps and starts with), `ss` (sockets), `ping`, `nc` (a TCP or UDP connection), `nmap` (the machines on the local network), `curl` (HTTP and HTTPS), `remoted` (the paired agent a host drives, see [Remote control](/docs/self-hosting/remote-control)) |
 | Desktop | `compositor`, `terminal`, `settings` (the Settings app, see [Settings and preferences](/docs/architecture/settings)), `keymap` (the keyboard layout), `roulette` (the Wheel of Fate) |
 
 `/sbin` also holds `init` (see [Init and services](/docs/architecture/init))
-and `privd`. The apps outside the base live in `/usr/local/bin`: the editor
-(`editor`), the file manager (`file_manager`), the image viewer
-(`image_viewer`) and `widget_gallery`, which shows every component of the
-desktop toolkit. [Windowing](/docs/architecture/userland-windowing) explains
+and `privd`. The apps outside the base come in the image `slopos-essentials`
+and live in `/opt/slopos-essentials/bin`: the editor (`editor`), the file
+manager (`file_manager`), the image viewer (`image_viewer`), the game
+`breach`, and `widget_gallery`, which shows every component of the desktop
+toolkit. [Windowing](/docs/architecture/userland-windowing) explains
 how they get on the screen and [Desktop](/docs/architecture/desktop) what
 they look like.
 
@@ -286,8 +287,8 @@ non-blocking descriptors, as it would on any Unix.
 - **Use `fsync` and `rename`** to replace files safely, as on any Unix;
   [Crash recovery](/docs/architecture/crash-recovery) explains what the disk
   promises.
-- **Install it into `~/.local`** with `tree-install`, or for everyone into
-  `/usr/local` (see [Installed software](/docs/architecture/software)).
+- **Install it into `~/.local`** by copying it there, or for everyone as an
+  extension image (see [Installed software](/docs/architecture/software)).
 
 ## How it is tested
 
@@ -310,8 +311,8 @@ self-hosting tests, which build software with cargo on SlopOS itself. On every c
   `RELA` and packed `RELR` relocations and binds symbols the way glibc does:
   the first definition in lookup order wins.
 - **`libc.so` only grows.** Removing an export or changing a structure's
-  layout fails `check_libc_exports.sh`. Record an addition with
-  `check_libc_exports.sh --record`. The private calls behind the library are
+  layout fails `just libc-exports` (`xtask libc-exports`), on the host and on
+  SlopOS. Record an addition with `just libc-exports --record`. The private calls behind the library are
   numbered and checked separately, as the base interface (see
   [Base system](/docs/architecture/base)).
 - **`malloc` follows mimalloc.** Each thread owns a heap of size-class spans
@@ -378,7 +379,7 @@ self-hosting tests, which build software with cargo on SlopOS itself. On every c
 | `slibc/src/ld_so/` | The loader |
 | `abi/` | Constants and layouts shared by the kernel and slibc |
 | `toolchain/libc/` | The headers' upstream fork |
-| `scripts/check_libc_exports.sh`, `scripts/gates/libc/` | `libc.so`'s recorded exports and layouts |
+| `tools/xtask/src/contract/libc_exports/`, `scripts/gates/libc/` | `libc.so`'s recorded exports and layouts |
 | `tools/xtask/src/elf/loose_programs.rs` | The check that holds the apps to `libc.so` |
 | `userland/userland.ld` | The static programs' linker script, which discards unwind tables |
 | `cabi/` | How the desktop toolkit reaches `libc.so` |

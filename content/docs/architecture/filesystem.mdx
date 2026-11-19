@@ -35,7 +35,7 @@ part, how disks are mounted, and what the disk format is.
 |------|------------|--------------------|
 | `/` | The root disk (or memory, see [below](#how-the-root-is-chosen)) | Yes, on a disk |
 | `/bin`, `/sbin`, `/lib`, `/usr/bin`, `/usr/share`, `/etc/ssl` | The base, read-only | Changes only when a new base is installed |
-| `/etc`, `/var`, `/root`, `/home`, `/src`, `/usr/local` | The root disk | Yes |
+| `/etc`, `/var`, `/root`, `/home`, `/src` | The root disk | Yes |
 | `/opt/<name>` | An installed extension's image, read-only | Shown again at every boot while the extension is enabled |
 | `/opt/bin` | The root disk: links to the commands extensions provide | Yes |
 | `/tmp`, `/run`, `/dev/shm` | Memory | No |
@@ -368,8 +368,9 @@ root, the capacity volume) are rebuilt by the build as needed.
 
 - Put your files in your home directory. `/etc` and `/var` are the system's,
   and anything you put in `/tmp` is gone at reboot.
-- Install software for yourself under `~/.local`, or for everyone under
-  `/usr/local`. You can't add to `/bin` except by building a new base.
+- Install software for yourself by copying it into `~/.local`. Software for
+  everyone arrives as an extension image under `/opt`. You can't add to
+  `/bin` except by building a new base.
   [Installed software](/docs/architecture/software) has the details.
 - Use `fsync` for data that matters, and the write-temp-then-rename pattern
   from [Crash recovery](/docs/architecture/crash-recovery#what-programs-can-rely-on)
@@ -466,6 +467,19 @@ run.
   (`cache_entries_for`): an eighth of the usable page frames, no more than
   the volume has blocks, no fewer than its allocation working set, and
   capped at `CACHE_ENTRIES_MAX`. It grows a chunk at a time as it fills.
+- **Where a file's bytes lie.** `FileSystem::file_runs` answers where a
+  file's bytes sit on its filesystem's device, which lets an extension
+  image be read straight off the disk under it (`fs/src/extension/device.rs`).
+  ext4 answers only for a sealed, extent-mapped regular file with no hole or
+  unwritten extent, after writing the file's dirty blocks home and waiting
+  out the flusher's batch in flight, and only when every block's home holds
+  its newest contents (`BlockCache::home_holds`: no dirty or in-flight copy,
+  none in the journal). Any other file gets `None`, and the caller reads
+  through the filesystem.
+- **Fault reads.** A fault on an executable mapping reads the aligned
+  window of `READAHEAD_PAGES` around its page, the pages before it too
+  (`FileFaultPlan::read_around`). Any other fault reads the pages after the
+  one it needs.
 - **Journal.** jbd2 format, `data=ordered` only. The write ordering a change
   must keep is the one described in
   [Crash recovery](/docs/architecture/crash-recovery#how-the-journal-prevents-it).

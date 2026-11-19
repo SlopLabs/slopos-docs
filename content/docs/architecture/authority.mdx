@@ -89,24 +89,32 @@ directly.
 | `SetId` | Taking a user or group id the process doesn't already hold, setting supplementary groups, and starting a child as someone else or with a login tag | privd |
 | `DacOverride` | Reading and writing any file whatever its permission bits, and giving any file to any owner | privd; `users`, the installer, what `priv` runs |
 | `SchedHigh` | Starting a program at the `High` scheduling tier, and setting a nice value below both zero and the task's current one | Init alone, which starts the compositor at `High` |
-| `BaseUpdate` | Making another archive the running base | privd; `bootctl base install` and `base rollback` |
+| `BaseUpdate` | Making another archive the running base | privd; `bootctl base install`, `base try` and `base rollback` |
 | `ExtensionUpdate` | Activating and deactivating extensions; it also lifts the per-process disk-space limit | privd; `extctl` |
 | `TestHarness` | The test-only system calls, which do nothing unless the kernel booted with `tests=on` | The copy of init that runs the tests |
 
-Three more capabilities are *universal*: every program holds them, and nothing
+Two more capabilities are *universal*: every program holds them, and nothing
 yet hands them out more finely.
 
 | Capability | Allows |
 |---|---|
-| `ConsoleIo` | Writing to the kernel log without a descriptor |
-| `ClipboardGlobal` | Copying to and pasting from the kernel's clipboard for the caller's session (the desktop's apps use their compositor's clipboard instead) |
+| `ConsoleIo` | Writing records to the kernel log through `/dev/kmsg` |
 | `Fate` | Spinning the Wheel of Fate and reporting its result |
 
-They protect nothing today. They are capabilities rather than plain system
-calls so that taking one away later, once the clipboard is a descriptor or the
-wheel is something init hands `/bin/roulette`, is a visible change. Every
-other capability is *gated*: a program holds it only if something handed it
-over.
+`ConsoleIo` gates no system call. The device checks it at every write to
+`/dev/kmsg`, so a writer without it gets `EPERM`, and a descriptor handed on
+to another process carries nothing. Each write is one record of at most 1024
+bytes (`EINVAL` past that). A leading `<N>` sets its level as on Linux: 0 to 3
+error, 4 warn, 5 and 6 info, 7 debug, and warn with no prefix. A process
+writing more than 10 records in 5 seconds has the rest dropped while each
+write still answers its length, as Linux's `printk.devkmsg=ratelimit` does. A
+record stays one log line: a control character other than tab, a line
+separator and a backslash go in as `\xNN` per byte, as Linux shows them.
+
+`Fate` protects nothing today. It is a capability rather than a plain system
+call so that taking it away later, once the wheel is something init hands
+`/bin/roulette`, is a visible change. Every other capability is *gated*: a
+program holds it only if something handed it over.
 
 An extension's services may also hold `Power`, `Mount`, `RawBlock`,
 `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `DacOverride` or
@@ -134,7 +142,8 @@ tag, and each of those takes `SetId`. A child that holds any
 gated capability, or runs with ids other than its spawner's real ones, starts in
 *secure mode* (`AT_SECURE`, the flag Linux sets for setuid programs). In secure
 mode the dynamic loader ignores `LD_LIBRARY_PATH`, `$ORIGIN` and relative
-directories, and doesn't search `/usr/local/lib` or `~/.local/lib`, so nobody
+directories, and doesn't search `~/.local/lib` (nor does it for any process of
+uid 0's), so nobody
 can slip a library into a program that holds more than they do. Every program
 of an extension starts in secure mode too, whether a spawn or an `exec` loads
 it and whatever it holds: it speaks as its extension, which whoever started it
@@ -384,7 +393,10 @@ is refused must declare that, or it tests nothing.
 **Capability bits are ABI.** A mask crosses the system call boundary in
 `caps_drop`, `caps_get` and `SpawnAttrs`, so `abi/src/caps.rs` states the bits
 once and a compile-time assert holds the kernel's `Capability` enum to exactly
-those. A new capability also needs a decision in `priv-core`: whether an action
+those. The mask's bits run from 0 to 20: `Fate` is bit 7 and `SeatSwitch`
+bit 20, the bits above the removed `ClipboardGlobal` having moved down one,
+and `CAP_UNIVERSAL` is `ConsoleIo | Fate`. A new capability also needs a
+decision in `priv-core`: whether an action
 may name it (`DELEGABLE`), whether `priv` may (`REQUESTER_CEILING`), and whether
 an extension never may (`NEVER` in `extension-core`).
 

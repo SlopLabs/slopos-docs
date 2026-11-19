@@ -42,10 +42,10 @@ choices or recipe behaviour.
 | `LOG_FILE` | `test_output.log` | Where `boot-log` writes the serial log, with ANSI escapes removed |
 | `DEV_QEMU_MEM` | `6G` | Memory for `boot`, the self-hosting checks and `test-installer` when `QEMU_MEM` is unset |
 | `PERSIST_IMAGE_SIZE` | `512M` | Minimum size of the persistent root; a larger value grows the existing image in place |
-| `ROOT_FREE_FLOOR` | `6G` | Free space the persistent and self-hosting roots keep for builds; a root with less is grown |
-| `TOOLCHAIN_STAGE` | `builddir/slopos-toolchain/install` | The toolchain the persistent and self-hosting roots carry at `/usr/local` |
-| `FS_IMAGE_SIZE` | `32M` | Size of `fs/assets/ext4.img` |
-| `FS_IMAGE_SIZE_TESTS` | `128M` | Size of `fs/assets/ext4-tests.img` |
+| `ROOT_FREE_FLOOR` | `16G` | Free space the persistent and self-hosting roots keep for a clean build of the dev and tests systems and `just precommit` over them; a root with less is grown |
+| `TOOLCHAIN_STAGE` | `builddir/slopos-toolchain/image` | The toolchain image the persistent and self-hosting roots are offered in `/var/lib/slopos/offered`, which the guest installs at `/opt/slopos-toolchain` |
+| `FS_IMAGE_SIZE` | `64M` | Size of `fs/assets/ext4.img`. A base that doesn't fit stops the build at the file that didn't; the image is never grown for it |
+| `FS_IMAGE_SIZE_TESTS` | `142M` | Size of `fs/assets/ext4-tests.img`, under the same rule |
 | `CAPACITY_IMAGE_SIZE` | `16G` | Size of the `test-capacity` volume |
 | `CAPACITY_INODE_RATIO` | `16384` | Bytes per inode for the `test-capacity` volume |
 | `CAPACITY_QEMU_MEM` | `2G` | Memory for `test-capacity` when `QEMU_MEM` is unset |
@@ -126,23 +126,35 @@ Every NVMe controller is probed before any virtio one, in command-line order,
 and a namespace is named by its number, so a root disk, when one is attached,
 is `nvme0n1`, and an optional disk that is absent renames nothing.
 
-| Guest name | When | Contents |
-|------------|------|----------|
-| `nvme0n1` | `boot` | `fs/assets/ext4-persist.img`, the persistent root |
-| `nvme0n1` | `test` mode | `fs/assets/ext4-tests.img`, rebuilt every run; for the self-hosting checks `fs/assets/ext4-selfhost.img` |
-| `nvme0n2` | `test` mode | Blank 8 MiB scratch for destructive block tests |
-| `nvme0n3` | `CAPACITY_IMG` names an existing file (`test-capacity`) | The capacity volume, kept between runs |
-| `nvme1n1` | `test` mode | 16 MiB ext4 volume labelled `slopos-media`, 4096-byte logical blocks, mounted at `/media` |
-| `nvme1n2` | `test` mode | Blank scratch with 4096-byte logical blocks |
-| `nvme2n1` | `test` mode | Scratch on a controller that a test shuts down |
-| last controller | `BOOT_DISK_IMG` | The boot disk: `nvme1n1` for `boot`, `nvme3n1` beside the test disks, `nvme0n1` with neither a root disk nor test disks |
-| `vda` | `test` mode | `fs/assets/ext4.img`, the shipped verified image, copy-on-write |
-| `vdb` | `test` mode | Blank virtio scratch |
-| `sda` | `test` mode | Blank 8 MiB scratch on a USB stick, behind a `qemu-xhci` controller at PCI address `00:10.0` |
-| `sda` | `INSTALL_STICK` | The ISO on a USB stick behind `qemu-xhci`, write-protected unless `INSTALL_STICK_WRITABLE=1`, booted first |
-| none | `INSTALL_CDROM` | The ISO in an AHCI CD drive, booted first; the kernel has no driver for it, so the system sees no payload |
+| Guest name | When | Contents | Identity (`serial=`, namespace) |
+|------------|------|----------|---------------------------------|
+| `nvme0n1` | `boot` | `fs/assets/ext4-persist.img`, the persistent root | `slopos-root`, 1 |
+| `nvme0n1` | `test` mode | `fs/assets/ext4-tests.img`, rebuilt every run; for the self-hosting checks `fs/assets/ext4-selfhost.img` | `slopos-root`, 1 (kept) |
+| `nvme0n2` | `test` mode | Blank 8 MiB scratch for destructive block tests | `slopos-root`, 2 (scratch) |
+| `nvme0n3` | `CAPACITY_IMG` names an existing file (`test-capacity`) | The capacity volume, kept between runs | `slopos-root`, 3 |
+| `nvme1n1` | `test` mode | 16 MiB ext4 volume labelled `slopos-media`, 4096-byte logical blocks, mounted at `/media` | `slopos-4kn`, 1 (kept) |
+| `nvme1n2` | `test` mode | Blank scratch with 4096-byte logical blocks | `slopos-4kn`, 2 (scratch) |
+| `nvme2n1` | `test` mode | Scratch on a controller that a test shuts down | `slopos-spare`, 1 (scratch) |
+| last controller | `BOOT_DISK_IMG` | The boot disk: `nvme1n1` for `boot`, `nvme3n1` beside the test disks, `nvme0n1` with neither a root disk nor test disks | `slopos-boot`, 1 |
+| `vda` | `test` mode | `fs/assets/ext4.img`, the shipped verified image, copy-on-write | `slopos-verified` (kept) |
+| `vdb` | `test` mode | Blank virtio scratch | `slopos-scratch` (scratch) |
+| `sda` | `test` mode | Blank 8 MiB scratch on a USB stick, behind a `qemu-xhci` controller at PCI address `00:10.0` | `slopos-usb` (scratch) |
+| `sda` | `INSTALL_STICK` | The ISO on a USB stick behind `qemu-xhci`, write-protected unless `INSTALL_STICK_WRITABLE=1`, booted first | |
+| none | `INSTALL_CDROM` | The ISO in an AHCI CD drive, booted first; the kernel has no driver for it, so the system sees no payload | |
 
 Each test-mode disk carries a `serial=`, which `/dev/disk/by-id` names it by.
+A kernel test reaches a disk the suite attaches only by that identity, never
+by its node name, because on real hardware `nvme0n2`, `vdb` or `sda` is
+somebody's disk: `slopos_fs::tests::suite_disks` (feature `tests`) answers
+`scratch_disk(TestDisk::…)` or `scratch_disk_by_id(b"<by-id name>")` with the
+node of the one registered whole disk of that identity. Only the disks
+marked scratch above may be claimed, written, mounted or partitioned by any
+test; the kept ones are reached through `suite_disk`, and anything else is
+refused (`Absent`, `Ambiguous`, `NotScratch` or `Unknown`). A disk added to
+`qemu_run.sh` gets a `TestDisk` variant, and
+`test_block_scratch_refuses_other_disks` holds the refusals
+([Write tests](/docs/development/adding-tests)).
+
 `QEMU_NO_ROOT_DISK=1` omits the root disk; `boot-live`, `boot-log`,
 `ui-shots`, `test-install`, `test-installer`, `test-remote` and `test-usb` set
 it.

@@ -3,7 +3,7 @@ title: "Known limitations"
 description: "What SlopOS does not do yet, and which of those gaps are recorded as defects to fix."
 ---
 
-As of 2026-11-11, SlopOS commit `b8b2855b`.
+As of 2026-11-19, SlopOS commit `cfd13887`.
 
 SlopOS is a research system. Everything is tested in QEMU, and one laptop has
 run an installed system. This page lists what is missing, what each gap means for
@@ -14,8 +14,8 @@ you, and its status:
   scheduled.
 - **No plan**: a gap nothing in the tree plans to close.
 
-The [Roadmap](/docs/status/roadmap) says which plans are open; today the only
-one is about CI.
+The [Roadmap](/docs/status/roadmap) says which plans and spikes are open and
+where each stands.
 
 ## Hardware
 
@@ -145,12 +145,22 @@ one is about CI.
   Whether more memory avoids it is not known; `just ui-shots` and
   `just test-installer` install at 2 GiB and 6 GiB
   ([Installing SlopOS](/docs/self-hosting/installing)). Open defect.
-- **A new base gets no trial boot.** A kernel goes into the spare slot and is
-  tried once before it becomes the default, but a base that passes its checks
-  becomes current for every slot at once, and stays current when it then fails
-  in userland until you roll it back (from the install medium's rescue shell
-  when the system no longer gives you one) or a reinstall writes the medium's ([Updating SlopOS](/docs/self-hosting/updating)).
-  Open defect.
+- **A base that cannot run now waits for a boot, without saying why.** The
+  kernel keeps a bounded number of base copies in memory, and frees a
+  replaced one only once nothing uses it. When there is no room, `bootctl`
+  prints `it could not run now (Device or resource busy)`: the base waits for
+  the next boot after `base install`, or the trial is refused after `base
+  try`, and nothing names the processes holding the old copies
+  ([Updating SlopOS](/docs/self-hosting/updating)). Open defect.
+- **A new init that cannot read its predecessor's state loses consent.** A
+  base that changes `/sbin/init` re-executes it with its state handed over;
+  when the new init cannot read it, every action that needs a person is
+  refused and the console login prompt goes unsupervised until the next boot
+  ([Init and services](/docs/architecture/init)). Open defect.
+- **Most boot options change only with a reboot.** Only `cpufreq.epp=` and
+  `sched.hybrid=` can be changed while the kernel runs; the rest are read
+  once, so changing one takes `bootctl cmdline set`, a kernel install and a
+  reboot ([Boot options](/docs/abi/boot-options)). Open defect.
 - **Another loader can move SlopOS's default.** Which slot boots by default is
   a firmware variable every loader on the machine can write. Another system's
   loader that deletes it makes Limine boot its first entry, and one that sets
@@ -159,13 +169,6 @@ one is about CI.
   also add a second one, when the first sits outside the firmware's boot
   order at a number past the first free one.
   Open defect.
-- **Installing for everyone through privd is bounded.** A tree installed into
-  `/usr/local` for everyone is copied before it is installed, both counting
-  against one disk quota, so it can be at most half of that quota; and it must
-  be readable by everyone, so it cannot come from inside a home directory
-  closed to others. uid 0 running `tree-install` itself installs from the
-  same kind of copy, under the same two bounds, wherever the tree goes
-  ([Installed software](/docs/architecture/software)). Open defect.
 
 ## Desktop and people
 
@@ -183,8 +186,16 @@ one is about CI.
 ## Toolchain
 
 - **The compilers are built on the host.** LLVM and rustc are cross-built with
-  `just toolchain`; SlopOS does not rebuild its own compiler, and no plan
-  covers it ([Toolchain](/docs/self-hosting/toolchain)).
+  `just toolchain`; SlopOS does not rebuild its own compiler. A spike,
+  `plans/self-build.md`, is researching what that would take
+  ([Toolchain](/docs/self-hosting/toolchain)).
+- **rustc in the guest runs out of address space building the kernel.** In
+  the guest, `just build dev` stops at `slopos-ostd` and `slopos-mm`: rustc
+  cannot start its worker threads because a thread stack's mapping is refused
+  by the per-process limit on virtual pages, so `just test-selfhost` fails.
+  What fills rustc's address space is not yet measured
+  ([Development machine](/docs/self-hosting/development-machine)). Open
+  defect.
 - **Not a tier 2 Rust target.** Rust ships no prebuilt standard library for
   SlopOS, so every build compiles it from source with `-Zbuild-std`. No plan.
 
@@ -193,9 +204,12 @@ one is about CI.
 `plans/KNOWN_ISSUES.md` in the source tree holds every open defect, with the
 files involved, including the low-severity ones this page leaves out:
 
-- extension handling: what an activation costs in memory and boot time, a
-  service that cannot listen because an extension init cannot read holds its
-  port, and a trusted key whose ceilings are too long for the session to add;
+- extension handling: an activation's index can cost more memory than its
+  image, so a few images with many files use up the activations' budget, and
+  a service that cannot listen because an extension init cannot read holds
+  its port;
+- a page freed while the TLB quarantine's epoch closes, which can be handed
+  out again one epoch early;
 - privd's requesters: a request read as privd begins to drain, signals
   passed on twice, input and signals that reach a mechanism out of order, and
   a remote command that outlives its timeout;

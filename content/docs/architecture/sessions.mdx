@@ -307,12 +307,7 @@ the screen comes up so that someone can look.
   window protocol ([Window protocol](/docs/abi/window-protocol#clipboard)),
   and only in answer to a key the person pressed in their window. Since every
   desktop runs its own compositor, every desktop has its own clipboard, which
-  ends with it. Separately, the kernel keeps a small clipboard per login tag
-  behind the `clipboard_copy` and `clipboard_paste` system calls, which no
-  shipped app uses. It has one only for tags in the sessions' range, so
-  `remoted`, privd's mechanisms and extensions' services have none, and it
-  keeps eight: when a ninth session copies, the one copied into longest ago
-  is dropped.
+  ends with it. The kernel keeps no clipboard.
 - **The keyboard layout.** While a person's desktop is in front, init loads
   the layout that person chose; for the login screen, the console and anyone
   who chose none, it loads the computer's, kept in `/etc/keymap`
@@ -362,9 +357,9 @@ For programs:
 seat and that exists only on a test boot. It checks that a one-person boot goes
 straight to the desktop; that a second person logs in at the login screen
 while the first desktop goes behind and locks, and gets a private runtime
-directory; that the keyboard follows the desktop in front and that each
-session's kernel clipboard is its own;
-that a request from the session behind is refused unasked; that a locked
+directory; that the keyboard follows the desktop in front and that only a
+window of the desktop in front that took a key reaches its compositor's
+clipboard; that a request from the session behind is refused unasked; that a locked
 desktop refuses a wrong password; that a console login gets a shell of its
 own whose `priv` asks at its terminal; that one person's fork bomb leaves the
 other's session running; and that the login screen takes the place of a
@@ -425,6 +420,6 @@ receives and where it asks.
 | `userland/src/sessions.rs` | `/run/sessions` |
 | `userland/src/apps/compositor/gate.rs` | The login and lock screens, Ctrl+Alt+Delete |
 | `priv-core/src/sessions.rs` | `slopos_priv_core::sessions`: the table as privd receives it, and where a request is asked |
-| `core/src/syscall/ui_handlers.rs`, `drivers/src/input_event.rs` | `seat_switch`, and the kernel's clipboard per login tag |
+| `core/src/syscall/ui_handlers.rs`, `drivers/src/input_event.rs` | `seat_switch` |
 | `userland/src/apps/compositor/protocol.rs` | The desktop's clipboard, which apps use |
 | `slopos-ostd/src/process/quota/persons.rs` | Each person's share of processes and threads |

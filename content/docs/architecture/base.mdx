@@ -20,9 +20,13 @@ the switch get the new version, while programs already running keep the
 bytes they started with. Your own files on the root disk are never part of a
 base, so installing one never touches them.
 
-What isn't promised: a new base is not tried once and committed the way a
-new kernel is. If it installs and then misbehaves, it stays until you roll
-it back ([Updating SlopOS](/docs/self-hosting/updating#going-back-to-the-previous-base)).
+A new base is tried before it is kept, as a new kernel is: `bootctl base
+try` runs it from memory and writes nothing, so any reset boots the base on
+the disk again, and `bootctl base commit` keeps it once it has proved itself
+([Updating SlopOS](/docs/self-hosting/updating)). What isn't promised: a base
+you commit, or install at once with `bootctl base install`, and that then
+misbehaves, stays until you roll it back
+([Updating SlopOS](/docs/self-hosting/updating#going-back-to-the-previous-base)).
 
 This page explains what the base holds, where it lives on disk, how a kernel
 decides whether it can run a base, and how a new base replaces the running
@@ -31,9 +35,9 @@ one.
 ## Where it comes from
 
 The split comes from FreeBSD, which updates its *base system* as a whole,
-together with the kernel, and installs third-party software from packages and
-ports under `/usr/local`. SlopOS draws the same line: its own programs are the
-base, and everything else goes in [`/usr/local` or your home](/docs/architecture/software).
+together with the kernel, and installs third-party software from packages
+apart from it. SlopOS draws the same line: its own programs are the base,
+and everything else is an [image or a file in your home](/docs/architecture/software).
 Treating the system's programs as one read-only tree that is upgraded
 atomically and whole is the model of OSTree, an upgrade system for Linux
 distributions that keeps the operating system's read-only content in `/usr`.
@@ -104,11 +108,11 @@ in when the security model rests on it (init, privd, the compositor that
 draws the consent dialog, the shell), when you need it to repair a machine
 (`bootctl`, the installer, e2fsprogs), or when it talks to the kernel through
 SlopOS's own system calls rather than through the C library (`sysmon`, `ss`,
-`ping`, `cpufreq`). The apps (the editor, the file manager, the image viewer
-and the widget gallery) don't qualify, so they live outside the base and
-reach the kernel only through `libc.so`.
-[Installed software](/docs/architecture/software) explains how they are
-installed and why that keeps them working across base updates.
+`ping`, `cpufreq`). The apps (the editor, the file manager, the image
+viewer, the widget gallery and Breach) don't qualify, so they ship outside
+the base as the image `slopos-essentials` and reach the kernel only through
+`libc.so`. [Installed software](/docs/architecture/software) explains how
+they are installed and why that keeps them working across base updates.
 
 ## Where the base lives on disk
 
@@ -156,12 +160,17 @@ number.
   itself (the section `.note.slopos.base-interface`), so tools can read the
   range from a kernel without booting it.
 
-Any change to the private calls takes the next number. The minimum rises only
-when a change reshapes something an older base already calls. A change that
-only adds a call leaves the minimum where it is, and a call that is taken
-away keeps its number and answers `ENOSYS`, so an older base still boots, just
-without what that call did. A gate in the build holds the private calls to
-the number, so the surface can't change while the number stays the same
+Any change to the private calls takes the next number, and so does a change
+to which of Linux's calls the kernel answers, since a base that starts using
+a call the kernel has just gained would otherwise run on a kernel without it.
+Before SlopOS reaches version 1, the minimum is the newest: a kernel serves
+the base of its own source tree alone, and `info` prints one number twice
+(`Base interfaces: <n>-<n>`). So a private call may change shape or go away
+with the next number, and a call taken away keeps no slot. The range, the
+note and `bootctl`'s refusals stay as they are, so that from version 1 the
+minimum can trail the newest again and rise only when a change reshapes
+something an older base calls. A gate in the build holds the call surface
+to the number, so the surface can't change while the number stays the same
 ([Interfaces and stability](/docs/abi/interfaces) lists the gate and the
 other interfaces SlopOS keeps stable).
 
@@ -174,22 +183,20 @@ the interface number of both bases and picks one:
 2. Otherwise previous, if the kernel serves that.
 3. Otherwise neither, and the boot stops.
 
-Say the default kernel serves interfaces up to *N*, the running base was
-built against *N*, and you install a base built against *N*+1. The running base
-moves to `previous.img` and the new one becomes `current.img`
-([Updating SlopOS](/docs/self-hosting/updating) has the rules). At the next
-boot the default kernel finds current at *N*+1, which it doesn't serve, and
-boots previous instead, so the machine comes up exactly as it was. The boot
-log says which one it took:
+Say the default kernel serves interface *N*, and a base was written that is
+built against *N*+1 (a base written beside the kernel that serves it, as
+below, is one). At the next boot of the default kernel it finds current at
+*N*+1, which it doesn't serve, and boots previous instead, so the machine
+comes up exactly as it was. The boot log says which one it took:
 
 ```text
 BOOT: base previous (<n> bytes), interface <N>
 BOOT: base current (interface <N+1>) not booted; its memory goes to the allocator
 ```
 
-A kernel built from the same tree as the new base serves *N*+1, so once you
-install and boot one, it boots current. Every boot logs its choice in the
-same form, `BOOT: base current|previous (<n> bytes), interface <i>`.
+A kernel built from the same tree as the new base serves *N*+1, so it boots
+current. Every boot logs its choice in the same form, `BOOT: base
+current|previous (<n> bytes), interface <i>`.
 
 The base the kernel didn't choose is loaded in memory but never used, so its
 pages are handed to the allocator as free memory before anything else can
@@ -208,9 +215,11 @@ ROOTFS: this kernel serves base interfaces <min>-<max>; current is interface <i>
 ```
 
 `bootctl` works to make sure that never happens: it refuses to install a
-kernel that serves neither base on the partition, and it refuses to install a
+kernel that serves neither base on the partition, and it refuses to write a
 base that would leave the default kernel, the running one or the one armed
-to boot next serving neither.
+to boot next serving neither. Any other slot's kernel that would serve
+neither is replaced by the default's first, so every slot the boot loader
+offers still boots.
 
 ## How the base appears in the file tree
 
@@ -232,7 +241,7 @@ how it chooses, and why a disk that refuses writes gets no base):
   the wrong place.
 
 Everything else under `/` is the root disk's: `/etc` (apart from
-`/etc/ssl`), `/var`, `/home`, `/src` and `/usr/local` hold what the machine
+`/etc/ssl`), `/var`, `/home`, `/src` and `/opt` hold what the machine
 wrote and survive base updates untouched. When the root lives in memory
 instead, the kernel first copies into it what the archive holds
 outside the six base directories (the skeleton of directories such as `/etc`,
@@ -281,15 +290,36 @@ with one. The rules:
 
 ## Replacing the base while the system runs
 
-When `bootctl base install` writes a new base, the system booted from that
-boot partition and the running kernel serves the base's interface, it also
-*activates* it: it hands the kernel the archive and asks for it to become the
-base now. Otherwise the base waits on the disk for the next boot of a kernel
-that serves it, and `bootctl` says which happened
-([Updating SlopOS](/docs/self-hosting/updating#when-the-new-base-runs)). The kernel calls each base it serves in a
-boot a *generation*: the base it booted is generation 1, the first one
-activated after that is generation 2, and so on, never reusing a number
-within a boot.
+A new base reaches the running system in one of three ways, all through
+`bootctl`:
+
+- **`bootctl base try <img>`** makes the checks an install makes, then
+  *activates* the base: it hands the kernel the archive and asks for it to
+  become the base now. It writes nothing, so any reset boots the
+  partition's base again. The first try of a trial notes which base it
+  replaced in `/run/bootctl/base-trial`, a file of uid 0's that lives in
+  memory, and `bootctl status` prints `base tried:` for a running base that
+  neither file on the partition holds.
+- **`bootctl base commit <img>`** writes the base that is running, as an
+  install does, keeping as previous the base the trial replaced, the one that
+  last ran. `bootctl base rollback` during a trial instead runs that base
+  again from the partition and writes nothing.
+- **`bootctl base install <img>`** writes a base and, when the running kernel
+  serves it, activates it at once, with no trial.
+
+A base the running kernel does not serve can't be activated, so it is tried
+as a pair with the kernel that serves it: `bootctl base try <img> --kernel
+<kernel.elf>` writes the base to the partition beside the running one and
+the kernel into the spare slot, armed to boot once, and writes nothing if
+that kernel does not serve the base either. The base then rides the
+kernel's trial, because the default kernel, which does not serve it, boots
+the previous base. When the running kernel does serve the base, the same
+command tries the base from memory and leaves the kernel alone. `just
+install` builds both and hands them over this way
+([Updating SlopOS](/docs/self-hosting/updating#a-base-that-needs-a-newer-kernel) has
+the commands). The kernel calls each base it serves in a boot a
+*generation*: the base it booted is generation 1, the first one activated
+after that is generation 2, and so on, never reusing a number within a boot.
 
 Here is what happens, in order:
 
@@ -351,9 +381,9 @@ up. At most 16 generations are in memory at once, and all their copies
 together may take at most a quarter of memory. An activation that would go
 past either is refused with `EBUSY`, an archive bigger than a quarter of
 memory on its own with `EFBIG`, and one naming an interface the kernel doesn't
-serve with `ENOEXEC`. A refused activation changes nothing: the new base is
-still installed on disk, and the next boot of a kernel that serves it takes
-it.
+serve with `ENOEXEC`. A refused activation changes nothing that runs: a base
+`bootctl base install` wrote stays on disk for the next boot of a kernel
+that serves it, and a tried one was never written.
 
 ### What restarts after a switch
 
@@ -371,16 +401,14 @@ lists each case.
   `bootctl status`, which lists both bases with their interface numbers and
   build tags and marks the one running. The shell's `info` command prints
   the interfaces the running kernel serves.
-- **To change a system program**, build a new base and install it
-  (`scripts/selfhost.sh install` in the guest). There is no way to replace
-  one file of the base; that is the point.
-- **To install anything else**, use `/usr/local` or `~/.local`
+- **To change a system program**, build a new base and try it (`just
+  install` on SlopOS). There is no way to replace one file of the base; that
+  is the point.
+- **To install anything else**, use an image or `~/.local`
   ([Installed software](/docs/architecture/software)). Those survive base
   updates and rollbacks.
-- **A base built against a newer interface needs a newer kernel.** Install the
-  base first and the kernel second: `bootctl install` refuses a kernel that
-  serves neither base on the partition, so the new base has to be there
-  before the kernel that needs it.
+- **A base built against a newer interface needs a newer kernel.** Hand
+  `bootctl base try` both, with `--kernel`, and they are tried together.
 - **Long-running programs keep the old version** until they restart. When a
   new base changes the compositor or the terminal, *Restart desktop…* in the
   system menu picks them up.
@@ -407,17 +435,18 @@ lists each case.
 
 ## For contributors
 
-- **A change to the private calls takes the next interface number.** That
-  covers a call's number, its arguments and every structure it takes, in
-  `slopos-abi`. `scripts/check_base_interface.sh` fails a change that moves
+- **A change to the call surface takes the next interface number.** That
+  covers a private call's number, its arguments and every structure it
+  takes, in `slopos-abi`, and which Linux calls the kernel answers.
+  `just base-interface` (`xtask base-interface`) fails a change that moves
   the surface without a new number; `--record` appends the new number's row
-  to `scripts/gates/base-interface.txt`, and an issued row is never rewritten.
-  Raise `BASE_INTERFACE_MIN` only when an older base could no longer run;
-  retire a call by answering `ENOSYS` in its slot.
+  to `scripts/gates/base-interface.txt`, and an issued row is never
+  rewritten. Before version 1, `BASE_INTERFACE_MIN` is `BASE_INTERFACE`, so a
+  call may change shape or be removed outright.
 - **A program that makes SlopOS-only system calls directly belongs in the
   base.** Anything outside it reaches the kernel only through `libc.so`,
-  whose exports only grow; `xtask programs` holds the apps to that after
-  every userland build ([Installed software](/docs/architecture/software#the-apps-outside-the-base)).
+  whose exports only grow; `xtask programs` holds the apps to that as their
+  image is packed ([Installed software](/docs/architecture/software#the-apps-outside-the-base)).
 - **There is one definition of a valid base,** `boot-core::base::check`, and
   one reader of the archive format, `boot-core::newc`. The packer, `bootctl`
   and the host's disk builder share the check, and the kernel, the packer,
@@ -461,7 +490,7 @@ lists each case.
   switch.
 - [*hier(7)*](https://man.freebsd.org/cgi/man.cgi?query=hier&sektion=7),
   FreeBSD. The layout that separates the base system from what packages
-  install under `/usr/local`.
+  install.
 - [*Building and Installing a Custom Kernel*](https://docs.freebsd.org/en/books/handbook/kernelconfig/),
   the FreeBSD Handbook. Includes the `kernel.old` warning behind the rule for
   which base SlopOS keeps as previous.
@@ -486,7 +515,7 @@ lists each case.
 | `abi/src/base_interface.rs` | `slopos_abi::base_interface`: `BASE_INTERFACE`, `BASE_INTERFACE_MIN` and the note's layout |
 | `fs/src/basefs/` | Serving the base, generations, activation, the reaper and `base_monitor` |
 | `boot/src/boot_services.rs`, `fs/src/vfs/mount.rs` | Mounting the base directories at boot; pinned mounts and the switch |
-| `userland/src/apps/bootctl.rs` | `bootctl base install`, `base rollback` and `status` |
+| `userland/src/apps/bootctl.rs` | `bootctl base try`, `base commit`, `base install`, `base rollback` and `status` |
 | `userland/src/base_watch.rs`, `userland/src/apps/init/` | Noticing a switch and restarting what it changed |
 | `tools/initramfs/`, `scripts/lib/base.sh` | Packing a base, and which programs it carries |
-| `scripts/check_base_interface.sh`, `scripts/gates/base-interface.txt` | The gate and the ledger of issued interface numbers |
+| `tools/xtask/src/contract/base_interface/`, `scripts/gates/base-interface.txt` | The gate and the ledger of issued interface numbers |

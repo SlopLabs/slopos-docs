@@ -36,14 +36,15 @@ things from it (see [Boot](/docs/architecture/boot)): the kernel, the base it
 runs, and the *install medium*, an archive the kernel serves read-only at
 `/media/install`. Beside the kernel and base, the medium holds what an
 install copies: Limine for the EFI system partition, with its licence and
-notices, and the apps that live outside the base (the editor, file manager,
-image viewer and widget gallery). It also carries the source code of the
-third-party programs the base includes, since it distributes them.
+notices, and in `images/` the image of the apps that live outside the base,
+`slopos-essentials`, with its sidecar. It also carries the source code of
+the third-party programs the base includes, since it distributes them.
 
 Built with `PAYLOAD=1`, the ISO also carries a *payload*: a read-only ext4
-partition with the developer tools (the [toolchain](/docs/self-hosting/toolchain)
-for `/usr/local`) and a clone of the source for `/src/slopos`, so an installed
-machine can build SlopOS itself. Limine never loads the payload. The kernel
+partition with the developer tools (the [toolchain](/docs/self-hosting/toolchain)'s
+image, `images/slopos-toolchain.ext`, and its sidecar) and a clone of the
+source for `/src/slopos`, so an installed machine can build SlopOS itself.
+Limine never loads the payload. The kernel
 finds it on the disk whose partition table carries the medium's own disk
 GUID, which is the stick when the ISO was written to one, and mounts it at
 `/media/payload`. Booted as a CD, or copied onto a stick as a file, the
@@ -184,12 +185,12 @@ An erase asks you to type the disk's name; any other install asks for `yes`.
 | `--region <n>` | Which free space new partitions go into, by its number in the disk's listing (default: the largest) |
 | `--root-size <size>` | The new root's size in decimal units, such as `20GB`, `512MB` or `1.5TB`; a bare number is GB (default: all the free space gives). Not with `reuse`, whose root is the partition's size |
 | `--root /dev/<partition>` | The partition `reuse` installs SlopOS on |
-| `--keep-root`, `--format-root` | When that partition holds SlopOS: keep its accounts and their files, updating `/usr/local`, or erase it |
+| `--keep-root`, `--format-root` | When that partition holds SlopOS: keep its accounts and their files, or erase it |
 | `--remote <url>` | The address `/src/slopos` fetches from and pushes to (default `https://github.com/SlopLabs/slopos`), with the payload only |
 | `--first`, `--not-first` | Put SlopOS first in the startup order, or leave its entry where it stands (a new entry goes after the systems already there) |
 | `--person <name>` | The first account's name (default `user`) |
 | `--no-password` | Give it no password |
-| `--cmdline <words>` | The installed kernel's command line (default `panic=reboot`) |
+| `--cmdline <words>` | The boot options every kernel installed on this machine starts with, written to `/etc/kernel/cmdline` (default `panic=reboot`; no `root=`) |
 | `--yes` | Write the disk without asking; it needs `--mode` too |
 
 `installer --help` prints the same list. At the end of its input the
@@ -220,14 +221,18 @@ already. On a disk that already holds SlopOS, the window
 offers *Reinstall SlopOS*, which reuses SlopOS's root partition. When that
 partition still holds an ext4 volume, the reinstall keeps its accounts and
 their files: both kernel slots and both bases are written afresh from the
-stick, `/usr/local` is updated, and `/src` and the old system's people stay
-as they were. A root partition that holds no volume any more is erased
+stick, the medium's images are offered to it again, and `/src` and the old
+system's people stay as they were. Nothing is written to `/usr/local`, which
+is no part of a SlopOS root any more. A home the reinstall has to make anew
+is readable by others (`0755`) only while the accounts record holds at most
+one person. A root partition that holds no volume any more is erased
 first, and the window says so; one that mounts but carries no record of who
 owns its trees is refused before anything is written.
 
 A new root takes all the free space it is given unless you ask for less. A
 root, new or reused, is never smaller than the system needs (1 GiB without
-the developer tools, or the payload plus room to build SlopOS beside it) and
+the developer tools; with them, twice the payload, since the first boot
+copies the toolchain's image into the store, plus room to build SlopOS) and
 never larger than 16 TiB, the largest the kernel mounts. The 4 MiB crash
 partition comes after a new root, and whatever is left stays free.
 
@@ -243,9 +248,9 @@ shows as a list and the terminal prints as `[n/9]` lines:
 | Partitioning the disk | The GPT: a protective MBR on a fresh table, then each copy of the table behind a flush, starting with the copy the old table was not read from |
 | Reading the new partitions | Nothing: the kernel re-reads the table |
 | Formatting the new partitions | FAT32 on a new ESP and a new boot partition (or an existing one that holds no FAT32 volume yet), zeros over the crash partition unless a reinstall keeps it with the root, ext4 on the root unless it is kept (`mke2fs`) |
-| Copying the system | The root's directories and owners, the sealed mount points the base goes over, the apps and the developer tools at `/usr/local`, the clone at `/src/slopos`, the first person |
-| Copying the startup files | The kernel into both slots, the base as both current and previous, on the boot partition |
-| Setting up the startup menu | Limine and its configuration under `\EFI\SlopOS\` on the ESP |
+| Copying the system | The root's directories and owners, the sealed mount points the base goes over, the machine's boot options at `/etc/kernel/cmdline`, the medium's images offered in `/var/lib/slopos/offered`, the clone at `/src/slopos`, the first person |
+| Copying the startup files | The kernel into both slots, stamped with the machine's boot options, and the base as both current and previous, on the boot partition |
+| Setting up the startup menu | Limine and its configuration under `\EFI\SlopOS\` on the ESP, whose entries name the root (`root=`) and nothing else |
 | Choosing what starts by default | `LoaderEntryDefault` set to `slopos-a`, and any one-time boot of a SlopOS entry cleared |
 | Checking the installed system | Nothing: `e2fsck -fn` reads the root |
 | Adding SlopOS to the startup order | A firmware boot entry named `SlopOS`, first in the order only if you asked |
@@ -275,11 +280,16 @@ five seconds and boots slot a, which is the default.
 
 The installed system mounts its root by the partition's GUID and boots with
 `panic=reboot`, so a kernel that crashes resets the machine onto the default
-slot rather than halting. Its first person logs in automatically, the apps
-are at `/usr/local`, and with the payload so are the developer tools, with
-the source at `/src/slopos`. From there, updates follow
+slot rather than halting. Those words travel inside the kernel, so
+`bootctl cmdline set <words>` changes what the next kernel `bootctl`
+installs starts with ([Boot options](/docs/abi/boot-options#where-the-words-come-from)).
+At its first boot, init installs the images the root was offered: the apps
+show at `/opt/slopos-essentials`, and with the payload the developer tools
+at `/opt/slopos-toolchain`, their commands in `/opt/bin`, with the source at
+`/src/slopos`. From there, updates follow
 [Updating SlopOS](/docs/self-hosting/updating): a new kernel goes into the
-spare slot and is tried once, and a new base goes beside the running one.
+spare slot and is tried once, and a new base is tried from memory before it
+is kept.
 To have the login screen ask for a password, give the first person one with
 `users passwd` if the install gave them none, then turn automatic login off
 with `users autologin --off`.
@@ -414,8 +424,8 @@ hands the same GUID to xorriso as `--gpt_disk_guid`. That GUID is how both
 the kernel and the installer tell which disk is the medium, however the
 firmware started it. It is read from the header alone (`gpt::disk_guid`), so
 it still identifies a disk whose entry array the reader would refuse. The
-payload is an ext4 volume in the profile, holding the toolchain with the
-manifest an install records for it and a `--vendored` clone of `HEAD`,
+payload is an ext4 volume in the profile, holding the toolchain's image and
+sidecar under `images/` (`layout::MEDIUM_IMAGES`) and a `--vendored` clone of `HEAD`,
 shrunk with `resize2fs -M` and then given ext4's `read-only` feature, which
 `mke2fs` refuses at creation, so no system that mounts it writes it. The ISO
 carries it as a partition of SlopOS's payload type (`layout::PAYLOAD_TYPE`),
@@ -429,6 +439,16 @@ kernel mounts it read-only at `layout::PAYLOAD_DIR` under a read claim held
 for the boot. The installer takes a payload only from the root of a
 read-only ext4 volume mounted there, because any program can make a
 directory at that path.
+
+**Offering the images.** `scripts/build_install_medium.sh` takes the
+toolchain image's directory as an argument and the apps' image from
+`ESSENTIALS`. `root::fill` offers each image in the medium's `images/`, and
+the payload's, to the new root: it copies the image into
+`/var/lib/slopos/offered` as `<name>.ext.partial`, uid 0's and `0644`,
+flushes it and renames it, then writes the sidecar last. An image already
+offered there under the same sidecar and size stays. The root's floor
+(`root_min`) counts the payload twice, because the store copies the
+toolchain's image at first boot.
 
 **The rescue shell.** Exec keeps only the universal capabilities, so the
 rescue shell spawns each program with its whole mask from a process forked

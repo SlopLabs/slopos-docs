@@ -3,26 +3,129 @@ title: "Roadmap"
 description: "The plans we are working on, what each is for, how far along it is, and what has landed."
 ---
 
-As of 2026-11-11, SlopOS commit `b8b2855b`.
+As of 2026-11-19, SlopOS commit `cfd13887`.
 
 This page lists the work that is planned next and the larger plans that have
-landed since August 2026. Today one plan is open, about CI; the rest of the
-open work is defects, listed on [Known
-limitations](/docs/status/known-limitations).
+landed since August 2026. Today four plans are open (installed software,
+Linux's interfaces, development on an installed machine and CI) and two
+spikes, research that ends in a plan. The rest of the open work is defects,
+listed on [Known limitations](/docs/status/known-limitations).
 
 ## How the source tree keeps its plans
 
 The source repository keeps its plans in `plans/`, and a plan only ever
 describes what is still to do. When part of it lands, that part is removed
-from the plan, and how it works is described from then on in the source tree
-and on the page for the subsystem here. When nothing is left, the plan is
-deleted; git history keeps the record. So a feature that appears only in a
-plan does not exist yet.
+from the plan or marked done, and how it works is described from then on in
+the source tree and on the page for the subsystem here. When nothing is
+left, the plan is deleted; git history keeps the record. So a feature that
+appears only in a plan does not exist yet.
 
-Beside its `README.md`, which states those rules, `plans/` now holds two
-files: `ci-latency.md`, the one open plan, and `KNOWN_ISSUES.md`, working
-notes on open defects. Plans can mention file paths that have since moved, so
-check a path against the tree before relying on it.
+Beside its `README.md`, which states those rules, `plans/` holds the open
+plans below, the two spikes and `KNOWN_ISSUES.md`, working notes on open
+defects. Plans can mention file paths that have since moved, so check a path
+against the tree before relying on it.
+
+## One form for installed software
+
+**What it is for:** software reaching a machine in one form. What someone
+distributes is an image, checked on every read and shown at `/opt/<name>`;
+what a person builds is a file in their own `~/.local`, and no directory a
+person can write is shared. (`plans/installed-software.md`)
+
+**Where it stands:** phases 1 to 8 are done. The toolchain is built as an
+image, `slopos-toolchain`, and the apps outside the base are one,
+`slopos-essentials`; every root is offered them and init installs an offered
+image at boot with nobody to approve it. An image reads as fast as the root
+and installs in one pass over it. `/usr/local` and `tree-install` are gone,
+so `PATH` is `/bin:/sbin:/opt/bin` plus a person's `~/.local/bin`. A name's
+images are one publisher's until `extctl remove` gives the name up. There is
+no fixed number of images: one filesystem serves every activation, and what
+the shown images hold is bounded by an eighth of usable memory
+([Extensions](/docs/architecture/extensions), [Installed
+software](/docs/architecture/software)).
+
+Phase 8 measured what an image costs, with a hundred small images shown at
+once and one updated (`test_a_hundred_images_are_shown_and_one_updated`, on
+the dev tests kernel): each took 1.6 to 2.7 ms and 12 reads of its file to
+show, and holds 13 KiB against the budget, of 270 KiB of pages in all, the
+rest being its volume's block cache, which memory pressure takes back. A
+hundred images cost the kernel under 0.3 s at boot, which is why images stay
+shown at boot rather than at first use. The `fsperf` gate caps the heap and
+the reads per image (`FSACT`, see [Test output](/docs/abi/ktap-test-output)).
+
+Still to do:
+
+1. Phase 9: retire the word *extension*, which still names the crates,
+   `extctl`, the calls, the capability, the store, the privd actions, the
+   image format and the boot option. The rename takes a `BASE_INTERFACE`
+   number.
+
+Beyond the phases the plan lists, without an order: a front end that
+fetches signed images, more of an image's identity (a short id from the
+signing key, a successor key), installs by someone who is not an
+administrator, confining an image's programs to its grant, and a recipe per
+image.
+
+## Linux's interfaces in place of private calls
+
+**What it is for:** the kernel answering a base through interfaces Linux
+defines wherever Linux defines one, so the call's shape cannot drift between
+a kernel and a base and a program written for Linux runs unported.
+(`plans/linux-interfaces.md`)
+
+**Where it stands:** phase 1 of 8 is done (base interface 14): it removed
+seven private calls, among them the kernel log write, which is now a write
+to `/dev/kmsg`, and 47 private calls are left. Still to do, each phase one
+base interface number:
+
+1. A resolver in the C library reading `/etc/resolv.conf`.
+2. `/proc`.
+3. `/sys/block` and efivarfs.
+4. Input on evdev, uinput and uevents.
+5. The screen on DRM/KMS.
+6. SlopRing as io_uring.
+7. Network settings on rtnetlink and `sock_diag`.
+
+## Developing SlopOS on an installed machine
+
+**What it is for:** a person on a computer SlopOS was installed on pulls,
+builds, checks, installs a kernel and a base, tries them, keeps them and
+pushes, with the commands the Linux host uses.
+(`plans/self-hosting-on-hardware.md`)
+
+**Where it stands:** the justfile is the one build interface on both
+systems, and `just precommit` is the lane a commit passes on either. A base
+is tried live with `bootctl base try` and kept with `bootctl base commit`; a
+kernel and a base across an interface change go in as a pair, and a kernel's
+boot words travel with it ([Updating SlopOS](/docs/self-hosting/updating)).
+Still to do:
+
+1. Run the suite without a Linux host: today it boots under QEMU and the
+   tests kernel starts the userland tests. The spike
+   `plans/tests-without-a-host.md` holds the research.
+2. Three things in userland that still wait for a reboot, each an entry in
+   `KNOWN_ISSUES.md`: an activation refused for room names no holder, an
+   init that cannot read its predecessor's state loses consent until
+   reboot, and only `cpufreq.epp=` and `sched.hybrid=` change while the
+   kernel runs.
+
+At v1, in one change, older bases are served again (`BASE_INTERFACE_MIN`
+gets a value of its own), slibc falls back on an older kernel, each
+unversioned interface gets a version, and a kernel and a base are signed.
+
+## Spikes
+
+A spike is research whose result replaces it with a plan.
+
+- **Building everything on SlopOS** (`plans/self-build.md`): what it takes
+  for a SlopOS machine to build its own compilers, toolchain programs and
+  install medium. A machine with the toolchain has `rustc`, `cargo`,
+  `clang`, `cmake`, `ninja`, `git` and e2fsprogs, but no `python3`, `go`,
+  `perl`, `make`, `meson`, `xorriso` or `mtools`.
+- **Running the suite without a host** (`plans/tests-without-a-host.md`):
+  how the kernel's tests run on hardware, claiming only the disks they make,
+  and the userland tests under a runner of their own, so `just test` needs
+  no host.
 
 ## Faster continuous integration
 
@@ -57,11 +160,6 @@ Nothing in the tree plans these, so they are not coming soon:
 
 - **More hardware.** Machines other than the tested laptop, and drivers for
   Wi-Fi, Bluetooth, audio and SATA ([Hardware](/docs/status/hardware-requirements)).
-- **A compiler that rebuilds itself inside SlopOS.** The self-hosting plan
-  considered it and left it uncommitted: it needs Python in the guest, tens
-  of gigabytes and hours of CPU per build. The plan was retired with the
-  compilers still cross-built on the host
-  ([Toolchain](/docs/self-hosting/toolchain)).
 - **IPv6, other filesystems, time zones.** See [Known
   limitations](/docs/status/known-limitations).
 

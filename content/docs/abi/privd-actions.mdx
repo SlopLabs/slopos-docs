@@ -17,7 +17,7 @@ explains what privd is for and how it works.
   per line of the policy. Words are matched exactly; `?` matches exactly one
   argument of any kind, and `*` matches any further arguments, none included.
 - **Capabilities** are what the mechanism holds besides the universal ones
-  (`ConsoleIo`, `ClipboardGlobal`, `Fate`); *none* means only those.
+  (`ConsoleIo`, `Fate`); *none* means only those.
 - **Settings** are the action's `cwd`, `exclusive`, `keep` and `medium`
   lines (see [Settings](#settings)). Every action runs as uid 0 unless its
   settings say *as the requester*.
@@ -45,39 +45,57 @@ explains what privd is for and how it works.
 | `org.slopos.boot.reboot` | `/bin/bootctl reboot` | `Power` | | `root`, `greeter alone`, `user alone`, `admin`, `paired` |
 | `org.slopos.base.install` | `/bin/bootctl base install *` | `RawBlock`, `Power`, `BaseUpdate` | `cwd`, `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
 | `org.slopos.base.rollback` | `/bin/bootctl base rollback` | `RawBlock`, `Power`, `BaseUpdate` | `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
+| `org.slopos.base.try` | `/bin/bootctl base try ?`, `base try ? ?` | `BaseUpdate` | `cwd`, `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
+| `org.slopos.base.pair` | `/bin/bootctl base try ? --kernel *`, `base try ? ? --kernel *` | `RawBlock`, `Power`, `BaseUpdate` | `cwd`, `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
+| `org.slopos.base.commit` | `/bin/bootctl base commit *` | `RawBlock`, `Power` | `cwd`, `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
+| `org.slopos.boot.cmdline` | `/bin/bootctl cmdline set *` | none | `exclusive boot-slots` | `root`, `admin confirm`, `paired` |
 
 `bootctl --boot <partition> …` fits none of these shapes, so privd runs it
 for nobody; only a requester that already holds the capabilities, such as
 the rescue shell, runs it itself. `bootctl collect` has no action: init runs it
 directly, handing it `RawBlock` and `Power`.
 
+`bootctl base try` activates a base from memory and writes nothing, so it
+holds `BaseUpdate` alone; any reset boots the partition's base again. Given
+`--kernel`, the request is `org.slopos.base.pair`, which may also write the
+base to the partition beside the running one and the kernel to the spare
+slot. `bootctl cmdline` with no arguments only reads `/etc/kernel/cmdline`;
+`cmdline set` writes that file as uid 0, holding nothing gated.
+
 ## Extensions
 
 | Action | Runs | Capabilities | Settings | Who may ask |
 |---|---|---|---|---|
-| `org.slopos.extension.install` | `/bin/extctl install *` | `ExtensionUpdate`, `Seal` | `cwd`, `exclusive extensions` | `root`, `admin confirm`, `paired` |
+| `org.slopos.extension.install` | `/bin/extctl install ? ? name ? signer ? grant ? unasked ? users ? commands ?` | `ExtensionUpdate`, `Seal` | `cwd`, `exclusive extensions` | `root`, `admin confirm`, `paired` |
 | `org.slopos.extension.install-signed` | `/bin/extctl install-signed *` | `ExtensionUpdate`, `Seal` | `cwd`, `exclusive extensions` | `root`, `admin`, `paired` |
 | `org.slopos.extension.trust` | `/bin/extctl key add *`, `/bin/extctl key remove *` | `ExtensionUpdate`, `Seal` | `exclusive extensions` | `root`, `admin confirm`, `paired` |
-| `org.slopos.extension.manage` | `/bin/extctl enable *`, `disable *`, `remove *`, `rollback *` | `ExtensionUpdate`, `Seal` | `exclusive extensions` | `root`, `admin confirm`, `paired` |
+| `org.slopos.extension.manage` | `/bin/extctl enable *`, `disable *`, `rollback *` | `ExtensionUpdate`, `Seal` | `exclusive extensions` | `root`, `admin confirm`, `paired` |
+| `org.slopos.extension.remove` | `/bin/extctl remove ?` | `ExtensionUpdate`, `Seal`, `DacOverride` | `exclusive extensions` | `root`, `admin confirm`, `paired` |
 | `org.slopos.extension.config` | `/bin/extctl config install *` | `Seal` | `cwd`, `exclusive extensions` | `root`, `admin confirm`, `paired` |
 | `org.slopos.extension.config-signed` | `/bin/extctl config apply *` | `Seal` | `cwd`, `exclusive extensions` | `root`, `admin`, `paired` |
 
 `extctl --root <dir> …` likewise fits no shape, and `extctl activate-all` has
 no action: init runs it at boot, handing it `ExtensionUpdate` and `Seal`.
 
-## Software and accounts
+`extctl install` asks with one canonical line only, so every word a person
+reads in the question is one the mechanism then holds the image to: the
+image's name, its signer (a key's fingerprint, or `nobody`), the
+capabilities it is granted, the services that run unasked, and the users
+and commands it adds. Each is a [term](#terms), listed in the details as
+*Installs*, *Signed by*, *Capabilities*, *Runs unasked*, *Adds users* and
+*Adds commands*. `org.slopos.extension.remove` is `destructive`: it deletes
+the extension's data, settings and log, and its record keeps only the name,
+the uids it retired and its configuration serial.
+
+## Accounts
 
 | Action | Runs | Capabilities | Settings | Who may ask |
 |---|---|---|---|---|
-| `org.slopos.software.install` | `/bin/tree-install *` | none | `cwd`, `exclusive software` | `root`, `admin confirm`, `paired` |
 | `org.slopos.accounts.password` | `/bin/users passwd` | `Seal` | `exclusive accounts` | `root`, `user confirm` |
 | `org.slopos.accounts.list` | `/bin/users list --porcelain` | none | | `root`, `user` |
 | `org.slopos.accounts.manage` | `/bin/users add *`, `remove *`, `rename *`, `passwd *`, `promote *`, `demote *`, `autologin *`, `remote *` | `Seal`, `DacOverride` | `exclusive accounts` | `root`, `admin confirm` |
 
 `users sync` has no action: init runs it at every boot, handing it `Seal`.
-`org.slopos.software.install` runs `tree-install` as uid 0 holding nothing
-gated; `tree-install` asks for it only to install at `/usr/local` when its
-caller does not own that directory.
 
 ## Logging in and unlocking
 
@@ -135,8 +153,9 @@ its requester may hold.
 A question's headline is `<App> wants to <describe>.`, where *App* names the
 program that asked (see [Privileged actions](/docs/architecture/privd#what-the-dialog-shows)).
 The detail is a sentence under it, and the allowing button says the verb, or
-*Allow* when the action names none. Only `org.slopos.install` is
-`destructive`, which colours its button in the danger tone.
+*Allow* when the action names none. `org.slopos.install` and
+`org.slopos.extension.remove` are `destructive`, which colours their button
+in the danger tone.
 
 | Action | describe | detail | Button |
 |---|---|---|---|
@@ -151,14 +170,18 @@ The detail is a sentence under it, and the allowing button says the verb, or
 | `org.slopos.boot.spare` | find where a new kernel would be installed | | Allow |
 | `org.slopos.boot.reboot` | restart the computer with the kernel chosen for the next start | Anything that isn't saved will be lost. | Restart |
 | `org.slopos.base.install` | install a new version of the system | The version that last ran is kept, so you can go back to it. | Install |
-| `org.slopos.base.rollback` | go back to the version of the system that ran before | The version running now is kept, so you can return to it. | Go back |
+| `org.slopos.base.rollback` | go back to the version of the system that ran before | The version running now is kept, unless it was only being tried. | Go back |
+| `org.slopos.base.try` | try a new version of the system | Restarting the computer goes back to the version that ran before. | Install |
+| `org.slopos.base.pair` | try a new version of the system, with the kernel it needs | If it needs that kernel, both start once at the next restart, and the kernel that starts by default stays. | Install |
+| `org.slopos.base.commit` | keep the version of the system that is running now | The version that ran before it is kept, so you can go back to it. | Keep |
+| `org.slopos.boot.cmdline` | change the options every kernel installed from now on starts with | They can turn off the system's safeguards. | Change |
 | `org.slopos.extension.install` | install an extension and give it what it asks for | If it asks for the disks or every file, it can take over the whole computer. | Install |
 | `org.slopos.extension.install-signed` | install or update an extension signed by a key you trust | It gets no more than that key is trusted to give. | Install |
 | `org.slopos.extension.trust` | change which keys may install extensions | Extensions a trusted key signs go in without asking, within the limits shown. | Change |
-| `org.slopos.extension.manage` | turn an extension on or off, remove it or go back to its last version | | Allow |
+| `org.slopos.extension.manage` | turn an extension on or off or go back to its last version | | Allow |
+| `org.slopos.extension.remove` | remove an extension with everything it keeps | Its data, settings and log are deleted. | Remove |
 | `org.slopos.extension.config` | change an extension's settings | What reads those settings restarts. | Change |
 | `org.slopos.extension.config-signed` | change an extension's settings, signed by the key that installed it | | Change |
-| `org.slopos.software.install` | install software for everyone on this computer | It replaces what its last install put there. | Install |
 | `org.slopos.accounts.password` | change your password | | Change |
 | `org.slopos.accounts.list` | see who uses this computer and how each of them logs in | | Allow |
 | `org.slopos.accounts.manage` | add, remove or change the users of this computer | | Allow |
@@ -236,6 +259,7 @@ bytes, and each name occurs once.
 | `keep` | seconds, 1 to 900 | no, once | An answer is kept that long (see [Kept answers](#kept-answers)). |
 | `describe` | a quoted line | yes, once | Completes "*App* wants to …" (see [Rules for the words](#rules-for-the-words)). |
 | `detail` | a quoted line | no, once | A sentence on what follows from allowing it. |
+| `term` | a key word, then a quoted label | no, at most 8 | Shows the argument after the key word in the dialog's details, under the label (see [Terms](#terms)). Each key and label once. |
 | `verb` | a quoted word or phrase | no, once | The allowing button; one of the verbs listed below. *Allow* when absent. |
 | `destructive` | none | no | The allowing button takes the danger tone, and Enter in the password field moves to it rather than pressing it. |
 | `medium` | none | no | The action exists only on a boot the kernel says served the install medium (`BOOT_FLAG_MEDIUM`); on any other boot privd and every requester (reading the policy through `slopos_userland::privd::policy`) treat it as no action at all. |
@@ -345,6 +369,20 @@ policy spells it (`Power`, `SysInspect`), except as a first word that only
 starts with a capital. The base's policy and an extension's declaration are
 held to these rules whenever they are parsed.
 
+### Terms
+
+A `term <word> "<Label>"` line names an argument a person should read on its
+own: the one each shape's `?` takes right after `<word>`. It is found by
+position (`Action::terms_of`), never by searching the arguments, so no
+argument can pass for a key. Every shape of the action must have `<word> ?`,
+or the file fails. The details list each term under its label above *Runs*,
+with `-` read as *None* and a comma-separated list shown with a space after
+each comma (`consent::term_text`). A label is at most 24 characters, starts
+with a capital, ends without punctuation, is none of the details' own labels
+(*Asked by*, *Runs*, *In*, *Extension*), and is held to the same plain-words
+rules as `describe` (`words::term`). A question on the consent channel
+(`consent::VERSION` 2) carries the terms as `term`/`value` pairs.
+
 ## What a mechanism starts with
 
 - argv: the program's file name, then the request's arguments.
@@ -415,7 +453,7 @@ A priv-core test holds every one of them to the rules for the words.
 | The folder this was asked in moved while you were asked. Try again. | Its path leads elsewhere by the time the mechanism starts. |
 | Something like this is running already. Try again once it's done. | The action's `exclusive` group is busy. |
 | Something started before the system was updated is still running. Try again once it's done. | A mechanism the previous privd started still runs, and the action is `exclusive`. |
-| The command is too long to show in full, so it can't be allowed. | A question for the desktop whose command line or directory exceeds 320 bytes once escaped. |
+| The command is too long to show in full, so it can't be allowed. | A question for the desktop whose command line, directory or a term exceeds 4096 bytes once escaped. |
 | Who can allow this changed while you were asked. Try again. | Judged again after the answer, the request no longer qualifies. |
 | The account that asked no longer exists. | A `uid requester` action for a uid the record no longer names. |
 | The extension that runs this has changed. Try again. | Just before the start, the activation shown at `/opt/<name>` is no longer the one privd read the action from, or the program is not a file of it. |
@@ -436,7 +474,7 @@ A priv-core test holds every one of them to the rules for the words.
 | Questions waiting behind the one on screen | 8, at most 4 of one uid's |
 | A question unanswered | 120 seconds from when it is sent to the desktop |
 | Requests from a uid just refused | refused for 5 seconds |
-| Command line and directory shown | 320 bytes each, escaped |
+| Command line, directory and each term shown | 4096 bytes each, escaped; the dialog scrolls its content |
 | Dialog input ignored after it first shows, after focus moves or another administrator is chosen, after its details are shown or hidden, and after the screen changes size | 750 ms |
 | Wait before privd checks a person's password again after a wrong one | 2 seconds, doubling with each, at most 60 seconds, until a right one or privd starts again |
 | `keep` | at most 900 seconds; 64 answers |

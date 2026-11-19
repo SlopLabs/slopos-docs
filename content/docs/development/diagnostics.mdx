@@ -43,10 +43,14 @@ BOOT_CMDLINE='tests=off root=initramfs lockdep=warn' just boot-live
 ```
 
 `just boot`, which boots the development machine, does not read
-`BOOT_CMDLINE`, and neither does an installed system, whose boot entries are
-fixed. For those, build the kernel with `SLOPOS_BUILTIN_CMDLINE` set: the
-kernel appends those options to whatever the loader gave it and logs
-`BOOT: built-in command line appended: …`. [Boot options](/docs/abi/boot-options)
+`BOOT_CMDLINE`, and neither does an installed system. Boot options there
+travel with the kernel: its `.slopos.cmdline` section holds words that it
+appends to whatever the loader gave it, logging
+`BOOT: built-in command line appended: …` (or `dropped`, with the reason,
+when the words are invalid). Build the kernel with `SLOPOS_BUILTIN_CMDLINE`
+set to fill the section, or on an installed machine run `bootctl cmdline set
+<words>`, which writes `/etc/kernel/cmdline`, the words `bootctl install`
+stamps into every kernel it installs. [Boot options](/docs/abi/boot-options)
 describes every option mentioned here.
 
 ## The diagnostic console

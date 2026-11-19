@@ -288,19 +288,34 @@ policy and *App* names the requester from what no process can write:
 - an extension's program by its extension, as *The hello extension* for one
   named `hello`, with no icon, so nothing an extension ships can pass for
   another app;
-- anything else, a program from `/usr/local` or a home directory included, as
+- anything else, a program from a home directory included, as
   *An unidentified app*.
 
 Under it come the action's detail sentence, the list of administrators when
 one of several must answer, the password field when one is needed, and the
 details (shown at first, and hidden by *Show less*): who
-asked, as the kernel attested them (program, person and pid), the whole
-command line privd will run and the directory it runs in. Nothing in the
-question but the arguments and the directory came from the requester, and
-those are shown whole, with any byte outside printable ASCII escaped; privd
-refuses to ask about a command line or directory longer than 320 bytes rather
+asked, as the kernel attested them (program, person and pid), the action's
+terms, the whole command line privd will run and the directory it runs in.
+Nothing in the question but the arguments and the directory came from the
+requester, and those are shown whole, with any byte outside printable ASCII
+escaped; the dialog scrolls its content, and privd refuses to ask about a
+command line, directory or term longer than 4096 bytes once escaped rather
 than show part of one. [Desktop](/docs/architecture/desktop) shows what the
 dialog looks like.
+
+A *term* is an argument the action wants a person to read on its own. The
+policy names up to eight per action, as `term <word> "<Label>"`, and each is
+the argument right after `<word>` in the command line, found by its position
+in the action's argument shape, so no argument can pass for a key. The
+details list each under its label above *Runs*, with `-` shown as *None* and a
+comma-separated list spaced after each comma. `extctl install`, for example,
+asks only with its canonical line, `install <image> <sha256> name <name>
+signer <fingerprint|nobody> grant <caps> unasked <services> users <users>
+commands <commands>`, where the signer is the key whose signature
+(`<stem>.meta.sig` beside the image) the mechanism holds the image to. The
+question lists under *Installs*, *Signed by*, *Capabilities*, *Runs unasked*,
+*Adds users* and *Adds commands* exactly what the mechanism will then hold
+the image to.
 
 The dialog is built so that nothing but a deliberate answer allows a request:
 
@@ -367,10 +382,19 @@ requester:
   privd checks still has the path it had when the question was asked.
 - Its standard input, output and error are the descriptors the requester
   sent. A terminal never crosses over, since the mechanism runs outside the
-  requester's terminal session, where the terminal would refuse it: the
-  requester relays output meant for a terminal through pipes, and gives a
-  mechanism that reads from a terminal (the installer, `users`, `priv`, the
-  rescue shell) a terminal of its own, relayed byte for byte.
+  requester's terminal session, where the terminal would refuse it. Output
+  meant for a terminal goes to a terminal of the mechanism's own, sized as the
+  requester's and resized with it, whose master the requester relays, as run0
+  does: a mechanism draws progress and colour as it would at the terminal.
+  Unless the mechanism takes keys (the installer, `users`, `priv`, the rescue
+  shell), that terminal has output processing (`OPOST`) off, since the
+  requester's own stays cooked and turns each newline into CR LF once. With no
+  terminal free, output alone falls back to pipes. A socket still goes through
+  a pipe.
+
+On a terminal, the requester's line *waiting for you to allow this on the
+screen* is taken back (`\r`, then `ESC [K`) once privd answers or the
+mechanism writes; elsewhere it stays a line.
 
 A mechanism checks `PRIV_ACTION` when it starts and acts only for that
 action. The requester relays `SIGHUP`, `SIGINT`, `SIGQUIT` and `SIGTERM` to it,
@@ -419,11 +443,10 @@ runs, and `bootctl` or `halt` run under `priv` still ask privd, as the person.
 `Mount` still mounts any ext4 volume that nothing else holds.
 
 `priv` runs only a program nobody but uid 0 could have put or changed: one in
-a directory of the default search path that only uid 0 can write, as is every
-directory above it, reached through links that each sit in such a directory,
-and so is the interpreter a script names. `/usr/local/bin` counts only on a
-boot that began with `/usr/local` belonging to uid 0 (see
-[Installed software](/docs/architecture/software)). `priv` refuses to run
+a directory of the default search path (`/bin:/sbin:/opt/bin`) that only uid
+0 can change, as is every directory above it, reached through links that each
+sit in such a directory, and so is the interpreter a script names. `priv`
+refuses to run
 itself. `priv shell` with nothing after it is `priv -s`, and a shell given
 arguments must be given a command string or a script, not told to read its
 input. The command line privd shows and keeps an answer for is the path
@@ -481,6 +504,18 @@ and programs whose requests may span a base switch (the paired agent's
 commands, and the tests that run the self-hosting script) wait up to a
 minute. A request privd refused while draining is not sent again.
 
+A base is tried before it is kept, and each step is an action of its own, so
+the question names what it does. `bootctl base try` (`org.slopos.base.try`)
+holds `BaseUpdate` alone: it activates the base from memory and writes
+nothing, and any reset boots the partition's base again. `bootctl base commit`
+(`org.slopos.base.commit`) holds `RawBlock` and `Power` but not
+`BaseUpdate`, since it writes the base already running and switches nothing.
+`bootctl base try … --kernel` (`org.slopos.base.pair`) holds all three,
+because a base the running kernel cannot serve goes to the partition with
+its kernel in the spare slot, armed to boot once. `bootctl cmdline set`
+(`org.slopos.boot.cmdline`) holds nothing gated, and its question warns that
+boot options can turn off the system's safeguards.
+
 When the extensions change, init sends privd `SIGHUP`, and privd reads their
 actions again and forgets every kept answer.
 
@@ -503,8 +538,8 @@ actions, and no program of an extension is handed the connection.
 ## What it means in practice
 
 - **At a shell, run the command.** `halt`, `bootctl`, `extctl`, `users`,
-  `cpufreq set`, `ip`, `netctl`, `keymap`, `kconsole`, `prof`, `tree-install`
-  and `installer` ask privd by themselves when they need to.
+  `cpufreq set`, `ip`, `netctl`, `keymap`, `kconsole`, `prof` and
+  `installer` ask privd by themselves when they need to.
 - **For anything else that needs power, use `priv`.** It runs a command from
   `/bin`, `/sbin` or another directory of the default search path that only
   uid 0 can change.
@@ -594,8 +629,8 @@ queue and the wire formats, with mutation loops over the codecs.
   the asking app can't move it by moving its window.
 - **The name comes from what no process can write.** An extension's program is
   named by `consent::named_extension`, from the name its activation gives, and
-  anything unattested is `consent::UNIDENTIFIED`. An app entry under
-  `/usr/local` or a home directory is never read for the name or the icon.
+  anything unattested is `consent::UNIDENTIFIED`. An app entry in a home
+  directory is never read for the name or the icon.
 - **Descriptor numbers are stated once,** in `init_control::fds`: privd's
   links, then the pair it hears the session table on, and a compositor's own
   link and session pipe. Init makes the table's pair anew for each privd it
@@ -673,7 +708,6 @@ queue and the wire formats, with mutation loops over the codecs.
 | `userland/src/privd.rs` | The requester's side: `elevate`, the relays, exit statuses |
 | `userland/src/apps/compositor/consent.rs` | The dialog on screen |
 | `userland/src/apps/priv.rs` (`apps::r#priv`), `userland/src/held.rs` | `priv`, and running a program with a whole mask |
-| `userland/src/root_layout.rs` | `slopos_userland::root_layout::settled`, which says whether `/usr/local/bin` counts for `priv` |
 | `appkit/src/embed.rs` | Laying out and painting the dialog's components inside the compositor |
 | `userland/src/init_control.rs` | The descriptors init hands privd and each compositor |
 | `userland/src/apps/endtask.rs` | Ending another person's task |

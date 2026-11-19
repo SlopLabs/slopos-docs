@@ -246,7 +246,7 @@ default that one.
 | `lockdep` | `LOCKDEP[<phase>]:` lines | A required phase is absent or not `ACTIVE`, `violations=` is not zero, a pool (classes, edges, chains) is fuller than `max-fill-pct`, or a count is under `min-classes`, `min-edges` or `min-chains` |
 | `sched` | `SCHEDCPU[<phase>]:` lines | More online CPUs are ineligible for placement than `eligible-lag` allows, an ineligible CPU is outside the `allow-ineligible` mask, a CPU dispatched nothing where `require-dispatch` is `1`, or fewer than `min-online` CPUs are online |
 | `quota` | `QUOTA[<phase>]:` and `QUOTACOST:` lines | An account's peak passes its cap, a denial is recorded beyond the `expect-denials` counts, a listed kind was never reached, or a cost ratio leaves its bound |
-| `fsperf` | `FSPERF[<phase>]:` and `FSCAP[<phase>]:` lines | A write costs more transactions, commits, device requests or barriers per MiB than its cap, the filesystem's write rate falls under its floor as a share of the same run's raw device rate, or a measurement floor is not met |
+| `fsperf` | `FSPERF[<phase>]:`, `FSCAP[<phase>]:`, `FSIMG[<phase>]:` and `FSACT[<phase>]:` lines | A write costs more transactions, commits, device requests or barriers per MiB than its cap, the filesystem's write rate falls under its floor as a share of the same run's raw device rate, a file read through an image takes longer over the same read from the root than its cap, images shown together hold more heap or read their file more often per image than their caps, or a measurement floor is not met |
 
 The phases of the report lines are `boot`, `post-kernel-tests` and
 `post-userland-tests`.
@@ -326,6 +326,21 @@ writes the depth cap a quarter above what it observed.
 The caps are measured maxima. The rows the file's header names as moving
 between runs carry the largest peak over several captures; the others are
 exact.
+
+### Image lines of the fsperf gate
+
+| Line | Fields | Graded as |
+|---|---|---|
+| `FSIMG[<phase>]:` | `bytes= coldroot= coldimage= warmroot= warmimage=`, times in nanoseconds | `max-image-cold-pct`, the cold image time over the cold root time in percent, and the floor `min-image-bytes`. The warm times are page-set hits and are reported only |
+| `FSACT[<phase>]:` | `images= heldbytes= pages= reads= ns=` | Per image: `max-act-held-per-image` (heap held against the activations' budget) and `max-act-reads-per-image` (reads of the image file), with the floor `min-act-images`. Pages and time are reported only |
+
+`FSIMG` comes from `slopos_fs::tests::image_read`: one file faulted in
+from the root disk and from an image of it, cold after a remount, then warm.
+Both are timed on the same disk in the same run, so their quotient describes
+the image's read path rather than the host. Since that quotient comes from
+two single timings, `--emit-allowlist` writes its cap at twice what it
+observed. `FSACT` comes from `test_a_hundred_images_are_shown_and_one_updated`,
+which shows many small images at once.
 
 ## See also
 

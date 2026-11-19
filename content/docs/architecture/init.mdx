@@ -52,15 +52,17 @@ Init does a few jobs before any service runs, and waits for each to finish:
    the crash partition into `/var/log/crash`
    (see [Diagnostics](/docs/development/diagnostics)).
 2. **The root.** Init makes each directory of the root's ownership map that
-   is missing (see [Users and file permissions](/docs/architecture/users)),
-   finishes a hand-over of `/usr/local` that a crash cut short, and on a live
-   boot from the install medium copies the medium's apps into the RAM root's
-   `/usr/local` (see [Installed software](/docs/architecture/software)).
+   is missing (see [Users and file permissions](/docs/architecture/users)).
+   That is all it does to the root: nothing is handed over between people.
 3. **People.** `users sync` writes `/etc/passwd`, `/etc/group` and
    `/etc/shadow` from the accounts record.
-4. **Extensions.** `extctl activate-all` shows each enabled extension at
-   `/opt/<name>`, unless the boot said `extensions=off`
-   (see [Extensions](/docs/architecture/extensions)).
+4. **Offered images.** `extctl install-offered` installs, unasked, the
+   images uid 0 left in `/var/lib/slopos/offered`, or on a live boot those
+   in the medium's `images/` directory (see
+   [Extensions](/docs/architecture/extensions)).
+5. **Extensions.** `extctl activate-all` shows each enabled extension at
+   `/opt/<name>`. Neither this step nor the one before runs when the boot
+   said `extensions=off`.
 
 Then it opens its own socket, `/run/init`, and starts privd, which runs the
 privileged actions everything else asks for. Init waits until privd says it
@@ -70,7 +72,8 @@ is listening, because almost every later step may need it. Next comes
 desktop never comes up can still be reached. Alongside these, without waiting
 for it, init has `netctl apply` carry out the network settings `/bin/netctl`
 keeps. Then the computer's keyboard layout, saved
-in `/etc/keymap`, is loaded, and the Wheel of Fate runs; init waits for it
+in `/etc/keymap`, is loaded (init records each layout it loads in
+`/run/keymap`), and the Wheel of Fate runs; init waits for it
 too, unless the command line said `roulette=skip`.
 
 After that, init starts the console's login prompt (`/bin/login`, on init's
@@ -93,6 +96,7 @@ at because init holds `SchedHigh`:
 | `bootctl collect` | uid 0 | `RawBlock`, `Power` | No: runs once at boot |
 | `users sync` | uid 0 | `Seal` | No: runs once at boot |
 | `netctl apply` | uid 0 | `NetAdmin` | No: runs at start and for each network adapter as it appears, one at a time |
+| `extctl install-offered` | uid 0 | `ExtensionUpdate`, `Seal` | No: runs once at boot |
 | `extctl activate-all` | uid 0 | `ExtensionUpdate`, `Seal` | No: runs once at boot |
 | `/sbin/privd` | uid 0 | every capability an action may name, and `SetId` | Yes |
 | `/bin/remoted` | the person the accounts record names for it, else the first administrator | none | Yes |

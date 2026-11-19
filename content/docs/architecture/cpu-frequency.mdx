@@ -194,9 +194,10 @@ the command's own output is left alone.
 
 Since HWP can't be switched off once on, comparing it with the firmware's
 settings takes a boot under `cpufreq=firmware` and then `cpufreq set hwp`
-within that boot. On a machine whose boot entries are fixed, a kernel built
-with `SLOPOS_BUILTIN_CMDLINE='cpufreq=firmware'` carries the option itself
-(see [Boot options](/docs/abi/boot-options)). The System Monitor graphs each
+within that boot. The option travels with the kernel: `bootctl install
+<slot> <kernel.elf> --cmdline cpufreq=firmware` stamps it into the kernel
+it installs, after the machine's own words (see [Boot
+options](/docs/abi/boot-options)). The System Monitor graphs each
 CPU's load, names its core type on a hybrid processor and shows the clock the
 processor ran at, and the profiler's report includes each CPU's busy share
 and clock over the span it covers (see

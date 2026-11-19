@@ -3,7 +3,7 @@ title: "What works"
 description: "What SlopOS can do today, in QEMU and on one real laptop."
 ---
 
-As of 2026-11-11, SlopOS commit `b8b2855b`.
+As of 2026-11-19, SlopOS commit `cfd13887`.
 
 SlopOS boots, runs a desktop for several people with their own accounts,
 keeps your files across reboots and crashes, talks to the network over three
@@ -41,14 +41,14 @@ Programs run in the processor's restricted mode and reach the kernel only
 through system calls ([User mode and kernel mode](/docs/architecture/privilege-separation)).
 The kernel answers 146 system calls by Linux's numbers and calling convention,
 so ported C and Rust code finds the common calls where it expects them, and a
-call it lacks fails with `ENOSYS`. 53 more are SlopOS's own: the private
-range has 54 numbers, one of them retired and answering `ENOSYS`. Those calls
-make up the *base interface*, numbered so that a kernel can say which bases it
-serves, interfaces 10 to 12 at this commit
-([System calls](/docs/architecture/syscalls)). The counts are the handlers in
-the kernel's two dispatch tables (`core/src/syscall/handlers.rs`), and the
-interfaces are `BASE_INTERFACE_MIN` and `BASE_INTERFACE` in
-`abi/src/base_interface.rs`.
+call it lacks fails with `ENOSYS`. 47 more are SlopOS's own, numbered densely
+from the start of the private range. Those calls make up the *base
+interface*, numbered so that a kernel can say which bases it serves; at this
+commit a kernel serves interface 15 alone, since before v1 it serves only
+its own tree's ([System calls](/docs/architecture/syscalls)). The counts are
+the handlers in the kernel's two dispatch tables
+(`core/src/syscall/handlers.rs`), and the interfaces are
+`BASE_INTERFACE_MIN` and `BASE_INTERFACE` in `abi/src/base_interface.rs`.
 
 Processes work the way a Unix programmer expects: `fork`, `exec`, shell
 scripts with `#!`, process groups, job control and the full set of signals
@@ -80,12 +80,12 @@ desktop, which locks behind them. A text console has a login prompt too
 
 What a program may do is a set of named capabilities it was handed when it
 started, never something its path or its user id earns
-([Capabilities](/docs/architecture/authority)); there are 22 of them, the bits
+([Capabilities](/docs/architecture/authority)); there are 21 of them, the bits
 `abi/src/caps.rs` defines. The desktop, terminal and shell init starts for a
 person hold none that change the system: the most any of them holds is the
 compositor's hold on the screen and the input. When one needs more (to
 install a kernel, add a person or power the machine off), it asks a broker,
-privd, which carries out one of 37 named actions (the `action` lines of the
+privd, which carries out one of 41 named actions (the `action` lines of the
 base's policy, `assets/privd/actions`, to which an installed extension may add
 its own), after asking the person in a dialog, or at a text console's prompt,
 when the action says so. `priv` runs a command with more power the same way,
@@ -129,23 +129,27 @@ Works with limits: IPv4 only.
 
 ## Programs and the desktop
 
-SlopOS has its own C library, whose list of exported symbols (929 at this
+SlopOS has its own C library, whose list of exported symbols (930 at this
 commit, the entries of `scripts/gates/libc/exports.txt`) only ever grows, a
 dynamic loader, a POSIX shell and a multi-call `coreutils` with the everyday
 tools (`ls`, `grep`, `sed`, `find`, `tar` and the rest)
 ([Userland](/docs/architecture/userland)). The system's own
 programs form one read-only *base* that can be replaced while the system runs
-([Base system](/docs/architecture/base)); everything else is installed under
-`/usr/local` or a person's `~/.local` ([Installed
-software](/docs/architecture/software)), and *extensions* add services and
-commands with a grant the computer's owner approved
-([Extensions](/docs/architecture/extensions)).
+([Base system](/docs/architecture/base)). Everything else is an image,
+checked on every read and shown at `/opt/<name>`, or a file a person copied
+into their own `~/.local` ([Installed
+software](/docs/architecture/software)); images add commands, apps, services
+and actions with a grant the computer's owner approved
+([Extensions](/docs/architecture/extensions)). The toolchain and the apps
+outside the base are two images, which every root is offered and init
+installs at boot.
 
 The desktop has a compositor with a dock, a menu bar, a system menu and lock
 and login screens, all drawn from one theme. Its apps are the terminal, a
-text editor, a file manager, an image viewer, the System Monitor, Settings
-(network, users, keyboard, desktop and about panels, each driving the
-command a terminal would run), a widget gallery and the installer's window
+text editor, a file manager, an image viewer, Breach (a first-person
+shooter), the System Monitor, Settings (network, users, keyboard, desktop
+and about panels, each driving the command a terminal would run), a widget
+gallery and the installer's window
 ([Desktop](/docs/architecture/desktop),
 [Windowing](/docs/architecture/userland-windowing),
 [Settings and preferences](/docs/architecture/settings)).
@@ -164,17 +168,19 @@ limitations](/docs/status/known-limitations#installing-and-updating)).
 
 An installed system keeps two kernels in two boot slots, so a new kernel that
 fails to boot falls back to the one that worked, and two bases, so a new base
-can be rolled back. A new base can run at once, without a reboot, when
-the system booted from that disk and the running kernel serves it ([Updating
-SlopOS](/docs/self-hosting/updating)).
-Works with limits: unlike a kernel, a new base gets no trial boot before it
-becomes the one every slot boots.
+can be rolled back. A new base is tried first: it runs at once, without a
+reboot and without being written, and any reset boots the base that was
+kept until `bootctl base commit` keeps the new one. A kernel and a base
+across an interface change go in as a pair, the kernel on a trial boot
+([Updating SlopOS](/docs/self-hosting/updating)).
 
 ## Building itself
 
-Once `just toolchain` has cross-built the compilers, the development machine
-carries rustc, cargo, clang, lld, git, bash, CMake, Ninja and OpenSSH. Inside
-it, SlopOS pulls new commits over git, builds its kernel, programs and base,
+Once `just toolchain` has cross-built the compilers into the
+`slopos-toolchain` image, the development machine carries rustc, cargo,
+rustfmt, clippy, clang, lld, git, bash, CMake, Ninja, just and OpenSSH.
+Inside it, SlopOS pulls new commits over git, builds its kernel and base with
+the same `just` recipes as the host, checks a commit with `just precommit`,
 installs the base and runs it at once, installs the kernel into the spare
 boot slot, boots into it and pushes commits back
 ([Development machine](/docs/self-hosting/development-machine)). The laptop
@@ -182,7 +188,10 @@ has built itself and installed a kernel into its spare slot on its own disk,
 without the network half of the loop
 ([Hardware](/docs/status/hardware-requirements)). Works with limits: the
 compilers themselves are built on the host
-([Toolchain](/docs/self-hosting/toolchain)).
+([Toolchain](/docs/self-hosting/toolchain)), the test suite still needs
+a Linux host, and at this commit rustc in the guest runs out of address
+space building the kernel ([Known
+limitations](/docs/status/known-limitations#toolchain)).
 
 A machine on your network can be paired with your development host and
 driven from it: commands, files, the kernel log, and new kernels and bases
@@ -190,8 +199,8 @@ driven from it: commands, files, the kernel log, and new kernels and bases
 
 ## How it is checked
 
-The QEMU suite is a tracked list of 3,116 tests, 3,032 in the kernel phase
-and 84 userland test programs (the subtests a test program reports are not
+The QEMU suite is a tracked list of 3,125 tests, 3,042 in the kernel phase
+and 83 userland test programs (the subtests a test program reports are not
 counted): `scripts/gates/tests/tests.txt`. The test runner's `tests` gate
 (`run_tests gate tests`) holds each CI boot to it, failing on a listed test
 that did not run, a test that ran unlisted and a name reported twice. Host-side unit tests run beside it, and longer checks boot
@@ -211,7 +220,7 @@ this commit:
 |---------|-------|---------------|
 | `pub unsafe fn` in `slopos-ostd` | 52 | `grep -rn "pub unsafe fn" slopos-ostd/src` |
 | `pub unsafe trait` in `slopos-ostd` | 15 | `grep -rn "pub unsafe trait" slopos-ostd/src` |
-| Lines of `unsafe` code over all kernel Rust lines | 0.318 % (1,159 of 364,230, counting the vendored unwinder and DWARF reader) | `just tcb-ratio`; the gates fail above 1 % |
+| Lines of `unsafe` code over all kernel Rust lines | 0.316 % (1,161 of 367,364, counting the vendored unwinder and DWARF reader) | `just tcb-ratio`; the gates fail above 1 % |
 
 ## Summary
 
@@ -220,7 +229,7 @@ this commit:
 | QEMU | UEFI boot; NVMe, virtio and USB disks; virtio network and display; xHCI | Works | [QEMU options](/docs/getting-started/qemu-options) |
 | Real hardware | One Lenovo laptop: installed system, display, keyboard, touchpad, wired network, USB input | Works with limits | [Hardware](/docs/status/hardware-requirements) |
 | CPUs | All cores, preemptive scheduling, hardware frequency control, core-type placement | Works | [CPU frequency](/docs/architecture/cpu-frequency) |
-| System calls | 146 by Linux's numbers, 53 of SlopOS's own | Works with limits | [System call ABI](/docs/abi/syscalls) |
+| System calls | 146 by Linux's numbers, 47 of SlopOS's own | Works with limits | [System call ABI](/docs/abi/syscalls) |
 | Processes | fork, exec, `#!` scripts, job control, signals, pidfd | Works | [Processes and signals](/docs/architecture/processes) |
 | Memory | Demand paging, copy-on-write, `mmap`, memfd, commit limit, OOM killer | Works | [Memory](/docs/architecture/memory) |
 | People | Accounts, passwords, administrators, login screen, several sessions | Works | [Sessions and login](/docs/architecture/sessions) |
@@ -231,13 +240,13 @@ this commit:
 | USB | xHCI, hubs, keyboards, pointers, sticks, Ethernet adapters, hotplug | Works with limits | [USB](/docs/architecture/usb) |
 | Network | IPv4, TCP, UDP, DHCP, DNS, Unix sockets, TLS 1.3 | Works with limits | [Networking](/docs/architecture/networking) |
 | Userland | C library, shell, coreutils, e2fsprogs | Works | [Userland](/docs/architecture/userland) |
-| Desktop | Compositor, terminal, editor, file manager, image viewer, System Monitor, Settings | Works | [Desktop](/docs/architecture/desktop) |
-| Software | Base replaced live, `/usr/local` and `~/.local` trees, extensions | Works | [Installed software](/docs/architecture/software) |
+| Desktop | Compositor, terminal, editor, file manager, image viewer, Breach, System Monitor, Settings | Works | [Desktop](/docs/architecture/desktop) |
+| Software | Base replaced live, images under `/opt`, a person's `~/.local` | Works | [Installed software](/docs/architecture/software) |
 | Installing | Install medium, installer window and command, rescue shell | Works with limits | [Installing SlopOS](/docs/self-hosting/installing) |
-| Updates | A/B kernel slots with fallback, current and previous bases | Works with limits | [Updating SlopOS](/docs/self-hosting/updating) |
+| Updates | A/B kernel slots with fallback, a base tried before it is kept, kernel and base as a pair | Works | [Updating SlopOS](/docs/self-hosting/updating) |
 | Self-hosting | Builds and installs itself, in QEMU and on the laptop | Works with limits | [Development machine](/docs/self-hosting/development-machine) |
 | Remote control | A paired machine driven from the host | Works | [Remote control](/docs/self-hosting/remote-control) |
-| Testing | 3,116 listed QEMU tests, host unit tests, long checks | Works | [Write tests](/docs/development/adding-tests) |
+| Testing | 3,125 listed QEMU tests, host unit tests, long checks | Works | [Write tests](/docs/development/adding-tests) |
 | Verification | One unsafe crate, gates, Verus proofs, Miri | Works | [The framekernel](/docs/verification/framekernel) |
 
 ## Programs on every base
@@ -249,8 +258,8 @@ Every base carries these programs, listed in `scripts/lib/base.sh`; `init`,
 ```text
 init privd shell coreutils terminal compositor roulette halt bootctl installer
 installer-ui sysmon nmap ip keymap ss nc curl ping oops_smoke cpufreq remoted
-kconsole endtask prof tree-install session login extctl users authcheck priv
-netctl prefs settings mke2fs e2fsck resize2fs tune2fs debugfs dumpe2fs
+kconsole endtask prof session login extctl users authcheck priv netctl prefs
+settings mke2fs e2fsck resize2fs tune2fs debugfs dumpe2fs
 ```
 
 `coreutils` answers to these names, each a link to it:
@@ -262,7 +271,8 @@ echo test [ true false yes seq sleep env nproc uname whoami pwd date hexdump
 ps tar gzip gunzip zcat sha256sum stty less mount umount
 ```
 
-The apps (`editor`, `file_manager`, `image_viewer`, `widget_gallery`) are not
-in the base: every root holds them under `/usr/local`. The test base adds the
+The apps (`editor`, `file_manager`, `image_viewer`, `breach`,
+`widget_gallery`) are not in the base: they ship as the image
+`slopos-essentials`, shown at `/opt/slopos-essentials`. The test base adds the
 test programs and the shared libraries they load. To try it yourself, start
 with the [Quickstart](/docs/getting-started/quickstart).

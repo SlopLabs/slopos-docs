@@ -150,6 +150,24 @@ merely moves, only the widgets it lights or stops lighting are repainted,
 over a copy of the frame on screen. The compositor's own menus and panels
 repaint by the same rectangles.
 
+The terminal does the same by cells. A frame repaints the cells whose look
+changed, not the cells written: `terminal_core::shown` keeps the glyph and
+colours each cell was last drawn with, cursor and selection applied, and the
+grid's damage only says where to compare. A frame in which nothing looks
+different is not presented at all, so a program that rewrites a line with
+the same text causes no flicker. A change to how a cell looks that the grid
+does not record, such as the cursor's blink or the selection, must still be
+added to the pending damage.
+
+The terminal also honours the *synchronized update* (DECSET 2026), the
+convention modern terminals share for "don't show anything until I'm done".
+Between `ESC[?2026h` and `ESC[?2026l` no frame is presented, for at most
+150 ms, so a program that never ends its update loses the hold rather than
+freezing the window. It matters because a pty delivers a write in pieces
+the terminal may paint between: a program that erases what it is about to
+write again should do both inside one update. The shell's line editor
+writes each redraw of the prompt line as one `write` wrapped in one.
+
 ### Resizing
 
 When you drag a window's edge or press its zoom button, the compositor tells
@@ -218,11 +236,9 @@ replace it: a copy or paste must quote the serial number of the latest key
 event the compositor sent to that program's focused window. Changing the
 pointer's shape needs the serial of the pointer's latest entry into the
 window, while the pointer is still over it. The clipboard the
-apps and the terminal copy to and paste from is the compositor's, so each
-person's desktop has its own and two people's desktops never share one. (The
-kernel also keeps a clipboard per session, which
-[Sessions and login](/docs/architecture/sessions) describes; the apps don't
-use it.)
+apps and the terminal copy to and paste from is the compositor's alone, so
+each person's desktop has its own and two people's desktops never share one.
+The kernel keeps no clipboard.
 
 The keyboard layout is applied in the kernel rather than in each program, so
 a Swiss German keyboard types the same characters in a console, in the

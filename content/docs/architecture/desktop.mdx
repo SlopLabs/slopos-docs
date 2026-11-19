@@ -390,19 +390,27 @@ extension's entries may do.
 ## The apps that ship
 
 Some apps are part of the base, the read-only system every boot runs; the
-rest are installed at `/usr/local`, outside the base, so they can be updated
-on their own ([Installed software](/docs/architecture/software) explains
-why).
+rest ship in the image `slopos-essentials`, outside the base, so they can be
+updated on their own ([Installed software](/docs/architecture/software)
+explains why). Their entries name `/opt/slopos-essentials/bin/<app>`. No app
+lives at `/usr/local`, which nothing searches.
 
 | App | Program | Where | What it is |
 |---|---|---|---|
 | Terminal | `terminal` | base | A shell on a *pseudo-terminal* (a pair of endpoints that look like a serial line to the shell), emulating an xterm closely enough for full-screen programs and mouse reporting. Resizing re-wraps long lines in the scrollback; Ctrl+Shift+PgUp and PgDn scroll it. |
-| System Monitor | `sysmon` | base | A *Performance* tab with a graph of the last minute for the processor, memory, each disk, each network adapter and the graphics adapter, and a *Processes* tab listing every process with its threads folded in, which can end one (through privd when it belongs to another person, and saying why when it can't). `sysmon --page cpu`, `memory`, `disk`, `network`, `gpu` or `processes` opens on a page. |
+| System Monitor | `sysmon` | base | A *Performance* tab with a graph of the last minute for the processor, memory, each disk, each network adapter and the graphics adapter, and a *Processes* tab: a table of processes beside a pane on the chosen one, which can end it (through privd when it belongs to another person). `sysmon --page cpu`, `memory`, `disk`, `network`, `gpu` or `processes` opens on a page. |
 | Install SlopOS | `installer-ui` | base | The installer's window, shown only when the computer started from the install medium ([Installing SlopOS](/docs/self-hosting/installing)). |
-| Editor | `editor` | `/usr/local` | A text editor with tabs, a file tree, syntax highlighting, find and replace and a command palette. It saves through a synced copy renamed over the file, so a failed save never leaves half a file, and asks before replacing a file that changed since it was opened. Its manual is `share/slopos/doc/editor.md`. |
-| Files | `file_manager` | `/usr/local` | A file manager with places in a sidebar, a toolbar and a table of the folder. |
-| Image Viewer | `image_viewer` | `/usr/local` | Shows a PNG fitted to the window, zoomed with the wheel or `+` and `-`, `f` to fit again and `0` for actual size. |
-| Widget Gallery | `widget_gallery` | `/usr/local` | Every appkit component in each of its states. It has no dock entry; start it from a terminal. |
+| Editor | `editor` | `slopos-essentials` | A text editor with tabs, a file tree, syntax highlighting, find and replace and a command palette. It saves through a synced copy renamed over the file, so a failed save never leaves half a file, and asks before replacing a file that changed since it was opened. Its manual is `share/slopos/doc/editor.md`. |
+| Files | `file_manager` | `slopos-essentials` | A file manager with places in a sidebar, a toolbar and a table of the folder. |
+| Image Viewer | `image_viewer` | `slopos-essentials` | Shows a PNG fitted to the window, zoomed with the wheel or `+` and `-`, `f` to fit again and `0` for actual size. |
+| Breach | `breach` | `slopos-essentials` | A first-person shooter. Its levels, simulation and software raycaster (one ray cast per screen column) are the crate `shooter-core`, pure code tested on the build machine under `just test-host`. |
+| Widget Gallery | `widget_gallery` | `slopos-essentials` | Every appkit component in each of its states. It has no dock entry; start it from a terminal. |
+
+An app crate depends on nothing but `slopos-appkit`, `slopos-editor-core`,
+`slopos-image` and `slopos-shooter-core` (`xtask lint app-deps`), so an app
+never has to change when the base's ABI or drawing internals do.
+`shooter-core` is a userland-side crate, outside the kernel's unsafe
+discipline; it forbids `unsafe` outright.
 
 ## What the System Monitor measures
 
@@ -412,9 +420,20 @@ kernel once a second and keeps the last minute of each figure. Its
 its own graph, beside the chosen one's page of graphs, figures and details.
 Its *Processes* tab names each process by its first thread's id, which is
 what `getpid` returns (the kernel's own process ids number a different
-space), and filters by name, user or id.
+space), and filters by name, user or id. The table shows each process's
+name, led by an icon for a person's, the system's or the kernel's own, then
+its user, CPU, memory and id. Beside it, a pane on the chosen process shows
+a minute of its CPU and memory (the `Monitor` keeps them per `TaskKey`),
+what started it, its threads, its CPU time and the most memory it held.
+The pane says what ending the process would come to before anyone asks: the
+`Ending` is worked out once, when the row is chosen, by the same questions
+*End task…* asks. The button is offered only where ending can succeed, and
+pressing it still decides afresh. A process the search hides is no longer
+selected. `endtask::of_a_person` is the one test of whether a task is a
+person's, both for whether it may be ended and for the row's icon.
 `sysmon --page cpu|memory|disk|network|gpu|processes` opens on one page,
-which is how `just ui-shots` photographs each.
+which is how `just ui-shots` photographs each; the `apps` scene also saves
+`system-monitor-process`, with a row chosen.
 
 A share, such as processor load, is graphed from 0 to 100%, so its height
 means the same from one minute to the next. A rate, such as bytes a second
@@ -495,6 +514,10 @@ before and after a change. The audit and the tests are the gate.
   repeat from a press by the keys it has seen go down and not up
   (`run::Held`). A new control gets "types again, presses once" from that,
   and must not track held keys itself.
+- **A column's heading sits where its cells' text does.**
+  `TableColumn::align` places both; in a column aligned to the end the sort
+  arrow leads the heading, so sorting never moves the label off the
+  digits' edge.
 - **Text that is cut says so.** A line too long ends, or for a path starts,
   with `…` (`ListRow::detail_tail` is the detail cut at its start) and shows
   whole in a tooltip. A view onto content that goes on past it, as a scroll
@@ -531,6 +554,12 @@ before and after a change. The audit and the tests are the gate.
   system call, so a test feeds it samples of its own. Each disk counts its
   own activity for `block_stats`, apart from the machine-wide counters in
   `slopos_fs::blockdev::stats`, which tests reset.
+- **The clipboard is the compositor's alone.** Each session's compositor
+  keeps one, reached by a window holding the latest key serial
+  ([Window protocol](/docs/abi/window-protocol#clipboard)); the kernel keeps
+  none. The terminal and the compositor open `/dev/kmsg` when they start
+  (`tty::open_log`) and log through it; the terminal does not copy its
+  shell's output into the kernel log.
 
 ## Further reading
 
@@ -561,6 +590,8 @@ before and after a change. The audit and the tests are the gate.
 | `userland/src/apps/compositor/` | Frames, dock, menu bar, wallpaper; `views.rs` for its appkit surfaces |
 | `chrome-core/` | The models behind the lock screen, the system menu, the clock, placement and which pointer shows (the display's overlay or a painted one), host-tested |
 | `userland/src/apps/sysmon/` | The System Monitor; `monitor.rs` holds its histories |
-| `apps/` | The apps outside the base, their entries and icons |
+| `userland/src/apps/endtask.rs` | Whose a task is (`of_a_person`) and whether it can be ended |
+| `apps/` | The apps outside the base, shipped as `slopos-essentials`, their entries and icons |
+| `shooter-core/` | Breach's levels, simulation and raycaster, host-tested |
 | `tools/icons/` | The app icons' artwork and its tests |
 | `scripts/ui_shots.py`, `scripts/lib/qmp.py` | `just ui-shots`: the scenes, and the QEMU monitor client that sends keys and clicks and saves the screen |

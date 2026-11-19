@@ -22,9 +22,10 @@ A bootable SlopOS is made of these parts:
    read-only archive the boot loader loads beside the kernel. Every kernel
    boots a base; [Base system](/docs/architecture/base) explains why the two
    are separate.
-3. **The apps**: the editor, file manager, image viewer and widget gallery,
-   which live outside the base and are installed under `/usr/local` on every
-   root ([Installed software](/docs/architecture/software)).
+3. **The apps**: the editor, file manager, image viewer and the other apps
+   that live outside the base, packed into the image `slopos-essentials`
+   (`builddir/slopos-essentials/`), which every root is offered and installs
+   at `/opt/slopos-essentials` ([Installed software](/docs/architecture/software)).
 4. **A root disk image**, when the system keeps files: a file holding an ext4
    filesystem, the same format Linux uses, which QEMU presents to the virtual
    machine as a disk.
@@ -36,7 +37,7 @@ what it needs first.
 
 | Command | What it produces |
 |---------|------------------|
-| `just build` | The programs and apps, the verified image `fs/assets/ext4.img`, and the kernel `builddir/kernel-dev.elf` |
+| `just build [VARIANT]` | The kernel `builddir/kernel-<VARIANT>.elf` and the base it boots with, `builddir/initramfs.cpio` (`initramfs-tests.cpio` for a tests variant). `VARIANT` is `release`, `dev`, `tests` or `release-tests`; the default is `dev`, or `release` with `KERNEL_RELEASE=1` |
 | `just iso` | The live ISO `builddir/slop.iso`: the kernel, the base `builddir/initramfs.cpio` and the install medium `builddir/install.cpio` |
 | `just boot-live` | Builds the ISO, then boots it |
 | `just boot` | The optimised kernel `builddir/kernel-release.elf`, the base, the boot disk `builddir/boot-disk.img` and the persistent root `fs/assets/ext4-persist.img`, then boots them |
@@ -162,16 +163,27 @@ tests](/docs/development/adding-tests) explains where a new test belongs.
 ### Before you send a change
 
 ```bash
-cargo fmt --all
+just precommit
 just ci
 ```
 
-`just ci` runs every lane CI runs, in CI's order, with the commands CI runs:
-`ci-gates`, `ci-candidates`, `ci-suite`, `ci-toolchain`, then `check-miri` and
-`verify`. A passing `just test` is necessary but not enough, because CI also
-runs gates that `just test` does not. [Write
-tests](/docs/development/adding-tests#what-ci-runs) says what each lane
-holds and what to do when a gate fails.
+`just precommit` is the lane a commit passes, the same command on your
+machine and on SlopOS: `fmt`, `test-host`, `clippy`, `build dev`,
+`check-gates` (the base interface, `xtask lint` and the dev kernel's ELF
+gates) and `libc-exports`. `just ci` runs every lane CI runs, in CI's order,
+with the commands CI runs: `ci-gates`, `ci-candidates`, `ci-suite`,
+`ci-toolchain`, then `check-miri` and `verify`. A passing `just test` is
+necessary but not enough, because CI also runs gates that `just test` does
+not. [Write tests](/docs/development/adding-tests#what-ci-runs) says what
+each lane holds and what to do when a gate fails.
+
+### Where a recipe runs
+
+The same justfile runs on your machine and on SlopOS. A build or a gate runs
+on both. A recipe that emulates a machine, or needs the host's images or
+cross-build tools, refuses on SlopOS in one line before it builds anything,
+and `just install` and `just install-kernel` refuse anywhere but SlopOS
+([Development machine](/docs/self-hosting/development-machine#one-justfile-on-both-systems)).
 
 ### The longer checks
 
@@ -214,9 +226,10 @@ recipe's own description.
 
 | Recipe | What it does |
 |--------|--------------|
-| `just setup` | Install the pinned Rust nightly, build the `slopos` toolchain, check Go 1.22 or later, fetch the Go modules, validate the workspace |
-| `just build` | Build the programs and apps, `fs/assets/ext4.img` and `builddir/kernel-dev.elf` |
-| `just build-kernel-only` | Build the kernel ELF without the programs or the image |
+| `just setup` | Install the pinned Rust nightly, build the `slopos` toolchain, check Go 1.22 or later, fetch the Go modules, validate the workspace. On SlopOS, check that the toolchain image is the one the tree needs |
+| `just build [VARIANT]` | Build the kernel `builddir/kernel-<VARIANT>.elf` and the base it boots with, on either system |
+| `just build-kernel-only` | Build the kernel ELF without the programs or the base |
+| `just install [VARIANT]`, `just install-kernel [VARIANT]` | On SlopOS only: build a system and try its base (with its kernel when it needs one), or try a build's kernel in the spare slot ([Updating SlopOS](/docs/self-hosting/updating)). `VARIANT` defaults to `release` |
 | `just iso` | Build `builddir/slop.iso` with `BOOT_CMDLINE` as its kernel command line. `PAYLOAD=1` adds the toolchain and a clone of `HEAD` in a partition the installer copies from; `REMOTE=1` packs a base paired with this host's remote-control broker |
 | `just extension <dir>` | Pack the extension laid out in `<dir>` into `builddir/extensions/<name>.ext` and its sidecar, signed when `EXTENSION_KEY` names a key ([Package an extension](/docs/development/packaging-an-extension)) |
 | `just icons` | Render the shipped app icons at 64 and 128 pixels |
@@ -316,7 +329,10 @@ the machine lets the broker do.
 |--------|--------------|
 | `just fmt` | Check formatting (`cargo fmt --all -- --check`) |
 | `just clippy [target...]` | Clippy over the host crates, the kernel's crates and the userland, each with its build's own flags; name `host`, `kernel` or `userland` to run one |
-| `just check-framekernel-gates` | The toolchain and pin gates, every source gate (`xtask lint`) and the dev kernel's ELF gates (needs `just build`) |
+| `just precommit` | `fmt`, `test-host`, `clippy`, `build dev`, `check-gates` and `libc-exports`, on either system |
+| `just check-gates` | The base interface, every source gate (`xtask lint`) and the dev kernel's ELF gates, on either system (needs `just build dev` or `just build-kernel-only`) |
+| `just base-interface [--record]`, `just libc-exports [--record]` | The two contract gates: SlopOS's own system calls held to `BASE_INTERFACE`, and `libc.so`'s exports and record layouts held to only growing ([Toolchain gates](/docs/verification/toolchain-gates)) |
+| `just check-framekernel-gates` | `check-gates` plus the host's toolchain, pin and image-tool gates; host only (needs `just build`) |
 | `just check-framekernel` | The above plus `clippy`, `fmt`, Miri and Verus (needs `just build`) |
 | `just check-miri` | Run the `slopos-ostd` tests under Miri, with Stacked and Tree Borrows |
 | `just ensure-verus` | Download the pinned Verus toolchain into `third_party/verus` |

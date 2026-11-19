@@ -7,12 +7,13 @@ This page lists the gates that hold the SlopOS toolchain, its pinned inputs
 and the C library's interface: one entry per gate, with what it holds, the
 failure nothing else reports, its inputs and tracked data, when it runs and
 when it prints `skipped`, and how to re-record. Each script's header comment
-in `scripts/` is the authoritative description, and the recipes
-`check-framekernel-gates`, `check-toolchain-coverage`, `ci-gates`,
-`ci-candidates` and `ci-toolchain` in the `justfile` are the authoritative
-list of what runs where. [Safety gates](/docs/verification/tcb-discipline)
-lists every other gate, and [The toolchain](/docs/self-hosting/toolchain)
-explains the pieces these gates check.
+in `scripts/`, and each xtask module's documentation, is the authoritative
+description, and the recipes `check-gates`, `check-framekernel-gates`,
+`check-toolchain-coverage`, `ci-gates`, `ci-candidates` and `ci-toolchain` in
+the `justfile` are the authoritative list of what runs where.
+[Safety gates](/docs/verification/tcb-discipline) lists every other gate, and
+[The toolchain](/docs/self-hosting/toolchain) explains the pieces these gates
+check.
 
 ## Conventions
 
@@ -20,13 +21,15 @@ explains the pieces these gates check.
 |---|---|
 | `skipped` | The gate printed `skipped`, with the reason, and exited 0, because an input a checkout may legitimately lack is absent |
 | `--require` | Turns that skip into a failure. Used where the inputs are known to exist |
-| `--self-test` | Runs the gate against planted fixtures. `just check-framekernel-gates` runs every shell gate's self-test before the gates themselves |
+| `--self-test` | Runs a shell gate against planted fixtures. `just check-framekernel-gates` runs every shell gate's self-test before the gates themselves. The xtask gates' fixtures are `cargo test -p slopos-xtask`, which `just test-host` runs |
 | Materialised tree | A pinned upstream source tree unpacked under `third_party/` with the SlopOS patches applied. It carries a stamp: a digest of the patches and pins it was built from |
 | `builddir/gates/` | Where gates that compile something keep their build directories. `just clean` removes the codegen, rustc-target, LLVM-port, clang-driver, bootstrap and offline-build ones |
 
 | Recipe | Runs |
 |---|---|
-| `just check-framekernel-gates` | Every self-test, then `check_offline_build.sh --pins-only` and the pin, rustc-target, C++ runtime, LLVM-port, clang-driver, bootstrap, recipes, C library licence, C library exports and base-interface gates without `--require`, then `just check-toolchain-coverage` |
+| `just check-gates` | On the host and on SlopOS: `just base-interface`, `xtask lint` and the dev kernel's ELF gates |
+| `just check-framekernel-gates` | `just check-gates`, then every shell self-test, then `check_offline_build.sh --pins-only` and the pin, rustc-target, C++ runtime, LLVM-port, clang-driver, bootstrap, recipes and C library licence gates without `--require`, then `just check-toolchain-coverage`. Refuses on SlopOS |
+| `just precommit` | On either system: `fmt`, `test-host`, `clippy`, `build dev`, `just check-gates` and `just libc-exports` |
 | `just check-toolchain-coverage` | `check_codegen_backend.sh` for `llvm` and `cranelift`, `check_linker_script.sh` for `lld` and `wild` |
 | `just ci-gates` (CI's `gates` job) | `just check-framekernel-gates`, then `just check-offline-build` |
 | `just ci-candidates` (CI's `gates` job, after the gates lane) | Installs the cranelift component and the pinned `wild` under `builddir/candidates`, then runs their two gates, `wild`'s with `--require` |
@@ -45,7 +48,7 @@ explains the pieces these gates check.
 | Why (5) | The stamp describes the overlay, not the result. A tree a broken run left half-patched (patched std, unpatched `libc`) carries a correct stamp |
 | Runs | `just check-framekernel-gates` |
 | Skips | Never prints `skipped`. The tree and registration checks apply only to what exists, so a checkout that materialised nothing passes on the pins alone |
-| Re-record | After editing a patch, write its new `sha256sum` into its `patch_sha256=` line. After a channel bump, re-cut the patches, then update `channel=`. For a stale tree, re-run `scripts/make_slopos_sysroot.sh` or `scripts/make_rustc_src.sh`; for a tree missing created files, delete it first |
+| Re-record | After editing a patch, write its new `sha256sum` into its `patch_sha256=` line. After a channel bump, re-cut the patches, then update `channel=`. A bump also moves the `libc` fork's version to the one `library/Cargo.lock` takes, with `toolchain/recipes/just/Cargo.lock` and `NOTICE.md` after it; the crate ports to the versions `cargo tree` resolves for a SlopOS host; and `third_party/vendor` and the built recipes, which the offline-build and recipes gates then ask to be remade. For a stale tree, re-run `scripts/make_slopos_sysroot.sh` or `scripts/make_rustc_src.sh`; for a tree missing created files, delete it first |
 
 ## `check_rustc_target.sh`
 
@@ -121,7 +124,8 @@ explains the pieces these gates check.
 | Holds | The cross-build configuration (`scripts/bootstrap_slopos_toolchain.sh`) to the toolchain it claims to produce, without running the build: it runs bootstrap's own dry run, then compiles and links with the generated compiler wrapper |
 | Catches | (1) The step graph loses an artifact. `cargo` is an extended tool that a stage2 rustc does not depend on, so a configuration that stops naming it still builds a compiler. (2) `toolchain/compiler/0002-bootstrap-cmake-system-name.patch` stops applying: for a triple it does not recognise, bootstrap prints a note, sets `CMAKE_SYSTEM_NAME=Generic` and exits 0, which loses `LLVM_ON_UNIX` and every `Unix/*.inc` file the LLVM port patches. (3) The wrapper stops producing SlopOS binaries. It names two triples on purpose, SlopOS to compile and Linux to link, and regresses by naming one |
 | Installed toolchain | When `just toolchain` has installed one (`builddir/slopos-toolchain/install`, or `SLOPOS_TOOLCHAIN_INSTALL`), every object in it must have no `DT_NEEDED` outside SlopOS's own libraries, no `R_X86_64_TLSDESC` relocation (the loader does not bind one), every `DT_NEEDED` found through the object's own `$ORIGIN` search path, and every undefined name defined in its closure. `bin/cargo` must also use the recipes' libraries and not a copy a `-sys` crate bundled. The loader binds eagerly and nothing there links with `-z defs`, so each of these is otherwise a program that does not start, found only in the guest |
-| Reads | `third_party/slopos-rustc-src` (or `RUSTC_SRC_DIR`), `builddir/libc.so`, `third_party/slopos-cxx/lib`, `toolchain/recipes/*/recipe` |
+| Plan also holds | Building rustdoc and installing rustfmt and clippy for SlopOS |
+| Reads | `third_party/slopos-rustc-src` (or `RUSTC_SRC_DIR`), `builddir/libc.so` (the base's C library, which a toolchain image no longer carries), `third_party/slopos-cxx/lib`, `toolchain/recipes/*/recipe` |
 | Tracked data | None. The steps the plan must contain are `WANTED_STEPS` in the script |
 | Runs | `just check-framekernel-gates`; `just check-bootstrap-config` and `just ci-toolchain` with `--require`. A first run downloads bootstrap's stage0 compiler |
 | Skips | No materialised rustc source tree, or no staged target sysroot (a tests userland build) |
@@ -208,36 +212,37 @@ explains the pieces these gates check.
 | Skips | Never |
 | Re-record | A third-party crate under MIT takes an entry in `slibc/NOTICE`. Another licence needs its text there and a change to the gate |
 
-## `check_base_interface.sh`
+## `xtask base-interface`
 
 | | |
 |---|---|
-| Script | `scripts/check_base_interface.sh [--self-test]`, `--record`, `--print` |
-| Holds | The private call surface to `slopos_abi::BASE_INTERFACE`, the number a [base](/docs/architecture/base) is built against |
-| Catches | The private calls change shape while the number stays. The base and the kernel then agree on the number and disagree on what it means, and neither build notices |
-| The surface | What rustdoc's JSON says of `slopos-abi`, not its source text: each private syscall's number and the backticked `name(args) -> result` signature its documentation states, packing included; the items those signatures name and the documentation links; everything reachable from them through field and alias types; and the `root` globs in the data file for what no signature can name (records behind a byte buffer, op and flag families, the wire-packing methods of rooted types). Documentation prose, comments, formatting and item order change nothing |
-| Fails when | The surface's sha256 differs from the ledger row for the current number; the number has no row; the ledger is malformed or skips a number; a private call's documentation states no signature; a capitalised name in a signature resolves to no item or to several; a `root` glob reaches nothing the surface renders; or the surface is implausibly small |
-| Exit 2 | The parser crashed, or rustdoc's `format_version` is not the one the parser reads. A toolchain bump revalidates the parser instead of shifting digests |
-| Not held | Linux's own shapes a private call passes through (`sockaddr`, `msghdr`, `iovec`, `AF_*`), which Linux compatibility holds, and what a private call takes from outside `slopos-abi` (the font's glyph ranges, the kernel console's keys, the EFI GUIDs, limits written into a handler). Such a fact moves into `slopos-abi` before it changes |
+| Command | `just base-interface [--record]`, `--print` (`xtask base-interface`, `tools/xtask/src/contract/base_interface/`) |
+| Holds | The base's call surface to `slopos_abi::BASE_INTERFACE`, the number a [base](/docs/architecture/base) is built against |
+| Catches | The calls change shape while the number stays. The base and the kernel then agree on the number and disagree on what it means, and neither build notices |
+| The surface | What rustdoc's JSON says of `slopos-abi`, not its source text: each private syscall's number and the backticked `name(args) -> result` signature its documentation states, packing included; the items those signatures name and the documentation links; everything reachable from them through field, variant, alias and constant types; and the `root` globs in the data file for what no signature can name (records behind a byte buffer, op and flag families). Then the Linux-numbered calls the kernel answers, one `linux <n> <SYSCALL_NAME>` line per row of the `SYSCALL_TABLE` static in `core/src/syscall/handlers.rs`. Documentation prose, comments, formatting and item order change nothing |
+| Fails when | `bump`: the surface's sha256 differs from the ledger row for the current number. `unrecorded`: the number has no row. `ledger`: a malformed or out-of-order row, a row past the number, a number skipped, or `BASE_INTERFACE_MIN` outside `1..=BASE_INTERFACE`. `signature`: a private call's documentation states no signature. `unresolved`: a capitalised name in a signature resolves to no item or to several, or a Linux row's constant is not defined in `slopos_abi::syscall::numbers`. `range`: a Linux row at or above `SYSCALL_PRIVATE_BASE`. `dead`: a `root` glob reaches nothing the surface renders. `meta`: the private range, the interface numbers or the Linux table could not be read. `floor`: fewer than 20 private calls, 200 surface lines besides the Linux ones, or 100 Linux calls |
+| Exit 2 | rustdoc's `format_version` is not the one the reader takes, or a shape it does not expect. A toolchain bump revalidates the reader instead of shifting digests |
+| Not held | Linux's own shapes a call passes through (`sockaddr`, `msghdr`, `iovec`, `AF_*`), which Linux compatibility holds; a Linux call's handler and capability; and what a private call takes from outside `slopos-abi` (the font's glyph ranges, the kernel console's keys, the EFI GUIDs, limits written into a handler). Such a fact moves into `slopos-abi` before it changes |
 | Tracked data | `scripts/gates/base-interface.txt`: the `root` globs, then the ledger, one `interface <n> <sha256>` row per number ever issued |
-| Runs | `just check-framekernel-gates` |
+| Runs | `just check-gates`, so `check-framekernel-gates` and `precommit`; `just install` and `just install-kernel` on SlopOS before they write anything. The rustdoc it reads comes with the toolchain on either system |
 | Skips | Never |
-| Re-record | Raise `BASE_INTERFACE`, then `scripts/check_base_interface.sh --record`. It appends a row only for the number one past the last, so an issued row is never rewritten. `--print` writes the surface, to diff before and after a change |
+| Re-record | Raise `BASE_INTERFACE`, then `just base-interface --record`. It appends a row only for the number one past the last, so an issued row is never rewritten. A call the kernel starts or stops answering in `SYSCALL_TABLE` takes the next number too. `--print` writes the surface, to diff before and after a change |
 
-## `check_libc_exports.sh`
+## `xtask libc-exports`
 
 | | |
 |---|---|
-| Script | `scripts/check_libc_exports.sh [--require] [--record] [LIBC_SO]`, `--self-test` |
+| Command | `just libc-exports [--record]` (`xtask libc-exports <libc.so>`, `tools/xtask/src/contract/libc_exports/`) |
 | Holds | `libc.so`'s interface to only growing |
 | Catches | A program built outside the base breaks when a function it calls is removed, or a structure it shares with the library changes layout. Nothing in the tree notices, because everything in the tree is rebuilt against the new headers together |
-| Exports | Every defined dynamic symbol, held to `scripts/gates/libc/exports.txt` as `func`, or `object` or `tls` with its size. A data export's size is part of the interface, since a non-PIE program copy-relocates it |
-| Layouts | The size, alignment and every field offset of every struct and union `slibc/include` defines, held to `scripts/gates/libc/layouts.txt`, as clang's `-fdump-record-layouts-complete` measures them under the target. Every record, not only those a prototype names, because exports take structures through `void *` too. Field types are left out, because their spelling moves between clang releases |
+| Exports | Every defined dynamic symbol, read from `.dynsym` with the `object` crate and held to `scripts/gates/libc/exports.txt` as `func`, or `object` or `tls` with its size. A data export's size is part of the interface, since a non-PIE program copy-relocates it |
+| Layouts | The size, alignment and every field offset of every struct and union `slibc/include` defines, held to `scripts/gates/libc/layouts.txt`, as clang's `-fdump-record-layouts-complete` measures them under the target, the dump canonicalised in Rust. Every record, not only those a prototype names, because exports take structures through `void *` too. Field types are left out, because their spelling moves between clang releases |
+| Fails when | `removed`, `added`, `layout`, `gone` or `new` against the recorded lists, or `floor`: under 500 exports or 60 records |
 | Not held | Function prototypes, and an alignment set on a typedef and not on its record |
-| Reads | `builddir/libc.so` (or the path given), `slibc/include`, the host clang `scripts/cxx_host_tools.sh` resolves |
-| Runs | `just check-framekernel-gates`; `just ci-toolchain` with `--require`, where the library and the clang both exist |
-| Skips | No library; the layout half alone when no host clang resolves |
-| Re-record | `scripts/check_libc_exports.sh --record` adds lines for new exports and records. It refuses while anything recorded was removed or changed, so a removal lands only as a hand edit a reviewer sees |
+| Reads | `builddir/libc.so`, `slibc/include`, and the clang `scripts/cxx_host_tools.sh` resolves (`$CLANG`): the host's, or SlopOS's own |
+| Runs | `just precommit`; `just ci-toolchain`; `just install` on SlopOS before it writes anything |
+| Skips | Never. A missing library, a clang that can't run or a dump that doesn't parse is an error |
+| Re-record | `just libc-exports --record` adds lines for new exports and records. It refuses while anything recorded was removed or changed, so a removal lands only as a hand edit a reviewer sees |
 
 ## `xtask programs`
 
@@ -248,7 +253,7 @@ explains the pieces these gates check.
 | Fails when | A program has no `PT_INTERP` (it is static), names an interpreter other than `/lib/ld-slopos.so.1`, lacks `libc.so` in `DT_NEEDED`, or has a `syscall` instruction in its executable code. The code is decoded with the `iced-x86` disassembler, and an image without section headers is decoded segment by segment |
 | Catches | A static program carries slibc's own copy. A system call made in place reaches the private surface `BASE_INTERFACE` numbers, or a Linux call, without the library that only grows in between. Either ties a program that changes on its own schedule to one base. The toolkit's crates compile into base programs too, so a raw call returning to one of them fails nothing else |
 | Tracked data | None. Its fixtures are tests in the same file, run by `just test-host` |
-| Runs | After every host userland build (the `_build-userland` recipe) on `builddir/apps/bin/*`, and after the tests userland build on the programs its test extensions carry |
+| Runs | On either system, after every userland build (the `_build-userland` recipe), as `scripts/build_extension.sh` packs the apps' programs into the image `slopos-essentials`; whenever `build_extension.sh` packs an image, the toolchain's included; and after the tests userland build on the programs its test extensions carry |
 | Skips | Never. A named file that does not exist is an error |
 | Re-record | Nothing to record. Link the program dynamically against `libc.so` and call the system through it |
 
@@ -260,6 +265,7 @@ outside the base reach the system only through `libc.so`.
 | Path | What it holds |
 |---|---|
 | `scripts/check_*.sh` | The shell gates; each header states the gate's rules and usage |
+| `tools/xtask/src/contract/` | `xtask base-interface` and `xtask libc-exports`, with their fixtures |
 | `scripts/lib/toolchain_pin.sh` | Paths, pin parsing and stamp digests shared by the pin gate and the materialisers |
 | `tools/xtask/src/elf/loose_programs.rs` | `xtask programs` |
 | `toolchain/PIN`, `toolchain/compiler/PIN`, `toolchain/crates/PIN`, `toolchain/cxx/PIN` | The pins |

@@ -168,13 +168,15 @@ there next time.
 Before QEMU starts, the recipe prints what to type in the guest:
 
 ```text
-boot: in the guest: cd /src/slopos; git pull; scripts/selfhost.sh install; for a kernel, scripts/selfhost.sh install-kernel; bootctl reboot
+boot: in the guest: cd /src/slopos; git pull; just install; for a kernel, just install-kernel; bootctl reboot
 ```
 
 The desktop logs you in as `user` and opens a terminal. To build SlopOS
 inside it you also need a compiler on the disk, which `just toolchain`
-cross-builds once on your machine (hours of CPU) and every later `just boot`
-installs at `/usr/local`. [Development
+cross-builds once on your machine (hours of CPU) as the image
+`slopos-toolchain`; every later `just boot` offers that image to the guest,
+which installs it at `/opt/slopos-toolchain`. Inside, `just` works as it does
+on your machine. [Development
 machine](/docs/self-hosting/development-machine) covers working inside it.
 
 ## Check that it worked
