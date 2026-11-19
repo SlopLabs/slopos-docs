@@ -178,7 +178,7 @@ often carry findings, and why:
 | SlopRing | Programs and the kernel share memory and pass buffers back and forth |
 | Privileged services | init, privd and the programs privd runs act as uid 0, or with gated capabilities, on what the session sends them |
 | Sessions and the consent dialog | One person's input must not reach another's session, and a person must be able to tell privd's real question from a window that imitates it |
-| Extensions | Their images and programs come from outside the base, and their services and actions run with a grant |
+| Packages | Their images and programs come from outside the base, and their services and actions run with a grant |
 | Host build tools | Scripts on your machine read disk images that SlopOS wrote, and a debug boot opens a debugger connection and a QEMU monitor on your machine (Unix sockets in the build directory, since whoever reaches either reads and writes the guest's memory) |
 
 The ledger keeps open findings and nothing else: a sweep that finds nothing

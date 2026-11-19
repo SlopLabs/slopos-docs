@@ -372,7 +372,7 @@ Ed25519 signatures (RFC 8032) strictly, refusing a key in the small-order
 subgroup, a non-canonical key or a signature whose parts are not in
 canonical form, and it verifies the SSH signatures `ssh-keygen -Y sign`
 writes over such keys, which is how
-[extensions](/docs/architecture/extensions) are signed. It can only verify:
+[packages](/docs/architecture/packages) are signed. It can only verify:
 the code that signs is behind a Cargo feature, `test-server`, that only the
 test builds turn on. BLAKE2b (RFC 7693) and Argon2id (RFC 9106) hash the
 [accounts'](/docs/architecture/users) passwords.

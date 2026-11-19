@@ -4,7 +4,7 @@
     "adding-a-syscall",
     "adding-a-driver",
     "writing-an-app",
-    "packaging-an-extension",
+    "building-a-package",
     "adding-tests",
     "diagnostics",
     "debugging-gdb-record-replay",

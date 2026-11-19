@@ -5,7 +5,7 @@ description: "Every place where parts of SlopOS that are built or updated separa
 
 This page lists the interfaces between parts of SlopOS that are built or
 replaced at different times: the kernel, the base, programs outside the base,
-extensions, the boot disk, the root filesystem, the host's tools and the test
+packages, the boot disk, the root filesystem, the host's tools and the test
 harness. Each entry names its source in the tree, its level, what a change to
 it takes and the gate or test that fails when the rule is broken. Files that
 one base program keeps on the root for its own later runs, such as
@@ -58,15 +58,15 @@ interface lasts.
 | [Disk layout](#disk-layout) | An installed disk and every later release | Unversioned |
 | [Crash records](#crash-records) | A panicking kernel, the next kernel and `bootctl` | Versioned (header) |
 | [C library](#c-library) | Base and every program outside it | Grows only |
-| [Programs outside the base](#programs-outside-the-base) | Apps, extensions, toolchain; kernel and base | Grows only (through `libc.so`) |
+| [Programs outside the base](#programs-outside-the-base) | Apps, packages, toolchain; kernel and base | Grows only (through `libc.so`) |
 | [App toolkit](#app-toolkit) | Each app and the crates compiled into it | Private |
 | [Window protocol](#window-protocol) | Compositor and every app | Versioned (`PROTOCOL_VERSION`) |
 | [App entries](#app-entries) | Dock and installed images | Unversioned |
 | [Shell completion rules](#shell-completion-rules) | Shell and installed images | Unversioned |
-| [Extension images](#extension-images) | `tools/extension`; `extctl`, init, privd and kernel | Unversioned |
-| [Extension programs at run time](#extension-programs-at-run-time) | Init, privd and loader; an extension's programs | Unversioned |
-| [Extension configuration](#extension-configuration) | `extctl` and init; an extension's programs | Unversioned |
-| [Extension commands](#extension-commands) | `extctl`; every program that searches `PATH` | Unversioned |
+| [Package images](#package-images) | `tools/package`; `pkgctl`, init, privd and kernel | Unversioned |
+| [Package programs at run time](#package-programs-at-run-time) | Init, privd and loader; a package's programs | Unversioned |
+| [Package configuration](#package-configuration) | `pkgctl` and init; a package's programs | Unversioned |
+| [Package commands](#package-commands) | `pkgctl`; every program that searches `PATH` | Unversioned |
 | [Base manifest](#base-manifest) | One base's init and the next base | Unversioned |
 | [Consent channel](#consent-channel) | privd and each compositor | Versioned (`consent::VERSION`) |
 | [Init re-execution state](#init-re-execution-state) | Running init and the next `/sbin/init` | Versioned (header lines) |
@@ -76,7 +76,7 @@ interface lasts.
 | [Volume format](#volume-format) | Host e2fsprogs, kernel, the root | Stable |
 | [Verity trailer](#verity-trailer) | Host image builder and kernel | Unversioned |
 | [Ownership map](#ownership-map) | Host image builders, installer and init | Private (map), Unversioned (record) |
-| [Accounts record and extension store](#accounts-record-and-extension-store) | Every base that runs on one root | Unversioned |
+| [Accounts record and package store](#accounts-record-and-package-store) | Every base that runs on one root | Unversioned |
 | [Remote control protocol](#remote-control-protocol) | `remoted` and the host's broker | Versioned (`proto`) |
 | [Toolchain target and link line](#toolchain-target-and-link-line) | Toolchain image and the tree | Private |
 | [Clang configuration files](#clang-configuration-files) | The toolchain's clang and the sysroot beside it | Private |
@@ -353,7 +353,7 @@ interface lasts.
   struct and union `slibc/include` defines. Its soname is `libc.so`, and its
   loader is `/lib/ld-slopos.so.1`.
 - **Between:** the base, which ships `libc.so`, and every program outside it:
-  the apps, extensions' programs, the toolchain and the programs built from
+  the apps, packages' programs, the toolchain and the programs built from
   recipes, each built against one base and run on later ones.
 - **Level:** grows only.
 - **Held by:** `scripts/gates/libc/exports.txt` and
@@ -386,13 +386,13 @@ interface lasts.
 - **Level:** grows only, because the one interface it uses is the
   [C library](#c-library).
 - **Checked by:** `xtask programs`, on the apps as
-  `scripts/build_extension.sh` packs `slopos-essentials`, on the tests'
-  extension programs, and on any image `build_extension.sh` packs. `extctl` refuses an
-  extension's program that is static, or that binds a name neither `libc.so`
-  nor one of the extension's own libraries exports
-  (`slopos_extension_core::symbols`).
+  `scripts/build_package.sh` packs `slopos-essentials`, on the tests'
+  package programs, and on any image `build_package.sh` packs. `pkgctl` refuses a
+  package's program that is static, or that binds a name neither `libc.so`
+  nor one of the package's own libraries exports
+  (`slopos_package_core::symbols`).
 - **See:** [Installed software](/docs/architecture/software),
-  [Extensions](/docs/architecture/extensions).
+  [Packages](/docs/architecture/packages).
 
 ### App toolkit
 
@@ -464,86 +464,86 @@ interface lasts.
   every rule file the base ships.
 - **See:** [Userland](/docs/architecture/userland#the-shell).
 
-### Extension images
+### Package images
 
-- **What:** an extension image: an ext4 volume (the profile without the
+- **What:** a package image: an ext4 volume (the profile without the
   journal, with ext4's `read-only` feature) followed by a SHA-256 hash tree in
   dm-verity's layout, whose root is the image's digest; the volume's
-  `/.extension/manifest`, `/.extension/release` and `/.extension/declare`; and
+  `/.package/manifest`, `/.package/release` and `/.package/declare`; and
   the signed sidecar `<name>.meta`.
-- **Between:** `tools/extension` (`just extension`), which packs an image on
-  the host from a tree built on its own schedule; the base's `extctl`, init
-  and privd, which read it; and the kernel, which serves it (`ext_activate`,
+- **Between:** `tools/package` (`just package`), which packs an image on
+  the host from a tree built on its own schedule; the base's `pkgctl`, init
+  and privd, which read it; and the kernel, which serves it (`pkg_activate`,
   part of the private call surface).
 - **Level:** unversioned.
-- **Held by:** the running base's reader (`slopos_extension_core`). Every
-  activation reads the stored image again and stops an extension that no
+- **Held by:** the running base's reader (`slopos_package_core`). Every
+  activation reads the stored image again and stops a package that no
   longer fits, whether its record, its signer's key or a ceiling changed or
   its declaration uses words the base no longer takes, and says why in the
-  extension's record.
-- **A change:** a word the base stops taking stops every extension that uses
+  package's record.
+- **A change:** a word the base stops taking stops every package that uses
   it, at its next activation.
-- **Checked by:** `extension-core`'s host tests; `extension_test`,
-  `extension_action_test`, `extension_service_test`.
-- **See:** [Extensions](/docs/architecture/extensions),
-  [Extension images](/docs/abi/extension-images).
+- **Checked by:** `package-core`'s host tests; `package_test`,
+  `package_action_test`, `package_service_test`.
+- **See:** [Packages](/docs/architecture/packages),
+  [Package images](/docs/abi/package-images).
 
-### Extension programs at run time
+### Package programs at run time
 
-- **What:** what the base hands an extension's programs. A service gets the
+- **What:** what the base hands a package's programs. A service gets the
   readiness notifier on fd 3, its listening sockets from fd 4 (`LISTEN_FDS`,
   and `LISTEN_FDNAMES` naming each `tcp-<port>`, `udp-<port>` or the socket's
   own name), `/dev/null` as input, and `PATH`
   (`/bin:/sbin:/opt/<name>/bin`), `LANG`, `HOME`, `USER` and `LOGNAME`; a
   service that runs in a person's session gets the session's environment in
-  place of the last three. A mechanism privd runs for an extension's action
+  place of the last three. A mechanism privd runs for a package's action
   gets `PATH`, `LANG`, `PRIV_ACTION` and `PRIV_UID`. The loader searches
-  `/opt/<name>/lib` for a program of that extension.
-- **Between:** init, privd and the loader, in the base, and an extension's
+  `/opt/<name>/lib` for a program of that package.
+- **Between:** init, privd and the loader, in the base, and a package's
   programs.
 - **Level:** unversioned.
-- **Checked by:** `extension_service_test`, `extension_action_test`,
-  `extension_test`.
-- **See:** [Extensions](/docs/architecture/extensions).
+- **Checked by:** `package_service_test`, `package_action_test`,
+  `package_test`.
+- **See:** [Packages](/docs/architecture/packages).
 
-### Extension configuration
+### Package configuration
 
-- **What:** `/etc/<name>`, for an extension that declares `config`: a sealed
+- **What:** `/etc/<name>`, for a package that declares `config`: a sealed
   directory owned by uid 0 that everyone can read, holding at most 64 sealed
-  files, one level deep, of the extension's configuration on this computer.
+  files, one level deep, of the package's configuration on this computer.
   A file's name is letters, digits, `.`, `_` and `-`, at most 64 bytes, and
   starts with a letter or a digit; a file is at most 256 KiB. A signed
   file arrives with a sidecar `<file>.meta` (`name`, `file`, `serial` and
   `sha256` lines) and its signature `<file>.meta.sig`, made with
-  `ssh-keygen -Y sign -n extension-config@slopos`.
-- **Between:** an extension's programs, built on their own schedule, which
-  read the files their declaration's `reads` names; and the base's `extctl`
+  `ssh-keygen -Y sign -n package-config@slopos`.
+- **Between:** a package's programs, built on their own schedule, which
+  read the files their declaration's `reads` names; and the base's `pkgctl`
   (`config edit` and `config apply`), which installs a file, and init, which
   restarts a service whose `reads` of `/etc/<name>` now hold other bytes.
-- **Level:** unversioned. What a file holds is the extension's own format.
-- **Held by:** `slopos_extension_core::config`. The extension's record keeps
+- **Level:** unversioned. What a file holds is the package's own format.
+- **Held by:** `slopos_package_core::config`. The package's record keeps
   the last serial a signed file went in under, and a signed file goes in
   only with a higher one, so a replaced file never comes back.
-- **Checked by:** `extension-core`'s host tests; `extension_action_test`, in
+- **Checked by:** `package-core`'s host tests; `package_action_test`, in
   which a file edited and a file signed each restart the service that reads
   it.
-- **See:** [Extensions](/docs/architecture/extensions#commands-apps-and-settings).
+- **See:** [Packages](/docs/architecture/packages#commands-apps-and-settings).
 
-### Extension commands
+### Package commands
 
 - **What:** `/opt/bin`, holding a link `/opt/bin/<command>` to
-  `/opt/<name>/bin/<command>` for each command the grant of every extension
+  `/opt/<name>/bin/<command>` for each command the grant of every package
   activated at `/opt/<name>` names. `/opt/bin` is last on the default search path
   (`slopos_abi::fs::DEFAULT_PATH`, `/bin:/sbin:/opt/bin`), so
-  an extension's command shadows no command of the base.
-- **Between:** `extctl`, in the base, which rewrites the links after every
+  a package's command shadows no command of the base.
+- **Between:** `pkgctl`, in the base, which rewrites the links after every
   change, and the shell, slibc's `execvp` and every other program that
-  searches `PATH`; the extension's declaration names the commands.
+  searches `PATH`; the package's declaration names the commands.
 - **Level:** unversioned.
-- **Held by:** `extctl` touches nothing in `/opt/bin` but its own links into
-  `/opt`, and no two extensions are granted one command.
-- **Checked by:** `extension_action_test`.
-- **See:** [Extensions](/docs/architecture/extensions#commands-apps-and-settings).
+- **Held by:** `pkgctl` touches nothing in `/opt/bin` but its own links into
+  `/opt`, and no two packages are granted one command.
+- **Checked by:** `package_action_test`.
+- **See:** [Packages](/docs/architecture/packages#commands-apps-and-settings).
 
 ## Inside the base, across a live update
 
@@ -555,8 +555,8 @@ interfaces are the ones that cross that gap.
 ### Base manifest
 
 - **What:** `/usr/share/slopos/base-manifest`: `<sha256> <mode> <path>` for
-  every record of the base but itself, in archive order. An extension image's
-  `/.extension/manifest` uses the same lines.
+  every record of the base but itself, in archive order. A package image's
+  `/.package/manifest` uses the same lines.
 - **Between:** `tools/initramfs`, which writes it; init, which compares the
   manifest it read before a base switch with the new base's to see what
   changed (`boot_core::base::changed`); and `bootctl`, which reads it to tell
@@ -595,7 +595,7 @@ interfaces are the ones that cross that gap.
 - **What:** what init hands the next `/sbin/init` when it re-executes itself
   as `/sbin/init --resume <fd> [<fd>,...]`: in the first pipe, a line
   `kept <fds>`, then the header `slopos-init-state 1` and its services, start
-  budgets, sessions, consent links and listener; and the extensions'
+  budgets, sessions, consent links and listener; and the packages'
   services, in the pipes the comma-separated list names, again after a
   `kept` line, under the header `slopos-init-units 1`.
 - **Between:** the running init and the `/sbin/init` of the base now in
@@ -604,13 +604,13 @@ interfaces are the ones that cross that gap.
 - **Held by:** before it re-executes, init looks for each header line in the
   new image's file, newline included, so no later version's header contains
   an earlier one. Before an image without `slopos-init-state 1`, the sessions
-  end first; before one without `slopos-init-units 1`, the extensions'
+  end first; before one without `slopos-init-units 1`, the packages'
   services do. The `kept` line is one every version reads, so an image that
   cannot read the rest still closes the descriptors it names, adopts the
   privd and `remoted` among its children, starts the sessions again and runs
   without consent until the next boot.
 - **A change:** the next number in the header line.
-- **Checked by:** `supervision_test`, `extension_service_test`.
+- **Checked by:** `supervision_test`, `package_service_test`.
 - **See:** [Init and services](/docs/architecture/init).
 
 ### privd requests
@@ -618,9 +618,9 @@ interfaces are the ones that cross that gap.
 - **What:** the frames on `/run/privd` (`slopos_priv_core::wire`): a request,
   a relayed signal and a typed secret; the started, exited, denied, asking
   and prompt replies; and a connection handed down in `PRIVD_FD`.
-- **Between:** privd and every requester: the base's own programs, and an
-  extension's programs that one of its actions names as a `program`
-  principal, which speak the frames themselves (the test extension's client
+- **Between:** privd and every requester: the base's own programs, and a
+  package's programs that one of its actions names as a `program`
+  principal, which speak the frames themselves (the test package's client
   is written in C).
 - **Level:** unversioned.
 - **Held by:** both ends parse strictly. Across a base switch privd drains,
@@ -629,7 +629,7 @@ interfaces are the ones that cross that gap.
   switch that changed privd's replies or the policy asks nothing until it
   starts again.
 - **Checked by:** `priv-core`'s host tests; `privd_test`,
-  `extension_action_test`.
+  `package_action_test`.
 - **See:** [Privileged actions](/docs/architecture/privd),
   [privd actions](/docs/abi/privd-actions).
 
@@ -653,11 +653,11 @@ interfaces are the ones that cross that gap.
 
 - **What:** the lines `/run/init` takes (`restart-session`, `end-session`,
   `lock`, `greeter`, `locked`, `unlocked`, `switch`, `login`, `reexec`,
-  `extensions`); the session table init sends privd; `/run/sessions/<tag>`,
+  `packages`); the session table init sends privd; `/run/sessions/<tag>`,
   which slibc's `getlogin` reads; and the descriptors init hands what it
   starts (`init_control::fds`).
 - **Between:** init and base programs: `/bin/session`, the compositor,
-  privd, `extctl` and `libc.so`.
+  privd, `pkgctl` and `libc.so`.
 - **Level:** private.
 - **Checked by:** `sessions_test`, `session_smoke_test`, `supervision_test`.
 - **See:** [Init and services](/docs/architecture/init),
@@ -718,13 +718,13 @@ interfaces are the ones that cross that gap.
   record.
 - **See:** [Users and file permissions](/docs/architecture/users).
 
-### Accounts record and extension store
+### Accounts record and package store
 
 - **What:** the sealed stores on the root, each kept as generations
   (`<name>.<n>`, the newest sealed one believed): the accounts record in
   `/var/lib/slopos/accounts` (`next`, `autologin`, `remote`, then a `person`
-  line each), the extension store in `/var/lib/slopos/extensions` (`keys.<n>`,
-  and per extension `record.<n>` and its images), and the user database
+  line each), the package store in `/var/lib/slopos/packages` (`keys.<n>`,
+  and per package `record.<n>` and its images), and the user database
   rendered from both (`/etc/passwd`, `/etc/group`, `/etc/shadow`).
 - **Between:** the base that writes them and every base that runs on the
   same root later, the previous one among them after
@@ -735,10 +735,10 @@ interfaces are the ones that cross that gap.
   private call surface (`slopos_abi::fs::KEPT_DIRS`), because the kernel keeps
   them where they are.
 - **A change:** a new spelling is one an older base refuses to read.
-- **Checked by:** `accounts-core`'s and `extension-core`'s host tests;
-  `accounts_test`, `extension_test`.
+- **Checked by:** `accounts-core`'s and `package-core`'s host tests;
+  `accounts_test`, `package_test`.
 - **See:** [Users and file permissions](/docs/architecture/users),
-  [Extensions](/docs/architecture/extensions).
+  [Packages](/docs/architecture/packages).
 
 ## Host and machine
 

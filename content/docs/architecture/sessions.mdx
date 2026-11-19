@@ -128,7 +128,7 @@ Init gives each session a tag of its own from a range reserved for sessions
 (`slopos_abi::task::SESSION_LOGINS`),
 and never gives one twice in a boot. The tags outside that range name what
 runs for the system: `remoted` and what it runs carry 1, privd and the
-mechanisms it starts as uid 0 carry 2, and extensions' services and actions
+mechanisms it starts as uid 0 carry 2, and packages' services and actions
 carry tags of their own. `process_list` reports each task's tag, and the
 `login_tag` system call tells a process its own. The C library's `getlogin`
 reads the caller's session file, `/run/sessions/<tag>`, for the name, and
@@ -272,7 +272,7 @@ gone or after ten seconds with how many would not end
 ([Init and services](/docs/architecture/init#ending-a-session) gives the
 sequence). Processes of the same person that carry other tags are not
 touched: what `remoted` runs for them and what privd runs as uid 0 survive.
-Ending the first person's desktop also ends the session services extensions
+Ending the first person's desktop also ends the session services packages
 run beside it.
 
 With nothing left in front, init shows the login screen. `session restart`
@@ -372,8 +372,8 @@ receives and where it asks.
   under `SPAWN_SET_LOGIN`). Adding another way to set or change one would let
   a process leave its session or join another's.
 - **A tag is never given twice in a boot.** Sessions take theirs from
-  `SESSION_LOGINS`; an extension's service gets one computed from its
-  extension's number and its place among that extension's services
+  `SESSION_LOGINS`; a package's service gets one computed from its
+  package's number and its place among that package's services
   (`init_control::service_tag`), so a re-executed init finds its processes
   again.
 - **Only init moves the seats.** A compositor init starts must never take a

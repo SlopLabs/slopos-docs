@@ -341,7 +341,7 @@ just test-host
 This runs `cargo test` on the crates that build for your machine: the
 `*-core` crates (all but `service-core`), `abi`, `gfx`, `font` and
 `settings-app`, the build tools that have tests (`initramfs`, `kallsyms`,
-`extension`, `icons` and `xtask`, whose tests are those of the source and ELF
+`package`, `icons` and `xtask`, whose tests are those of the source and ELF
 gates), and the kernel's trusted core (`slopos-ostd`). Write these as ordinary
 Rust `#[test]` functions. The
 trusted core's tests are the same ones Miri runs (see below), run natively

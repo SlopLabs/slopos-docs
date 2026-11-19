@@ -11,7 +11,7 @@ and survive reboots. The operating system's own programs and libraries
 *base*, a sealed, read-only image that sits on the boot partition beside the
 kernels, and nothing, not even a privileged program, can change them while
 the system runs. A new base replaces the old one as a whole, and can do so
-without a reboot. Extensions you install appear read-only under `/opt`.
+without a reboot. Packages you install appear read-only under `/opt`.
 `/tmp` and `/run` live in memory and `/dev` lists the machine's devices.
 Every file has an owner and permission bits, and the kernel checks them on
 every access. You can mount more ext4 disks outside the system directories,
@@ -36,8 +36,8 @@ part, how disks are mounted, and what the disk format is.
 | `/` | The root disk (or memory, see [below](#how-the-root-is-chosen)) | Yes, on a disk |
 | `/bin`, `/sbin`, `/lib`, `/usr/bin`, `/usr/share`, `/etc/ssl` | The base, read-only | Changes only when a new base is installed |
 | `/etc`, `/var`, `/root`, `/home`, `/src` | The root disk | Yes |
-| `/opt/<name>` | An installed extension's image, read-only | Shown again at every boot while the extension is enabled |
-| `/opt/bin` | The root disk: links to the commands extensions provide | Yes |
+| `/opt/<name>` | An installed package's image, read-only | Shown again at every boot while the package is enabled |
+| `/opt/bin` | The root disk: links to the commands packages provide | Yes |
 | `/tmp`, `/run`, `/dev/shm` | Memory | No |
 | `/dev` | The kernel's list of devices | Rebuilt at every boot |
 | `/media/install`, `/media/payload` | The install medium, read-only, when the machine booted from one | Present only on that boot |
@@ -47,7 +47,7 @@ A *mount* is how one filesystem appears inside another: the kernel keeps a
 table saying "below this directory, ask that filesystem instead". The kernel
 sets up the mounts for `/`, the base directories, `/tmp`, `/run`, `/dev`,
 `/dev/shm`, the install medium and `/mnt` during boot, and `/opt/<name>`
-appears when an extension is activated, which init does for every enabled
+appears when a package is activated, which init does for every enabled
 one at boot. `/etc`, `/var`, `/home` and the other rows marked "the root
 disk" are plain directories of the root.
 
@@ -85,7 +85,7 @@ shows the commands.
 The split also matters for security. When a program asks the privilege
 broker, privd, to do something on its behalf, privd decides partly by *which
 program* is asking, and the kernel vouches for a program only when every
-file it was loaded from came from the base (or from an extension's image).
+file it was loaded from came from the base (or from a package's image).
 That vouching means something only because nobody can swap a different file
 in at `/bin/bootctl`. [Privileged actions](/docs/architecture/privd) explains
 how privd uses it.
@@ -94,7 +94,7 @@ how privd uses it.
 
 A few directories on the root disk hold records the system trusts: `/etc`
 holds the user database, and `/var/lib/slopos` holds the accounts record,
-the installed extensions with the keys trusted to sign them, and the record
+the installed packages with the keys trusted to sign them, and the record
 of which directories the first person owns. Sealing the files (see
 [below](#sealed-files)) stops anyone rewriting them, but a program allowed to
 mount disks could still cover the whole directory with another disk that
@@ -102,7 +102,7 @@ holds different records, and a program allowed to bypass permissions could
 rename the directory aside and make a new one.
 
 So once the root and the `mount=` volumes are up, the kernel *keeps* these
-directories (`/etc`, `/var/lib/slopos`, `/var/lib/slopos/extensions` and
+directories (`/etc`, `/var/lib/slopos`, `/var/lib/slopos/packages` and
 `/var/lib/slopos/accounts`): it makes any that are missing, and from then on
 none of them, and no directory on the way to one, can be renamed or removed
 (`EBUSY`). No mount may cover one of them, a directory on the way to one
@@ -195,7 +195,7 @@ A few rules are worth knowing:
   anything is `MS_RDONLY`, and an option string is refused (`EINVAL`).
 - **Some places are off limits.** You can't mount over `/` or over something
   already mounted (`EBUSY`), at or inside a base directory, the install
-  medium or an extension (`EPERM`), or over a directory the kernel keeps
+  medium or a package (`EPERM`), or over a directory the kernel keeps
   (`EPERM`, see [above](#directories-the-kernel-keeps-in-place)). The target
   must be a directory you can reach under the usual permission checks.
 - **One writer per disk.** A read-write mount claims the disk so nothing
@@ -204,13 +204,13 @@ A few rules are worth knowing:
   explains claims.
 - **At most four disk volumes at once.** Disk mounts come from a fixed pool
   of four. The root takes one, and so does the install medium's payload on a
-  boot from the medium. Extensions' images have a pool of their own, and so
+  boot from the medium. Packages' images have a pool of their own, and so
   do `ramfs` mounts, four at a time.
 - **Unmounting a busy disk** fails with `EBUSY` unless you pass
   `MNT_DETACH`, in which case the name disappears at once and open files keep
   working until they are closed. When the last mount of a disk goes away, the
   kernel writes everything out, marks the disk clean and releases it, so it
-  can be mounted again. The base, the install medium, an extension and a kept
+  can be mounted again. The base, the install medium, a package and a kept
   directory can't be unmounted (`EPERM`).
 
 There is no FAT driver in the kernel. The kernels and bases live on a FAT32
@@ -315,10 +315,10 @@ and once set it stays.
 
 Setting or clearing the seal needs the `Seal` capability, on top of owning
 the file. Only init, privd and the programs they start for a few jobs hold
-it: the installer, the install medium's rescue shell, `extctl` for
-extensions and `users` for accounts. That is because the seal is what holds
+it: the installer, the install medium's rescue shell, `pkgctl` for
+packages and `users` for accounts. That is because the seal is what holds
 the system's records whole: the user database, the accounts record and the
-extension store are only believed while their files are sealed, and the
+package store are only believed while their files are sealed, and the
 mount points the base needs on a root are sealed too.
 
 **A seal is final for readers.** Once a program has set the seal and read the
@@ -339,10 +339,10 @@ attacker, because the checksums are CRC-32. A *protected* trailer
 The boot option `verity=require` refuses to boot from a root disk that has
 no valid trailer.
 
-Extension images are checked differently, against a tree of SHA-256 hashes
-in the layout Linux's dm-verity uses, whose root `extctl` recorded when it
+Package images are checked differently, against a tree of SHA-256 hashes
+in the layout Linux's dm-verity uses, whose root `pkgctl` recorded when it
 installed the image.
-[Extensions](/docs/architecture/extensions) explains that.
+[Packages](/docs/architecture/packages) explains that.
 
 ## The development machine's disk
 
@@ -369,7 +369,7 @@ root, the capacity volume) are rebuilt by the build as needed.
 - Put your files in your home directory. `/etc` and `/var` are the system's,
   and anything you put in `/tmp` is gone at reboot.
 - Install software for yourself by copying it into `~/.local`. Software for
-  everyone arrives as an extension image under `/opt`. You can't add to
+  everyone arrives as a package image under `/opt`. You can't add to
   `/bin` except by building a new base.
   [Installed software](/docs/architecture/software) has the details.
 - Use `fsync` for data that matters, and the write-temp-then-rename pattern
@@ -380,8 +380,8 @@ root, the capacity volume) are rebuilt by the build as needed.
 - Format and check disk images on the host with e2fsprogs; on an installed
   machine, use the tools in `/sbin` from the install medium's rescue shell.
 - A program that wants to say why a write was refused can tell the cases
-  apart from `statfs` and `FS_IOC_GETFLAGS`: the base and an extension report
-  filesystem types of their own (`BASEFS_MAGIC`, `EXTENSION_MAGIC`), a
+  apart from `statfs` and `FS_IOC_GETFLAGS`: the base and a package report
+  filesystem types of their own (`BASEFS_MAGIC`, `PACKAGE_MAGIC`), a
   read-only mount reports `ST_RDONLY`, and a sealed file reports the
   immutable flag.
 
@@ -431,7 +431,7 @@ run.
   class: four separate `lock_class!` sites, `EXT4_POOL_0` to `EXT4_POOL_3`,
   not one shared class. A path walk that crosses from one mount
   into another holds the first lock while taking the second, which is why
-  the classes must stay separate. Extension activations share one class,
+  the classes must stay separate. Package activations share one class,
   because none is ever mounted beneath another. Unmounting an instance's
   last mount flushes it, marks the image clean, drops the device and returns
   the slot, which is what releases the write claim. A claim leaked there
@@ -468,8 +468,8 @@ run.
   the volume has blocks, no fewer than its allocation working set, and
   capped at `CACHE_ENTRIES_MAX`. It grows a chunk at a time as it fills.
 - **Where a file's bytes lie.** `FileSystem::file_runs` answers where a
-  file's bytes sit on its filesystem's device, which lets an extension
-  image be read straight off the disk under it (`fs/src/extension/device.rs`).
+  file's bytes sit on its filesystem's device, which lets a package
+  image be read straight off the disk under it (`fs/src/package/device.rs`).
   ext4 answers only for a sealed, extent-mapped regular file with no hole or
   unwritten extent, after writing the file's dirty blocks home and waiting
   out the flusher's batch in flight, and only when every block's home holds
@@ -543,7 +543,7 @@ run.
 - **Disk quota.** Block allocations are charged to the allocating process's
   [resource account](/docs/architecture/resource-accounting) in memory, not
   persisted, and refunded to the account that was charged. A holder of
-  `RawBlock` or `ExtensionUpdate` has no per-process block ceiling, because
+  `RawBlock` or `PackageUpdate` has no per-process block ceiling, because
   it can write the whole disk anyway or must store a whole image.
 - **Known gaps.** Between a path walk resolving an inode and `open`
   installing its reference, a concurrent `unlink` can still free the inode.
@@ -575,7 +575,7 @@ run.
   effect at the next boot; SlopOS can also switch bases while running.
 - [dm-verity](https://docs.kernel.org/admin-guide/device-mapper/verity.html)
   in the Linux kernel. The full version of the idea behind verity trailers,
-  with cryptographic hashes where SlopOS's trailers use CRC-32; extension
+  with cryptographic hashes where SlopOS's trailers use CRC-32; package
   images use its layout.
 
 ## In the source
@@ -586,7 +586,7 @@ run.
 | `fs/src/ext4/`, `fs/src/ext4_vfs.rs` | The ext4 driver, block cache, journal and writeback |
 | `ext4-core/` | The on-disk format and the `profile` file, host-tested |
 | `fs/src/basefs/` | The base and the install medium |
-| `fs/src/extension/` | Extension activations under `/opt` |
+| `fs/src/package/` | Package activations under `/opt` |
 | `fs/src/filemap.rs` | File pages, and seals against them |
 | `fs/src/ramfs/`, `fs/src/devfs/` | RAM filesystems and `/dev` |
 | `fs/src/verity.rs`, `scripts/gen_verity.py` | Verity trailers |

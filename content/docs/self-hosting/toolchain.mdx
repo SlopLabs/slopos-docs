@@ -376,8 +376,8 @@ assembles what the bootstrap doesn't provide: SlopOS's C headers and startup
 files, the C++ runtime, the recipes, clang and its support files, `cc` and
 `c++` links, copies of `ld.lld` and `llvm-ar`, and every project's licence
 text. The result is laid out in `builddir/slopos-toolchain/install` the way
-`/opt/slopos-toolchain` shows it, then `scripts/build_extension.sh` packs it
-into the image `builddir/slopos-toolchain/image/slopos-toolchain.ext` and
+`/opt/slopos-toolchain` shows it, then `scripts/build_package.sh` packs it
+into the image `builddir/slopos-toolchain/image/slopos-toolchain.pkg` and
 its sidecar `slopos-toolchain.meta`, checking it as an install would. A
 toolchain those checks refuse leaves no image, and a failed run never leaves
 a half toolchain that `just boot` would offer. `--stage <dir>` also copies
@@ -755,7 +755,7 @@ cache can't stand in for a missing crate.
 | `scripts/make_slopos_cross.sh` | The target sysroot and the compiler wrappers |
 | `toolchain/recipes/`, `scripts/build_recipes.sh`, `scripts/check_recipes.sh` | Third-party programs and the patch and licence checks |
 | `scripts/check_libc_license.sh` | The C library's licence check |
-| `scripts/bootstrap_slopos_toolchain.sh`, `scripts/build_extension.sh` | `just toolchain`, and packing its result into the image |
+| `scripts/bootstrap_slopos_toolchain.sh`, `scripts/build_package.sh` | `just toolchain`, and packing its result into the image |
 | `scripts/lib/toolchain_identity.sh` | The toolchain's identity and the check that holds an image to it |
 | `scripts/lib/rustc_build_settings.sh`, `scripts/make_toolchain_profile.sh`, `scripts/rustc_neutral_metadata.sh` | The settings both compiler builds share, `just toolchain-profile` and the metadata wrapper |
 | `scripts/make_vendor.sh`, `.cargo/vendor.toml` | Offline builds |

@@ -102,8 +102,8 @@ A program can also map memory as code: with `PROT_EXEC` on a mapping, or by
 compiler works. That is allowed, but it changes one thing. The kernel records
 which program each process runs, so that privd can tell who is asking it for
 something ([Privileged actions](/docs/architecture/privd)). The record can
-vouch only for code from the [base](/docs/architecture/base) (or, for an
-extension's program, from its own image). So when a process maps code from a
+vouch only for code from the [base](/docs/architecture/base) (or, for a
+package's program, from its own image). So when a process maps code from a
 file anywhere else or from anonymous memory, or `mprotect` makes any page
 executable that wasn't, the kernel drops the record before that code can
 run. The program itself carries on unaffected; privd treats it as an unknown

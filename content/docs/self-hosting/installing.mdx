@@ -42,7 +42,7 @@ the third-party programs the base includes, since it distributes them.
 
 Built with `PAYLOAD=1`, the ISO also carries a *payload*: a read-only ext4
 partition with the developer tools (the [toolchain](/docs/self-hosting/toolchain)'s
-image, `images/slopos-toolchain.ext`, and its sidecar) and a clone of the
+image, `images/slopos-toolchain.pkg`, and its sidecar) and a clone of the
 source for `/src/slopos`, so an installed machine can build SlopOS itself.
 Limine never loads the payload. The kernel
 finds it on the disk whose partition table carries the medium's own disk
@@ -444,7 +444,7 @@ directory at that path.
 toolchain image's directory as an argument and the apps' image from
 `ESSENTIALS`. `root::fill` offers each image in the medium's `images/`, and
 the payload's, to the new root: it copies the image into
-`/var/lib/slopos/offered` as `<name>.ext.partial`, uid 0's and `0644`,
+`/var/lib/slopos/offered` as `<name>.pkg.partial`, uid 0's and `0644`,
 flushes it and renames it, then writes the sidecar last. An image already
 offered there under the same sidecar and size stays. The root's floor
 (`root_min`) counts the payload twice, because the store copies the

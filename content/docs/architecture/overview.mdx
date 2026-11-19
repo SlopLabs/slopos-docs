@@ -93,7 +93,7 @@ is split by responsibility:
   See [Capabilities](/docs/architecture/authority),
   [Users and file permissions](/docs/architecture/users) and
   [Sessions and login](/docs/architecture/sessions).
-- **Filesystem.** Disks, the read-only base, extensions and the special files
+- **Filesystem.** Disks, the read-only base, packages and the special files
   under `/dev` form one directory tree. Disks use ext4 with a journal, the
   same format Linux uses. See [Filesystem](/docs/architecture/filesystem),
   [Disks](/docs/architecture/storage) and
@@ -150,10 +150,10 @@ Above the system call line is *userland*:
   [Windowing](/docs/architecture/userland-windowing),
   [Desktop](/docs/architecture/desktop) and
   [Installed software](/docs/architecture/software).
-- **Extensions**: images that add services, commands and apps beside the
+- **Packages**: images that add services, commands and apps beside the
   base, installed once an administrator approves them or a key they trust has
   signed them. Each is shown read-only at `/opt/<name>` and holds only the
-  powers it was granted. See [Extensions](/docs/architecture/extensions).
+  powers it was granted. See [Packages](/docs/architecture/packages).
 
 ## Following a read through the system
 

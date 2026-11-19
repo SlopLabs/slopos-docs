@@ -9,7 +9,7 @@ authoritative sources are `abi/src/syscall/numbers.rs` (each number, with the
 call's signature in its doc comment), `core/src/syscall/handlers.rs` (the two
 dispatch tables) and each handler's `cap(...)` clause in `core/src/syscall/`.
 Errno values are in `abi/src/errno.rs`, capability bits in `abi/src/caps.rs`.
-The private calls below are those of base interface 12.
+The private calls below are those of base interface 16.
 [System calls](/docs/architecture/syscalls) explains how the kernel handles a
 call.
 
@@ -131,7 +131,7 @@ flag of the Linux call.
 | 6 | `lstat` | `NoneFd` | |
 | 7 | `poll` | `NoneFd` | `nfds` at most 256 |
 | 8 | `lseek` | `NoneFd` | |
-| 9 | `mmap` | `NoneSelf` | Anonymous mappings (`MAP_PRIVATE` only; `MAP_SHARED` with `MAP_ANONYMOUS` is `ENOMEM`) and regular-file mappings (shared or private) are filled as they are touched; a memfd is mapped `MAP_SHARED` at offset 0 with every page present from the call; any other descriptor is `EINVAL`. An anonymous mapping that allows any access, or a writable private file mapping, is charged in full against the commit ceiling when it is made, or when `mprotect` first allows that access, and refused with `ENOMEM` past it; with `MAP_NORESERVE` an anonymous one is charged a page at a time as it is touched ([Memory](/docs/architecture/memory)). An executable mapping of anything but a file of the base (or, for an extension's program, of its own activation) drops the kernel's record of which program the process runs until its next `exec` ([Making memory executable](/docs/architecture/memory#making-memory-executable)) |
+| 9 | `mmap` | `NoneSelf` | Anonymous mappings (`MAP_PRIVATE` only; `MAP_SHARED` with `MAP_ANONYMOUS` is `ENOMEM`) and regular-file mappings (shared or private) are filled as they are touched; a memfd is mapped `MAP_SHARED` at offset 0 with every page present from the call; any other descriptor is `EINVAL`. An anonymous mapping that allows any access, or a writable private file mapping, is charged in full against the commit ceiling when it is made, or when `mprotect` first allows that access, and refused with `ENOMEM` past it; with `MAP_NORESERVE` an anonymous one is charged a page at a time as it is touched ([Memory](/docs/architecture/memory)). An executable mapping of anything but a file of the base (or, for a package's program, of its own activation) drops the kernel's record of which program the process runs until its next `exec` ([Making memory executable](/docs/architecture/memory#making-memory-executable)) |
 | 10 | `mprotect` | `NoneSelf` | Making a page executable that was not drops that record too, as an executable `mmap` does |
 | 11 | `munmap` | `NoneSelf` | |
 | 12 | `brk` | `NoneSelf` | |
@@ -166,7 +166,7 @@ flag of the Linux call.
 | 52 | `getpeername` | `NoneFd` | |
 | 53 | `socketpair` | `NoneSelf` | `AF_UNIX` stream only; `EOPNOTSUPP` for `AF_INET` |
 | 54 | `setsockopt` | `NoneFd` | `AF_INET` only (`ENOTSOCK` on an `AF_UNIX` socket): `SO_REUSEADDR`, `SO_RCVBUF`, `SO_SNDBUF`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_KEEPALIVE`, `SO_OOBINLINE`, `TCP_NODELAY` and `IP_TOS`. Any other option is `EINVAL`, or `ENOPROTOOPT` at `IPPROTO_IP` |
-| 55 | `getsockopt` | `NoneFd` | On an `AF_INET` socket the options `setsockopt` takes and `SO_ERROR`. On an `AF_UNIX` socket only `SO_ERROR` (always 0), `SO_PEERCRED`, `SO_PEERPIDFD`, and `SO_PEERPROGRAM` and `SO_PEEREXTENSION` at level `SOL_SLOPOS` ([Privileged actions](/docs/architecture/privd)) |
+| 55 | `getsockopt` | `NoneFd` | On an `AF_INET` socket the options `setsockopt` takes and `SO_ERROR`. On an `AF_UNIX` socket only `SO_ERROR` (always 0), `SO_PEERCRED`, `SO_PEERPIDFD`, and `SO_PEERPROGRAM` and `SO_PEERPACKAGE` at level `SOL_SLOPOS` ([Privileged actions](/docs/architecture/privd)) |
 | 56 | `clone` | `NoneSelf` | Only `CLONE_VM`, `CLONE_FS`, `CLONE_FILES`, `CLONE_SIGHAND`, `CLONE_THREAD`, `CLONE_SETTLS`, `CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID` and `CLONE_CHILD_CLEARTID`; any other bit, an exit signal in the low byte included, is `EINVAL`. `CLONE_SIGHAND` and `CLONE_FILES` need `CLONE_VM`, and `CLONE_THREAD` needs both. A `CLONE_VM` child shares the caller's descriptor table whether or not `CLONE_FILES` is set; without `CLONE_VM`, `CLONE_CHILD_SETTID` is ignored |
 | 57 | `fork` | `NoneSelf` | Copy-on-write; never refused by the commit ceiling |
 | 59 | `execve` | `NoneSelf` | The process's other threads are not ended: they run on in the new image. Every thread keeps only the universal capabilities it held; the exception is init re-executing the base's `/sbin/init` as its only thread, which keeps its whole mask. No set-ID bit is honoured |
@@ -222,14 +222,14 @@ flag of the Linux call.
 | 130 | `rt_sigsuspend` | `NoneSelf` | `sigsetsize` must be 8 |
 | 131 | `sigaltstack` | `NoneSelf` | |
 | 133 | `mknod` | `NoneFd` | A FIFO or a regular file; `EPERM` for a device or socket node |
-| 137 | `statfs` | `NoneFd` | `EOPNOTSUPP` from a filesystem that keeps no counters. The base and the install medium report `BASEFS_MAGIC`, an extension's activation `EXTENSION_MAGIC` |
+| 137 | `statfs` | `NoneFd` | `EOPNOTSUPP` from a filesystem that keeps no counters. The base and the install medium report `BASEFS_MAGIC`, a package's activation `PACKAGE_MAGIC` |
 | 138 | `fstatfs` | `NoneFd` | As `statfs`; `ENOSYS` for a descriptor that is no file on a filesystem (a pipe, socket, terminal or memfd) |
 | 140 | `getpriority` | `NoneRelation` | |
 | 141 | `setpriority` | `NoneRelation` | Only for the caller's own process and tasks it may signal (`EPERM` otherwise). A nice value below both 0 and the task's current one takes `SchedHigh` (`EACCES` otherwise). The value is kept and reported; the scheduler does not read it |
 | 153 | `vhangup` | `ConsoleConfig` | `EPERM` without a controlling terminal |
 | 158 | `arch_prctl` | `NoneSelf` | `ARCH_SET_FS` and `ARCH_GET_FS` |
 | 162 | `sync` | `NoneSelf` | |
-| 165 | `mount` | `Mount` | `fstype` `ext2`, `ext3`, `ext4`, `ramfs` or `devfs` (else `ENODEV`); a non-null `data` is `EINVAL`. `EBUSY` at `/` and at a path something is already mounted on; `EPERM` at or beneath a pinned mount (a base directory, the install medium, its payload, an extension's activation) and at, above or beneath a directory the kernel keeps (`KEPT_DIRS`: `/etc`, `/var/lib/slopos` and the stores in it) |
+| 165 | `mount` | `Mount` | `fstype` `ext2`, `ext3`, `ext4`, `ramfs` or `devfs` (else `ENODEV`); a non-null `data` is `EINVAL`. `EBUSY` at `/` and at a path something is already mounted on; `EPERM` at or beneath a pinned mount (a base directory, the install medium, its payload, a package's activation) and at, above or beneath a directory the kernel keeps (`KEPT_DIRS`: `/etc`, `/var/lib/slopos` and the stores in it) |
 | 166 | `umount2` | `Mount` | `EBUSY` at `/`, and, unless `MNT_DETACH`, at the last path a filesystem is mounted at while a descriptor is open on it; `EINVAL` where nothing is mounted; `EPERM` for a pinned mount and at, above or beneath a kept directory |
 | 169 | `reboot` | `Power` | `LINUX_REBOOT_CMD_RESTART`, `_POWER_OFF` and `_HALT`, which does what `_POWER_OFF` does; `_CAD_ON` and `_CAD_OFF` succeed and change nothing |
 | 186 | `gettid` | `NoneSelf` | |
@@ -313,8 +313,8 @@ The signature is the one the call's doc comment in `numbers.rs` states.
 | 1059 | `caps_drop` | `NoneSelf` | `caps_drop(mask) -> mask now held`: removes capabilities from every task of the calling process, for good. Never fails |
 | 1060 | `base_activate` | `BaseUpdate` | `base_activate(archive, len) -> generation`: makes the archive the base's next generation at every base directory in one step. `ENOEXEC` for an archive naming an interface this kernel does not serve, `EINVAL` for one that is no base the kernel can index, `EFBIG` past a quarter of usable memory, `EBUSY` while every generation slot is held or the resident generations would take more than that quarter with it ([Base system](/docs/architecture/base)) |
 | 1061 | `base_monitor` | `NoneSelf` | `base_monitor() -> fd`: close-on-exec, readable when the base's generation changes; `read` gives the current generation as eight little-endian bytes |
-| 1062 | `ext_activate` | `ExtensionUpdate` | `ext_activate(name, fd, digest: *const [u8; 32]) -> activation`: shows the extension image `fd` reads, checked block by block against `digest`, read-only at `/opt/<name>`. `EINVAL` for a name the grammar refuses or a file that is no image the kernel serves, `EIO` for a block that fails its tree, `EBUSY` when the resident activations would hold more than an eighth of usable memory with it (`extension::budget()`; there is no fixed count of activations) or while `/opt/<name>` holds a mount that is no activation, `EPERM` under `extensions=off` ([Extensions](/docs/architecture/extensions)) |
-| 1063 | `ext_deactivate` | `ExtensionUpdate` | `ext_deactivate(name)`: takes the activation at `/opt/<name>` away; `ENOENT` if none |
+| 1062 | `pkg_activate` | `PackageUpdate` | `pkg_activate(name, fd, digest: *const [u8; 32]) -> activation`: shows the package image `fd` reads, checked block by block against `digest`, read-only at `/opt/<name>`. `EINVAL` for a name the grammar refuses or a file that is no image the kernel serves, `EIO` for a block that fails its tree, `EBUSY` when the resident activations would hold more than an eighth of usable memory with it (`package::budget()`; there is no fixed count of activations) or while `/opt/<name>` holds a mount that is no activation, `EPERM` under `packages=off` ([Packages](/docs/architecture/packages)) |
+| 1063 | `pkg_deactivate` | `PackageUpdate` | `pkg_deactivate(name)`: takes the activation at `/opt/<name>` away; `ENOENT` if none |
 | 1064 | `test_key` | `TestHarness` | `test_key(keycode, codepoint, pressed)`: delivers a key to the input sink's holder as a keyboard would; `ENOSYS` unless the boot runs the tests |
 | 1065 | `seat_switch` | `SeatSwitch` | `seat_switch(task_id) -> 0`: gives the screen and input seats to a task holding `DisplaySeat` and `InputSeat`. `ESRCH`, `EPERM` for a task lacking a seat capability, `EBUSY` while the virtual console holds a seat |
 | 1066 | `login_tag` | `NoneSelf` | `login_tag() -> tag`: the caller's login tag, 0 for none |
@@ -331,7 +331,7 @@ interface, and a kernel serves a range of them.
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `BASE_INTERFACE` | `15` | The interface this tree's call surface forms |
+| `BASE_INTERFACE` | `16` | The interface this tree's call surface forms |
 | `BASE_INTERFACE_MIN` | `BASE_INTERFACE` | The oldest interface a kernel built from this tree serves; before version 1, the newest |
 
 - A kernel states its range in `sys_info` and in the ELF note
@@ -343,7 +343,7 @@ interface, and a kernel serves a range of them.
   `slopos_abi` item a signature names or a call's documentation links, what
   those items reach through their fields, the families the `root` lines
   of `scripts/gates/base-interface.txt` name (capability bits, ring layouts,
-  spawn attributes, network records, the kept directories, the extension
+  spawn attributes, network records, the kept directories, the package
   name grammar, `/dev/kmsg`'s `KMSG_*` bounds and others), and which
   Linux-numbered calls the kernel answers: each row of `SYSCALL_TABLE` in
   `core/src/syscall/handlers.rs`, as `linux <n> <SYSCALL_NAME>`.
@@ -356,13 +356,19 @@ interface, and a kernel serves a range of them.
   among them, takes the next number; that took interface 13. Before
   version 1 a change weighs no older base, since a kernel serves its own
   tree's interface alone.
-- Interface 15 dropped `slopos_abi::extension::MAX_ACTIVATIONS`: the
-  resident activations are bounded by memory, not by a count.
+- Interface 15 dropped the fixed count of activations: the resident
+  activations are bounded by memory.
+- Interface 16 renamed the package calls, capability, socket option, store
+  and filesystem magic (`pkg_activate`, `PackageUpdate`, `SO_PEERPACKAGE`,
+  `PACKAGE_STORE`, `PACKAGE_MAGIC`); the store's path and the magic's value
+  changed with their names. Nothing reads a store under the old path, so a
+  root that held packages before it is installed again: the new store does
+  not know the uids the old records kept.
 
 A program shipped outside the base makes no private call: it reaches SlopOS
 through `libc.so`, whose exported symbols and header structure layouts only
 grow. `xtask programs` (`tools/xtask/src/elf/loose_programs.rs`), run as
-`scripts/build_extension.sh` packs an image, fails a program that is
+`scripts/build_package.sh` packs an image, fails a program that is
 static, names another interpreter, does not need `libc.so` or holds a
 `syscall` instruction, and `just libc-exports` (`xtask libc-exports`) holds
 `libc.so` to `scripts/gates/libc/exports.txt` and

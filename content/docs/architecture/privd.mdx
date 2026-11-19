@@ -6,7 +6,7 @@ description: "How a program that holds no special power gets a privileged job do
 import { PrivdRequest } from '@/components/diagrams/privd-request';
 
 Nothing a person starts on SlopOS can, by itself, restart the computer, write a boot
-slot, install an extension or change another account. When a program
+slot, install a package or change another account. When a program
 needs one of those jobs done, it asks `privd`, the privilege broker. privd
 runs the job, which it calls an *action*, as a fresh program of its own, after
 checking who asked and, where the policy says so, asking the person at the
@@ -17,7 +17,7 @@ request itself.
 You can rely on four things:
 
 - **The list of actions is fixed.** The base's is a file in the base, which no
-  running program can change, and an extension adds actions of its own only
+  running program can change, and a package adds actions of its own only
   once the computer's owner has installed it. privd runs only the programs
   they name, with only the arguments they allow.
 - **privd decides from what the kernel says about the requester**, never from
@@ -116,11 +116,11 @@ paired agent of [Remote control](/docs/self-hosting/remote-control).
 The policy lives at `/usr/share/slopos/privd/actions`, inside the sealed base,
 so no process can edit it. privd reads it when it starts, and a new base that
 changes it starts a new privd
-([below](#when-a-new-base-replaces-privd)). An enabled extension may add actions of its own, named
-`ext.<extension>.<action>`. Their mechanisms are programs of the extension's
-image and run as the extension's first user, never as uid 0, holding no more
-than the extension was granted; they never allow `root`, and the dialog says
-which extension's action it is (see [Extensions](/docs/architecture/extensions)).
+([below](#when-a-new-base-replaces-privd)). An enabled package may add actions of its own, named
+`pkg.<package>.<action>`. Their mechanisms are programs of the package's
+image and run as the package's first user, never as uid 0, holding no more
+than the package was granted; they never allow `root`, and the dialog says
+which package's action it is (see [Packages](/docs/architecture/packages)).
 
 ## A request from start to finish
 
@@ -174,13 +174,13 @@ The record is the connecting process's id, its effective uid and gid, and the
   stranger, and it turns readable when the process's first thread exits,
   normally when the process does.
 - `SO_PEERPROGRAM` (at the SlopOS-only level `SOL_SLOPOS`) gives the program,
-  and `SO_PEEREXTENSION` the extension it belongs to, if any. These answer
+  and `SO_PEERPACKAGE` the package it belongs to, if any. These answer
   only while the process still runs the program it ran at `connect`.
 
 The kernel attests a program when `exec` or `spawn` loads it: a base program
 when the file, every script of its `#!` chain and its ELF interpreter all come
-from the base, and an extension's program when the file comes from one
-extension's image and everything else from the base or that image. Anything
+from the base, and a package's program when the file comes from one
+package's image and everything else from the base or that image. Anything
 else is *other*, and so is a program `exec`'d while another thread of the
 process was running, since that thread could change the new image before it
 starts. A process stops counting as that program the moment it could
@@ -199,11 +199,11 @@ may name one: `allow program /bin/compositor` means "any process running the
 base's compositor". The program must be statically linked, since the dynamic
 loader could map a library from outside the base into it: privd refuses the
 base's whole policy if one of its lines names a program that is not, and
-leaves out an extension's action whose line names one. An extension's action
-may name one of the extension's own programs the same way; that line matches
+leaves out a package's action whose line names one. A package's action
+may name one of the package's own programs the same way; that line matches
 only a process
-running that file of the extension's activation, whose label names the
-extension and the image its record installed.
+running that file of the package's activation, whose label names the
+package and the image its record installed.
 
 ## Who may ask, and what they must do
 
@@ -285,8 +285,8 @@ policy and *App* names the requester from what no process can write:
 - a base program with an app entry in the base (`/usr/share/slopos/apps`) is
   named by it, so the System Monitor asks as *System Monitor*, with its icon;
 - any other base program by its file name, such as *bootctl*;
-- an extension's program by its extension, as *The hello extension* for one
-  named `hello`, with no icon, so nothing an extension ships can pass for
+- a package's program by its package, as *The hello package* for one
+  named `hello`, with no icon, so nothing a package ships can pass for
   another app;
 - anything else, a program from a home directory included, as
   *An unidentified app*.
@@ -308,7 +308,7 @@ policy names up to eight per action, as `term <word> "<Label>"`, and each is
 the argument right after `<word>` in the command line, found by its position
 in the action's argument shape, so no argument can pass for a key. The
 details list each under its label above *Runs*, with `-` shown as *None* and a
-comma-separated list spaced after each comma. `extctl install`, for example,
+comma-separated list spaced after each comma. `pkgctl install`, for example,
 asks only with its canonical line, `install <image> <sha256> name <name>
 signer <fingerprint|nobody> grant <caps> unasked <services> users <users>
 commands <commands>`, where the signer is the key whose signature
@@ -373,10 +373,10 @@ privd starts the mechanism as a new process of its own, not as a child of the
 requester:
 
 - It holds the action's capabilities and runs as uid 0, as the requester for
-  an action that says `uid requester`, or as the extension's first user for
-  an extension's action.
+  an action that says `uid requester`, or as the package's first user for
+  a package's action.
 - Its environment is `PATH=/bin:/sbin` (with `/opt/<name>/bin` after them for
-  an extension's action), `LANG=C.UTF-8`, `PRIV_ACTION` (the action's name)
+  a package's action), `LANG=C.UTF-8`, `PRIV_ACTION` (the action's name)
   and `PRIV_UID` (the requester's uid), and nothing else.
 - It runs in `/`, or for a `cwd` action in the requester's directory, which
   privd checks still has the path it had when the question was asked.
@@ -436,9 +436,9 @@ asks nobody: it runs the command itself and hands on everything it holds.
 
 The ceiling is stated once in the source (`REQUESTER_CEILING`), and the policy
 parser refuses any `uid requester` action that asks for more. It leaves out
-everything that writes a raw disk, the base, an extension, a sealed file, the
+everything that writes a raw disk, the base, a package, a sealed file, the
 firmware's or the boot loader's variables or another identity. So the boot
-partition, the base, extensions and the user database refuse what `priv`
+partition, the base, packages and the user database refuse what `priv`
 runs, and `bootctl` or `halt` run under `priv` still ask privd, as the person.
 `Mount` still mounts any ext4 volume that nothing else holds.
 
@@ -476,7 +476,7 @@ task in a person's session (a login tag in `SESSION_LOGINS`), running as a
 person (a uid in `PERSON_UIDS`), holding no more than every
 program holds, and still running under the name and user the person was shown.
 Everything the system runs (init, privd, the compositors, mechanisms,
-`remoted`, extensions' services) is refused. A task's capabilities only
+`remoted`, packages' services) is refused. A task's capabilities only
 shrink, its login tag never changes and its id is never reused, so what
 `endtask` checked is what its `SIGKILL` reaches.
 
@@ -516,7 +516,7 @@ its kernel in the spare slot, armed to boot once. `bootctl cmdline set`
 (`org.slopos.boot.cmdline`) holds nothing gated, and its question warns that
 boot options can turn off the system's safeguards.
 
-When the extensions change, init sends privd `SIGHUP`, and privd reads their
+When the packages change, init sends privd `SIGHUP`, and privd reads their
 actions again and forgets every kept answer.
 
 ## Asking through someone else's connection
@@ -531,13 +531,13 @@ shell, a connection it made, so their requests are judged as `paired`. The
 shell passes such a connection only to a mechanism its own process starts,
 never from a subshell or a pipeline, and to one at a time, and a mechanism
 keeps it from everything it starts, so no code from outside the base asks as
-the paired agent. That is also why an extension's action that allows `paired`
+the paired agent. That is also why a package's action that allows `paired`
 is never reached in practice: the base's mechanisms ask only for the base's
-actions, and no program of an extension is handed the connection.
+actions, and no program of a package is handed the connection.
 
 ## What it means in practice
 
-- **At a shell, run the command.** `halt`, `bootctl`, `extctl`, `users`,
+- **At a shell, run the command.** `halt`, `bootctl`, `pkgctl`, `users`,
   `cpufreq set`, `ip`, `netctl`, `keymap`, `kconsole`, `prof` and
   `installer` ask privd by themselves when they need to.
 - **For anything else that needs power, use `priv`.** It runs a command from
@@ -549,7 +549,7 @@ actions, and no program of an extension is handed the connection.
 - **A new privileged job is a new action.** Add it to `assets/privd/actions`
   with the narrowest argument shapes and capabilities that work, and have the
   program call `slopos_userland::privd::elevate` with the action's name before
-  it does the privileged part. An extension declares its own actions instead.
+  it does the privileged part. A package declares its own actions instead.
 
 ## How it is tested
 
@@ -561,7 +561,7 @@ and ending another user's task. It answers the dialog as a person would,
 through `test_key`, a system call that types into the compositor and exists
 only on a test boot. `priv_test` covers `priv`: the ceiling, kept answers, a
 shell that is asked every time, and what the ceiling leaves out.
-`extension_action_test` covers extensions' actions, and `peer_test` the
+`package_action_test` covers packages' actions, and `peer_test` the
 kernel's peer options. On the host, `priv-core`'s tests check the policy
 parser and the decision rules, the dialog's arming and focus, the question
 queue and the wire formats, with mutation loops over the codecs.
@@ -627,8 +627,8 @@ queue and the wire formats, with mutation loops over the codecs.
   it.
 - **The card's place is taken once,** when the question is first laid out, so
   the asking app can't move it by moving its window.
-- **The name comes from what no process can write.** An extension's program is
-  named by `consent::named_extension`, from the name its activation gives, and
+- **The name comes from what no process can write.** A package's program is
+  named by `consent::named_package`, from the name its activation gives, and
   anything unattested is `consent::UNIDENTIFIED`. An app entry in a home
   directory is never read for the name or the icon.
 - **Descriptor numbers are stated once,** in `init_control::fds`: privd's
@@ -648,16 +648,16 @@ queue and the wire formats, with mutation loops over the codecs.
   below it reads the current task.
 - **Ids stand, the program lapses.** `SO_PEERCRED` and `SO_PEERPIDFD` read
   what was recorded, as Linux's do; with no peer they give `{0, -1, -1}` and
-  `ENODATA`. The program and the extension label go through `Identity::now`,
+  `ENODATA`. The program and the package label go through `Identity::now`,
   which answers them only while that process is alive and still runs the
   same program instance. Once lapsed, the record reads as no program, never
   as a later program's.
 - **Every change of program moves the instance**, except init re-executing
   the base's `/sbin/init` (the case `exec_keeps_authority` allows), so the
   consent pairs init made at boot stay init's across a base switch.
-- **What counts as a base or extension program.** A program is `Base(inode)`
+- **What counts as a base or package program.** A program is `Base(inode)`
   when the file, every script of its `#!` chain and its ELF interpreter are
-  served by the base's filesystem (`BASE_FS`), and `Extension(inode)` when the
+  served by the base's filesystem (`BASE_FS`), and `Package(inode)` when the
   file is one activation's and every other link is the base's or that
   activation's. Each interpreter must be named by an absolute path, and each
   script by the absolute path it was found at, because the interpreter opens
@@ -674,8 +674,8 @@ queue and the wire formats, with mutation loops over the codecs.
 - **A pidfd is a handle, not a lookup.** Task ids are never reused, so a
   peer's pidfd is handed out even after the peer is gone, and is then
   readable at once.
-- **uid 0 alone is no principal,** at privd or at `/run/init`. What keeps an
-  extension from `root` is that none of its programs runs as uid 0.
+- **uid 0 alone is no principal,** at privd or at `/run/init`. What keeps a
+  package from `root` is that none of its programs runs as uid 0.
 
 ## Further reading
 

@@ -62,29 +62,29 @@ base to the partition beside the running one and the kernel to the spare
 slot. `bootctl cmdline` with no arguments only reads `/etc/kernel/cmdline`;
 `cmdline set` writes that file as uid 0, holding nothing gated.
 
-## Extensions
+## Packages
 
 | Action | Runs | Capabilities | Settings | Who may ask |
 |---|---|---|---|---|
-| `org.slopos.extension.install` | `/bin/extctl install ? ? name ? signer ? grant ? unasked ? users ? commands ?` | `ExtensionUpdate`, `Seal` | `cwd`, `exclusive extensions` | `root`, `admin confirm`, `paired` |
-| `org.slopos.extension.install-signed` | `/bin/extctl install-signed *` | `ExtensionUpdate`, `Seal` | `cwd`, `exclusive extensions` | `root`, `admin`, `paired` |
-| `org.slopos.extension.trust` | `/bin/extctl key add *`, `/bin/extctl key remove *` | `ExtensionUpdate`, `Seal` | `exclusive extensions` | `root`, `admin confirm`, `paired` |
-| `org.slopos.extension.manage` | `/bin/extctl enable *`, `disable *`, `rollback *` | `ExtensionUpdate`, `Seal` | `exclusive extensions` | `root`, `admin confirm`, `paired` |
-| `org.slopos.extension.remove` | `/bin/extctl remove ?` | `ExtensionUpdate`, `Seal`, `DacOverride` | `exclusive extensions` | `root`, `admin confirm`, `paired` |
-| `org.slopos.extension.config` | `/bin/extctl config install *` | `Seal` | `cwd`, `exclusive extensions` | `root`, `admin confirm`, `paired` |
-| `org.slopos.extension.config-signed` | `/bin/extctl config apply *` | `Seal` | `cwd`, `exclusive extensions` | `root`, `admin`, `paired` |
+| `org.slopos.package.install` | `/bin/pkgctl install ? ? name ? signer ? grant ? unasked ? users ? commands ?` | `PackageUpdate`, `Seal` | `cwd`, `exclusive packages` | `root`, `admin confirm`, `paired` |
+| `org.slopos.package.install-signed` | `/bin/pkgctl install-signed *` | `PackageUpdate`, `Seal` | `cwd`, `exclusive packages` | `root`, `admin`, `paired` |
+| `org.slopos.package.trust` | `/bin/pkgctl key add *`, `/bin/pkgctl key remove *` | `PackageUpdate`, `Seal` | `exclusive packages` | `root`, `admin confirm`, `paired` |
+| `org.slopos.package.manage` | `/bin/pkgctl enable *`, `disable *`, `rollback *` | `PackageUpdate`, `Seal` | `exclusive packages` | `root`, `admin confirm`, `paired` |
+| `org.slopos.package.remove` | `/bin/pkgctl remove ?` | `PackageUpdate`, `Seal`, `DacOverride` | `exclusive packages` | `root`, `admin confirm`, `paired` |
+| `org.slopos.package.config` | `/bin/pkgctl config install *` | `Seal` | `cwd`, `exclusive packages` | `root`, `admin confirm`, `paired` |
+| `org.slopos.package.config-signed` | `/bin/pkgctl config apply *` | `Seal` | `cwd`, `exclusive packages` | `root`, `admin`, `paired` |
 
-`extctl --root <dir> …` likewise fits no shape, and `extctl activate-all` has
-no action: init runs it at boot, handing it `ExtensionUpdate` and `Seal`.
+`pkgctl --root <dir> …` likewise fits no shape, and `pkgctl activate-all` has
+no action: init runs it at boot, handing it `PackageUpdate` and `Seal`.
 
-`extctl install` asks with one canonical line only, so every word a person
+`pkgctl install` asks with one canonical line only, so every word a person
 reads in the question is one the mechanism then holds the image to: the
 image's name, its signer (a key's fingerprint, or `nobody`), the
 capabilities it is granted, the services that run unasked, and the users
 and commands it adds. Each is a [term](#terms), listed in the details as
 *Installs*, *Signed by*, *Capabilities*, *Runs unasked*, *Adds users* and
-*Adds commands*. `org.slopos.extension.remove` is `destructive`: it deletes
-the extension's data, settings and log, and its record keeps only the name,
+*Adds commands*. `org.slopos.package.remove` is `destructive`: it deletes
+the package's data, settings and log, and its record keeps only the name,
 the uids it retired and its configuration serial.
 
 ## Accounts
@@ -136,7 +136,7 @@ handing it `NetAdmin`.
 | Action | Runs | Capabilities | Settings | Who may ask |
 |---|---|---|---|---|
 | `org.slopos.install` | `/bin/installer *` | `RawBlock`, `Mount`, `Power`, `BootEntry`, `Seal`, `DacOverride` | `exclusive` (group `org.slopos.install`) | `root`, `admin confirm` |
-| `org.slopos.rescue` | `/bin/shell --rescue` | `Power`, `ProcSignal`, `Mount`, `RawBlock`, `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `Seal`, `BootEntry`, `DacOverride`, `BaseUpdate`, `ExtensionUpdate` | `medium` | `root`, `admin confirm` |
+| `org.slopos.rescue` | `/bin/shell --rescue` | `Power`, `ProcSignal`, `Mount`, `RawBlock`, `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `Seal`, `BootEntry`, `DacOverride`, `BaseUpdate`, `PackageUpdate` | `medium` | `root`, `admin confirm` |
 
 ## Commands run as the requester
 
@@ -154,7 +154,7 @@ A question's headline is `<App> wants to <describe>.`, where *App* names the
 program that asked (see [Privileged actions](/docs/architecture/privd#what-the-dialog-shows)).
 The detail is a sentence under it, and the allowing button says the verb, or
 *Allow* when the action names none. `org.slopos.install` and
-`org.slopos.extension.remove` are `destructive`, which colours their button
+`org.slopos.package.remove` are `destructive`, which colours their button
 in the danger tone.
 
 | Action | describe | detail | Button |
@@ -175,13 +175,13 @@ in the danger tone.
 | `org.slopos.base.pair` | try a new version of the system, with the kernel it needs | If it needs that kernel, both start once at the next restart, and the kernel that starts by default stays. | Install |
 | `org.slopos.base.commit` | keep the version of the system that is running now | The version that ran before it is kept, so you can go back to it. | Keep |
 | `org.slopos.boot.cmdline` | change the options every kernel installed from now on starts with | They can turn off the system's safeguards. | Change |
-| `org.slopos.extension.install` | install an extension and give it what it asks for | If it asks for the disks or every file, it can take over the whole computer. | Install |
-| `org.slopos.extension.install-signed` | install or update an extension signed by a key you trust | It gets no more than that key is trusted to give. | Install |
-| `org.slopos.extension.trust` | change which keys may install extensions | Extensions a trusted key signs go in without asking, within the limits shown. | Change |
-| `org.slopos.extension.manage` | turn an extension on or off or go back to its last version | | Allow |
-| `org.slopos.extension.remove` | remove an extension with everything it keeps | Its data, settings and log are deleted. | Remove |
-| `org.slopos.extension.config` | change an extension's settings | What reads those settings restarts. | Change |
-| `org.slopos.extension.config-signed` | change an extension's settings, signed by the key that installed it | | Change |
+| `org.slopos.package.install` | install a package and give it what it asks for | If it asks for the disks or every file, it can take over the whole computer. | Install |
+| `org.slopos.package.install-signed` | install or update a package signed by a key you trust | It gets no more than that key is trusted to give. | Install |
+| `org.slopos.package.trust` | change which keys may install packages | Packages a trusted key signs go in without asking, within the limits shown. | Change |
+| `org.slopos.package.manage` | turn a package on or off or go back to its last version | | Allow |
+| `org.slopos.package.remove` | remove a package with everything it keeps | Its data, settings and log are deleted. | Remove |
+| `org.slopos.package.config` | change a package's settings | What reads those settings restarts. | Change |
+| `org.slopos.package.config-signed` | change a package's settings, signed by the key that installed it | | Change |
 | `org.slopos.accounts.password` | change your password | | Change |
 | `org.slopos.accounts.list` | see who uses this computer and how each of them logs in | | Allow |
 | `org.slopos.accounts.manage` | add, remove or change the users of this computer | | Allow |
@@ -201,31 +201,31 @@ in the danger tone.
 | `org.slopos.priv` | run a command that can read and change every file | It can also mount disks and change the network and the clock. | Run |
 | `org.slopos.priv.shell` | open a shell that can read and change every file | Anything typed into it can also mount disks and change the network and the clock. | Open |
 
-## Extensions' actions
+## Packages' actions
 
-The actions of each extension that runs (enabled, installed and not stopped
+The actions of each package that runs (enabled, installed and not stopped
 by a failed check) are read from its activation's
-`/.extension/declare` and added beside the base's as
-`ext.<extension>.<action>`. One whose name the base already uses is left out,
+`/.package/declare` and added beside the base's as
+`pkg.<package>.<action>`. One whose name the base already uses is left out,
 and so is one whose `program` principal names a base program that is not
 statically linked; the rest of the policy stands. They take the same settings
 as the base's, less `uid` and `medium`, with these differences:
 
-- The program is a file of the extension's own image, under `/opt/<name>`.
-- The mechanism runs as the extension's first user, never as uid 0, with no
-  supplementary groups, under a login tag of the extension's own, and with
+- The program is a file of the package's own image, under `/opt/<name>`.
+- The mechanism runs as the package's first user, never as uid 0, with no
+  supplementary groups, under a login tag of the package's own, and with
   `/opt/<name>/bin` after `/bin:/sbin` on its `PATH`.
 - `allow` takes `admin`, `user`, `paired` and `program <path>`, where the path
-  may be the extension's own program; never `root` or `greeter`. No request
-  from the paired agent reaches an extension's action: the agent's connection
+  may be the package's own program; never `root` or `greeter`. No request
+  from the paired agent reaches a package's action: the agent's connection
   goes only to the base's mechanisms, which ask only for the base's actions.
-- An `exclusive` group is `ext.<extension>.<group>`, so it never shares a
-  group with the base or another extension.
-- Capabilities are held to the extension's grant, the base's ceiling and
+- An `exclusive` group is `pkg.<package>.<group>`, so it never shares a
+  group with the base or another package.
+- Capabilities are held to the package's grant, the base's ceiling and
   those an action may name.
 
-[Extension images](/docs/abi/extension-images) gives the declaration's
-grammar, and [Extensions](/docs/architecture/extensions) what an extension
+[Package images](/docs/abi/package-images) gives the declaration's
+grammar, and [Packages](/docs/architecture/packages) what a package
 may be granted.
 
 ## The policy file
@@ -251,7 +251,7 @@ bytes, and each name occurs once.
 |---|---|---|---|
 | `program` | one path | yes, once | The mechanism. A canonical path under `/bin/`, `/sbin/` or `/usr/bin/`, at most 255 bytes, with no empty, `.` or `..` component. |
 | `args` | words and `?`, then optionally `*` | at least one, repeatable | One argument shape. Each word is printable ASCII without `"` or `*`, at most 64 bytes, and matches itself; `?` stands for any one argument; `*` may only come last. A shape with no `*` matches exactly that many arguments, so a bare `args` line matches only a request with no arguments. The same shape may not appear twice. The mechanism holds what `?` and `*` take to its own grammar. |
-| `caps` | capability names, possibly none | yes, once | What the mechanism holds. Each name once, from `Power`, `ProcSignal`, `Mount`, `RawBlock`, `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `Seal`, `BootEntry`, `DacOverride`, `BaseUpdate`, `ExtensionUpdate`. |
+| `caps` | capability names, possibly none | yes, once | What the mechanism holds. Each name once, from `Power`, `ProcSignal`, `Mount`, `RawBlock`, `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `Seal`, `BootEntry`, `DacOverride`, `BaseUpdate`, `PackageUpdate`. |
 | `uid` | `0` or `requester` | yes, once | Whom the mechanism runs as. `requester` runs it as whoever asked, in their own group, `admin` (gid 10) while the record names them an administrator, and their session's login tag. Its `caps` must stay within `REQUESTER_CEILING` and its `allow` lines name only `root`, `user` and `admin`. |
 | `allow` | a principal, then a level | at least one, repeatable | Who may ask, and what they must do. Each principal at most once. |
 | `cwd` | none | no | The request must send its working directory, and the mechanism runs there. Without it the mechanism runs in `/`, and a request that sends a directory is refused. |
@@ -346,12 +346,12 @@ administrator who answered still listed.
 With `keep`, an answered request makes the next one run unasked for that
 many seconds when all of these match: the uid, the session's login tag and
 its eldest live task, the live task that started the requester, the action
-and where it was read from (the base, or an extension's activation), the
+and where it was read from (the base, or a package's activation), the
 kind of question, the whole command line and the working directory. An
 answer given by an administrator's password is kept only while that
 administrator could still answer. A requester carrying no login tag never
 keeps one. privd keeps at most 64 answers and forgets them all when it reads
-the extensions' actions again.
+the packages' actions again.
 
 ### Rules for the words
 
@@ -366,7 +366,7 @@ the desktop's glossary replaces (see [Desktop](/docs/architecture/desktop)),
 none of `requester`, `mechanism`, `principal`, `privd`, `slot`, `base`,
 `sealed` or `uid` (or the same with an `s`), and no capability's name as the
 policy spells it (`Power`, `SysInspect`), except as a first word that only
-starts with a capital. The base's policy and an extension's declaration are
+starts with a capital. The base's policy and a package's declaration are
 held to these rules whenever they are parsed.
 
 ### Terms
@@ -379,14 +379,14 @@ or the file fails. The details list each term under its label above *Runs*,
 with `-` read as *None* and a comma-separated list shown with a space after
 each comma (`consent::term_text`). A label is at most 24 characters, starts
 with a capital, ends without punctuation, is none of the details' own labels
-(*Asked by*, *Runs*, *In*, *Extension*), and is held to the same plain-words
+(*Asked by*, *Runs*, *In*, *Package*), and is held to the same plain-words
 rules as `describe` (`words::term`). A question on the consent channel
 (`consent::VERSION` 2) carries the terms as `term`/`value` pairs.
 
 ## What a mechanism starts with
 
 - argv: the program's file name, then the request's arguments.
-- Environment: `PATH=/bin:/sbin` (an extension's mechanism also has its
+- Environment: `PATH=/bin:/sbin` (a package's mechanism also has its
   `bin`), `LANG=C.UTF-8`, `PRIV_ACTION` (the action's name) and `PRIV_UID`
   (the requester's uid as the connection recorded it). Nothing else.
 - Working directory: `/`, or with `cwd` the directory the request sent,
@@ -456,7 +456,7 @@ A priv-core test holds every one of them to the rules for the words.
 | The command is too long to show in full, so it can't be allowed. | A question for the desktop whose command line, directory or a term exceeds 4096 bytes once escaped. |
 | Who can allow this changed while you were asked. Try again. | Judged again after the answer, the request no longer qualifies. |
 | The account that asked no longer exists. | A `uid requester` action for a uid the record no longer names. |
-| The extension that runs this has changed. Try again. | Just before the start, the activation shown at `/opt/<name>` is no longer the one privd read the action from, or the program is not a file of it. |
+| The package that runs this has changed. Try again. | Just before the start, the activation shown at `/opt/<name>` is no longer the one privd read the action from, or the program is not a file of it. |
 | Too many requests are waiting. Try again in a moment. | The connection limits below are reached. |
 | That request couldn't be read. | A malformed frame, or a request with the wrong number of descriptors; the connection ends. |
 | The answer came back incomplete. Try again. | A password answer arrived without its password or its administrator. |

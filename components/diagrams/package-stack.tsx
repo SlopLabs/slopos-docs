@@ -15,7 +15,7 @@ const LAYERS = [
     mono: false,
   },
   {
-    title: '/var/lib/slopos/extensions/hello/<root>.ext',
+    title: '/var/lib/slopos/packages/hello/<root>.pkg',
     detail: 'the image file in the store, sealed, read where it lies',
     mono: true,
   },
@@ -28,13 +28,13 @@ const LAYERS = [
 
 const DEVICE = 2;
 
-export function ExtensionStack() {
+export function PackageStack() {
   return (
     <figure className="not-prose my-8">
       <ol
         className="grid gap-2"
         role="img"
-        aria-label="An extension's files are read through five layers: the mount at /opt/hello, the image's own read-only ext4 volume, a device that checks every block against the image's hash tree, the image file in the extension store, and the root filesystem it lies on."
+        aria-label="A package's files are read through five layers: the mount at /opt/hello, the image's own read-only ext4 volume, a device that checks every block against the image's hash tree, the image file in the package store, and the root filesystem it lies on."
       >
         {LAYERS.map((layer, i) => {
           const device = i === DEVICE;

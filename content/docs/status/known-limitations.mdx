@@ -3,7 +3,7 @@ title: "Known limitations"
 description: "What SlopOS does not do yet, and which of those gaps are recorded as defects to fix."
 ---
 
-As of 2026-11-19, SlopOS commit `cfd13887`.
+As of 2026-11-19, SlopOS commit `35efac95`.
 
 SlopOS is a research system. Everything is tested in QEMU, and one laptop has
 run an installed system. This page lists what is missing, what each gap means for
@@ -46,7 +46,7 @@ where each stands.
   PCI card is probed only while the kernel boots, and drivers cannot be
   unloaded ([Drivers](/docs/architecture/drivers)). No plan.
 - **The CPU's power limit is not read.** The kernel reads no RAPL register, so
-  a build held back by the package's power limit shows only as the throttle
+  a build held back by the processor package's power limit shows only as the throttle
   bit in `cpufreq run` ([CPU frequency](/docs/architecture/cpu-frequency)).
   No plan.
 
@@ -121,7 +121,7 @@ where each stands.
   mount. The boot partition is FAT32, but only SlopOS's own tools write it,
   through the raw disk. No plan.
 - **Four ext4 volumes at once.** The kernel mounts at most four ext4 volumes,
-  the root and an install medium's payload among them; an extension's image
+  the root and an install medium's payload among them; a package's image
   does not count. No plan.
 
 ## Network
@@ -204,9 +204,9 @@ where each stands.
 `plans/KNOWN_ISSUES.md` in the source tree holds every open defect, with the
 files involved, including the low-severity ones this page leaves out:
 
-- extension handling: an activation's index can cost more memory than its
+- package handling: an activation's index can cost more memory than its
   image, so a few images with many files use up the activations' budget, and
-  a service that cannot listen because an extension init cannot read holds
+  a service that cannot listen because a package init cannot read holds
   its port;
 - a page freed while the TLB quarantine's epoch closes, which can be handed
   out again one epoch early;

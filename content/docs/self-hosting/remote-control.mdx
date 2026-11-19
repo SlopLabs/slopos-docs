@@ -16,7 +16,7 @@ your Linux machine; nothing on SlopOS listens for connections.
 What the broker can make the computer do is bounded. Commands run as a person
 holding no special powers. On top of that, the policy of privd, the program
 that runs SlopOS's privileged actions, lets the agent change
-the boot slots, the bases and the kernel's boot options, install and remove extensions, change CPU
+the boot slots, the bases and the kernel's boot options, install and remove packages, change CPU
 frequency settings, read the kernel's diagnostics, change the keyboard layout
 and restart or power off, without asking anyone at the machine. It can't
 manage accounts, change network settings, run the installer or open a root
@@ -106,7 +106,7 @@ are written as the same person commands run as.
 
 Installing a kernel or a base needs more than a person holds. When the
 program you run is one privd's policy names as a mechanism (such as
-`bootctl`, `halt`, `extctl` or `cpufreq`) or the shell, `remoted` hands it a
+`bootctl`, `halt`, `pkgctl` or `cpufreq`) or the shell, `remoted` hands it a
 connection to privd that it opened itself. privd sees `/bin/remoted`
 from a base that carries a pairing, which its policy calls the *paired* agent,
 and runs these actions without asking anyone:
@@ -116,17 +116,17 @@ and runs these actions without asking anyone:
 | Restarting and powering off | `org.slopos.power.reboot`, `org.slopos.power.poweroff` |
 | Kernels in the boot slots | `org.slopos.boot.*`: status, install, clone, boot options, one-shot boot, set the default, commit, spare, reboot |
 | Bases | `org.slopos.base.*`: install, try, try with its kernel, commit, rollback |
-| Extensions | `org.slopos.extension.*`: install, signed install, trust a key, manage, remove, configuration |
+| Packages | `org.slopos.package.*`: install, signed install, trust a key, manage, remove, configuration |
 | Diagnostics and settings | `org.slopos.cpufreq.set`, `org.slopos.kconsole`, `org.slopos.prof`, `org.slopos.console.keymap` |
 
 privd refuses the agent every other action of the base's policy, and it never
 puts a question on the computer's screen on the agent's behalf. A program the
 agent runs that isn't one of the base's mechanisms gets no privd connection,
 so it can't pass one on to something from outside the base. So the agent
-reaches no [extension](/docs/architecture/extensions)'s own actions either: an
-extension may name the paired agent among those who may ask for them, but
+reaches no [package](/docs/architecture/packages)'s own actions either: a
+package may name the paired agent among those who may ask for them, but
 the base's mechanisms ask only for the base's actions, and none of the
-extension's programs is handed the agent's connection.
+package's programs is handed the agent's connection.
 [Privileged actions](/docs/architecture/privd) explains principals and
 levels, and [privd actions](/docs/abi/privd-actions) lists every action.
 
@@ -270,8 +270,8 @@ builds and installs your current tree on the paired computer:
 
 `scripts/remote.py install` does steps 3 to 5 for files you built yourself
 (`--base`, `--kernel` with `--tag`, `--commit`), and
-`--extension` installs an extension image `just extension` packed
-([Package an extension](/docs/development/packaging-an-extension)).
+`--package` installs a package image `just package` packed
+([Build a package](/docs/development/building-a-package)).
 [Updating SlopOS](/docs/self-hosting/updating) explains what `bootctl` checks
 before it writes anything.
 

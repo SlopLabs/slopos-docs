@@ -171,7 +171,7 @@ What makes them worth using is what comes with every one of them:
 - **Refusals say why.** When the computer refuses to open or change a file,
   appkit works out the reason from what the kernel says about the file and
   the filesystem it is on (`statfs` and the file's flags, never its path):
-  the system's own file, an extension's, one locked against changes, a disk
+  the system's own file, a package's, one locked against changes, a disk
   that can't be written, or permissions. The app says which.
 
 The widget gallery (`widget_gallery`, or `widget_gallery --page <name>` for
@@ -384,8 +384,8 @@ window's title.
 
 [Installed software](/docs/architecture/software#app-entries) describes the
 entry files, the places the dock reads them from and which entry wins when
-two share an id; [Extensions](/docs/architecture/extensions) says what an
-extension's entries may do.
+two share an id; [Packages](/docs/architecture/packages) says what a
+package's entries may do.
 
 ## The apps that ship
 

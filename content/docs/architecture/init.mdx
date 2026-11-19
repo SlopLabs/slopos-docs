@@ -18,7 +18,7 @@ out ends every program the session started, however it was started.
 What init does not read is a list of services. There are no unit files: the
 system's own services are written into init itself, so changing them means
 installing a new base, and the only other services are those that installed
-extensions declare. This page walks through what init starts and in what
+packages declare. This page walks through what init starts and in what
 order, how it keeps those programs running, how other programs ask it for
 things, and how it ends sessions and replaces itself.
 
@@ -56,13 +56,13 @@ Init does a few jobs before any service runs, and waits for each to finish:
    That is all it does to the root: nothing is handed over between people.
 3. **People.** `users sync` writes `/etc/passwd`, `/etc/group` and
    `/etc/shadow` from the accounts record.
-4. **Offered images.** `extctl install-offered` installs, unasked, the
+4. **Offered images.** `pkgctl install-offered` installs, unasked, the
    images uid 0 left in `/var/lib/slopos/offered`, or on a live boot those
    in the medium's `images/` directory (see
-   [Extensions](/docs/architecture/extensions)).
-5. **Extensions.** `extctl activate-all` shows each enabled extension at
+   [Packages](/docs/architecture/packages)).
+5. **Packages.** `pkgctl activate-all` shows each enabled package at
    `/opt/<name>`. Neither this step nor the one before runs when the boot
-   said `extensions=off`.
+   said `packages=off`.
 
 Then it opens its own socket, `/run/init`, and starts privd, which runs the
 privileged actions everything else asks for. Init waits until privd says it
@@ -77,7 +77,7 @@ in `/etc/keymap`, is loaded (init records each layout it loads in
 too, unless the command line said `roulette=skip`.
 
 After that, init starts the console's login prompt (`/bin/login`, on init's
-own terminal), each extension's services, and the screen's first session:
+own terminal), each package's services, and the screen's first session:
 the desktop of the person the accounts record logs in automatically, or the
 login screen when nobody is set to. When that desktop's compositor says it is
 ready, init opens its first window, a terminal, or on a live boot the
@@ -96,8 +96,8 @@ at because init holds `SchedHigh`:
 | `bootctl collect` | uid 0 | `RawBlock`, `Power` | No: runs once at boot |
 | `users sync` | uid 0 | `Seal` | No: runs once at boot |
 | `netctl apply` | uid 0 | `NetAdmin` | No: runs at start and for each network adapter as it appears, one at a time |
-| `extctl install-offered` | uid 0 | `ExtensionUpdate`, `Seal` | No: runs once at boot |
-| `extctl activate-all` | uid 0 | `ExtensionUpdate`, `Seal` | No: runs once at boot |
+| `pkgctl install-offered` | uid 0 | `PackageUpdate`, `Seal` | No: runs once at boot |
+| `pkgctl activate-all` | uid 0 | `PackageUpdate`, `Seal` | No: runs once at boot |
 | `/sbin/privd` | uid 0 | every capability an action may name, and `SetId` | Yes |
 | `/bin/remoted` | the person the accounts record names for it, else the first administrator | none | Yes |
 | `/bin/roulette` | the first person | `DisplaySeat` | No: init waits for it once |
@@ -105,8 +105,8 @@ at because init holds `SchedHigh`:
 | `/bin/compositor` | the session's person, or `greeter` for the login screen (`--greeter`) | `DisplaySeat`, `InputSeat` | Yes, with its session |
 | `/bin/terminal`, `/bin/installer-ui --welcome` | the session's person | none | No: it is the session's first window |
 | `/bin/shell` | the person a console login named | none | No: the session ends with it |
-| an extension's service | the extension's own user, or for a session service the first person | what it declares, within its grant | As its declaration says, within the same budget |
-| `/sbin/init --log <service>`, which keeps a service's log | the extension's first user | none | No: it lasts as long as its service |
+| a package's service | the package's own user, or for a session service the first person | what it declares, within its grant | As its declaration says, within the same budget |
+| `/sbin/init --log <service>`, which keeps a service's log | the package's first user | none | No: it lasts as long as its service |
 | `/sbin/init --run-tests` | uid 0 | `TestHarness` | No: test boots only |
 
 ## Starting a service again
@@ -144,7 +144,7 @@ watching a console, so init waits instead.
 ### How init knows a program is ready
 
 A program that others connect to is not ready when it starts but when it
-listens. Init hands privd, each compositor and each extension service a pipe
+listens. Init hands privd, each compositor and each package service a pipe
 on descriptor 3, the *readiness notifier*. The program writes one byte to it
 and closes it once it is serving. If it exits first, the pipe reads as
 closed, which init also notices. So init can wait for privd before starting
@@ -184,7 +184,7 @@ program is attested.
 | `restart-session <tag>`, `end-session <tag>` | uid 0 | The session with that login tag |
 | `switch <tag>` | uid 0 | Brings that desktop, or the login screen, in front |
 | `login desktop <name>`, `login console <name>` | uid 0 | Logs a person in whose password was already checked; a console login hands init its terminal with the request |
-| `extensions` | uid 0 | Starts, stops and replaces extensions' services as the store now says |
+| `packages` | uid 0 | Starts, stops and replaces packages' services as the store now says |
 | `reexec` | uid 0 | Re-executes init |
 
 A person's own requests go through `/bin/session` (`session restart`,
@@ -238,7 +238,7 @@ Because the tag decides, ending a person's desktop spares remoted and the
 programs it runs (they carry remoted's tag), privd's mechanisms, and anything
 else the session did not start. The exception is a command `priv` runs for
 the person: privd starts it with the session's tag, so it ends with the
-session. When the first person's desktop ends, the extensions' services that
+session. When the first person's desktop ends, the packages' services that
 run in that session end with it. The ten-second limit is real: a process
 that forks faster than init can signal can outlive it, and init says so
 rather than waiting forever.
@@ -257,7 +257,7 @@ before, and restarts only what changed:
 | `/bin/remoted` | Sends remoted `SIGTERM`: it closes its idle connection to the broker, finishes what it is serving and exits, and the new one starts from the new base |
 | The pairing under `/usr/share/slopos/remote/` | Ends everything the old broker's agent was running (`SIGTERM` and `SIGCONT`, then `SIGKILL` after five seconds), then starts remoted again if the new base is paired |
 | `/sbin/init` | Re-executes itself once nothing is starting or ending (see below) |
-| The extensions' ceiling, `/usr/share/slopos/privd/extensions` | Reads the extensions' services again, and replaces those whose grant the new ceiling changes ([Extensions](/docs/architecture/extensions)) |
+| The packages' ceiling, `/usr/share/slopos/privd/packages` | Reads the packages' services again, and replaces those whose grant the new ceiling changes ([Packages](/docs/architecture/packages)) |
 | `/bin/compositor` or `/bin/terminal` | Nothing. The compositor shows *Restart the desktop to finish updating* in its system menu, with *Restart desktop…* under it, and leaves the choice to its person |
 | Anything else | Nothing. Each program picks up the new version the next time it starts |
 
@@ -282,7 +282,7 @@ on with the same process id, the same children and the same capabilities.
 The state is plain text: the services and their recent starts, each
 session's tag, person, class, leader and lock state, the consent links to
 privd, and the request that asked for the exec, which the new image answers.
-Extensions' services go in further pipes of their own, which the command line
+Packages' services go in further pipes of their own, which the command line
 names after the first.
 
 Three things make this safe:
@@ -294,7 +294,7 @@ Three things make this safe:
 - **The new image must be able to read the state.** Before the exec, init
   looks for its state's header line, `slopos-init-state 1`, in the new
   image's file. If the new init would not understand the state, the sessions
-  end first; an image that cannot read the extensions' services has those
+  end first; an image that cannot read the packages' services has those
   end first. A new image that still finds nothing it can read closes the
   descriptors the state's first line names, adopts the privd and remoted
   already running, and starts the sessions again, without consent dialogs
@@ -308,20 +308,20 @@ Three things make this safe:
 init: re-executed
 ```
 
-## Extensions' services
+## Packages' services
 
-Init also runs the services that installed extensions declare, as the
-extension's own users (or, for a session service, as the first person while
+Init also runs the services that installed packages declare, as the
+package's own users (or, for a session service, as the first person while
 their desktop runs), holding what each service declares within the
-extension's grant. Each gets
+package's grant. Each gets
 `/dev/null` as input, the readiness notifier on descriptor 3, the sockets init
 listens on for it from descriptor 4 (named in `LISTEN_FDS` and
 `LISTEN_FDNAMES`, as systemd's socket activation does), and a log at
 `/var/log/<name>/<service>.log`, kept by a copy of init running as the
-extension's first user. Each carries a login tag of its own, so when it exits
+package's first user. Each carries a login tag of its own, so when it exits
 whatever it left behind is ended before it starts again, under the same
-five-a-minute budget. The `extensions` request tells init the store changed.
-[Extensions](/docs/architecture/extensions) covers the rest.
+five-a-minute budget. The `packages` request tells init the store changed.
+[Packages](/docs/architecture/packages) covers the rest.
 
 ## Test boots
 
@@ -341,7 +341,7 @@ a shell to look around with.
   down wait up to two seconds for the new one to listen.
 - **Logging out is complete.** A daemon you started from a terminal does not
   survive `session end`. Something meant to outlive your session has to be a
-  service init runs, such as an extension's, which carries a tag of its own.
+  service init runs, such as a package's, which carries a tag of its own.
 - **Installing a base restarts little.** Only the services whose files
   changed restart; your desktop keeps running until you choose to restart
   it.
@@ -355,8 +355,8 @@ the test machine: a privd it kills comes back, a re-executed init keeps what
 it serves, and a session restart ends a stopped process by its `SIGTERM`
 while sparing what carries remoted's tag. `live_base_test` activates a base
 that changes privd and checks that init starts the new privd and that it
-serves. `sessions_test`, `session_smoke_test` and `extension_service_test`
-cover the sessions and the extensions' services.
+serves. `sessions_test`, `session_smoke_test` and `package_service_test`
+cover the sessions and the packages' services.
 
 ## For contributors
 
@@ -394,7 +394,7 @@ cover the sessions and the extensions' services.
 - [*sd_listen_fds(3)*](https://www.freedesktop.org/software/systemd/man/latest/sd_listen_fds.html)
   and Lennart Poettering's
   [*systemd for Developers I*](https://0pointer.de/blog/projects/socket-activation.html).
-  The socket-passing convention extensions' services speak, and the case for
+  The socket-passing convention packages' services speak, and the case for
   it.
 
 ## In the source
@@ -406,7 +406,7 @@ cover the sessions and the extensions' services.
 | `userland/src/apps/init/session.rs` | Sessions, and ending everything that carries a tag |
 | `userland/src/apps/init/control.rs` | `/run/init`: who may ask for what |
 | `userland/src/apps/init/reexec.rs` | Re-execution and the state it carries |
-| `userland/src/apps/init/extensions.rs` | Extensions' services |
+| `userland/src/apps/init/packages.rs` | Packages' services |
 | `userland/src/apps/init/network.rs` | Applying saved network settings as adapters appear |
 | `userland/src/init_control.rs` | The request grammar, the login tags and the descriptor layout |
 | `userland/src/apps/session.rs` | `/bin/session` |

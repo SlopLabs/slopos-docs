@@ -253,7 +253,7 @@ check.
 | Fails when | A program has no `PT_INTERP` (it is static), names an interpreter other than `/lib/ld-slopos.so.1`, lacks `libc.so` in `DT_NEEDED`, or has a `syscall` instruction in its executable code. The code is decoded with the `iced-x86` disassembler, and an image without section headers is decoded segment by segment |
 | Catches | A static program carries slibc's own copy. A system call made in place reaches the private surface `BASE_INTERFACE` numbers, or a Linux call, without the library that only grows in between. Either ties a program that changes on its own schedule to one base. The toolkit's crates compile into base programs too, so a raw call returning to one of them fails nothing else |
 | Tracked data | None. Its fixtures are tests in the same file, run by `just test-host` |
-| Runs | On either system, after every userland build (the `_build-userland` recipe), as `scripts/build_extension.sh` packs the apps' programs into the image `slopos-essentials`; whenever `build_extension.sh` packs an image, the toolchain's included; and after the tests userland build on the programs its test extensions carry |
+| Runs | On either system, after every userland build (the `_build-userland` recipe), as `scripts/build_package.sh` packs the apps' programs into the image `slopos-essentials`; whenever `build_package.sh` packs an image, the toolchain's included; and after the tests userland build on the programs its test packages carry |
 | Skips | Never. A named file that does not exist is an error |
 | Re-record | Nothing to record. Link the program dynamically against `libc.so` and call the system through it |
 

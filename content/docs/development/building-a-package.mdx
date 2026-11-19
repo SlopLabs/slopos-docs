@@ -1,14 +1,14 @@
 ---
-title: "Package an extension"
-description: "Lay out an extension, pack and sign it, install it on a SlopOS machine, and check that its daemon and command run."
+title: "Build a package"
+description: "Lay out a package, pack and sign it, install it on a SlopOS machine, and check that its daemon and command run."
 ---
 
-By the end of this page you will have packed an extension called `hello`,
+By the end of this page you will have built a package called `hello`,
 installed it on a SlopOS machine, and seen its daemon write to its log and its
 command run from any shell. You will also have shipped an update and know how
 to have a key you trust install updates without anyone being asked. For why
-extensions work the way they do, read
-[Extensions](/docs/architecture/extensions).
+packages work the way they do, read
+[Packages](/docs/architecture/packages).
 
 ## What you need first
 
@@ -16,10 +16,10 @@ extensions work the way they do, read
   The [development machine](/docs/self-hosting/development-machine)
   (`just boot`) and a computer you installed SlopOS on both qualify, and the
   first person on either is an administrator. A live boot from the install
-  medium does not: extensions need a disk root.
-- A checkout of SlopOS on the host, to pack the extension with `just
-  extension`. You can also pack it on the machine itself with `extctl build`,
-  which does not sign it; `just extension` signs it when you ask.
+  medium does not: packages need a disk root.
+- A checkout of SlopOS on the host, to build the package with `just
+  package`. You can also pack it on the machine itself with `pkgctl build`,
+  which does not sign it; `just package` signs it when you ask.
 - To install from the host, the machine [paired](/docs/self-hosting/remote-control)
   with it, so that `just remote` reaches it.
 - To sign, `ssh-keygen` on the host.
@@ -28,23 +28,23 @@ The example's programs are shell scripts, so nothing needs compiling. A
 compiled program must be linked dynamically against the base's `libc.so`
 through `/lib/ld-slopos.so.1`, as every program outside the base is. On a
 machine with the toolchain installed, `cc -o hellod hellod.c` links one that
-way; `just extension` and the install both refuse anything else.
+way; `just package` and the install both refuse anything else.
 
 ## 1. Lay out the tree
 
-An extension is a directory laid out as it will appear under `/opt/hello`,
-plus two files under `.extension/`. Make it anywhere on the host, or in your
+A package starts as a directory laid out as it will appear under `/opt/hello`,
+plus two files under `.package/`. Make it anywhere on the host, or in your
 home on the machine:
 
 ```text
 hello/
-  .extension/release
-  .extension/declare
+  .package/release
+  .package/declare
   bin/hello
   libexec/hellod
 ```
 
-`.extension/release` names the extension and its version:
+`.package/release` names the package and its version:
 
 ```text
 name     hello
@@ -52,7 +52,7 @@ version  1
 summary  Says hello
 ```
 
-`.extension/declare` says what it asks for: a user of its own, a command on
+`.package/declare` says what it asks for: a user of its own, a command on
 everyone's `PATH`, and a service that runs as that user:
 
 ```text
@@ -66,7 +66,7 @@ service hellod
 
 ```sh
 #!/bin/sh
-echo "Hello from the hello extension, version 1."
+echo "Hello from the hello package, version 1."
 ```
 
 `libexec/hellod` is the daemon. It writes a line when it starts and the date
@@ -88,12 +88,12 @@ chmod +x hello/bin/hello hello/libexec/hellod
 ```
 
 The base has no `chmod`, so on the machine make the directories first
-(`mkdir -p $HOME/hello/.extension $HOME/hello/bin $HOME/hello/libexec`),
+(`mkdir -p $HOME/hello/.package $HOME/hello/bin $HOME/hello/libexec`),
 write each script somewhere else and copy it into place with `install`,
 which makes the copy executable:
 `install hellod.sh $HOME/hello/libexec/hellod`.
 
-[Extension images](/docs/abi/extension-images) lists everything a
+[Package images](/docs/abi/package-images) lists everything a
 declaration can say: more users, state and settings directories, sockets,
 privileged actions, apps.
 
@@ -105,7 +105,7 @@ privileged actions, apps.
 From the SlopOS checkout, with the path to your tree:
 
 ```bash
-just extension ~/hello
+just package ~/hello
 ```
 
 The recipe builds the userland first if it is not built, so the first run
@@ -116,14 +116,14 @@ ask for:
 ```text
 name hello
 version 1
-image builddir/extensions/hello.ext
+image builddir/packages/hello.pkg
 root 3f9c2a1b7d4e…
-sidecar builddir/extensions/hello.meta
+sidecar builddir/packages/hello.meta
 grant - unasked - users hello commands hello
 ```
 
-`hello.ext` is the image and `hello.meta` its sidecar, which names the
-extension, its version and the image's root: the digest at the top of the
+`hello.pkg` is the image and `hello.meta` its sidecar, which names the
+package, its version and the image's root: the digest at the top of the
 SHA-256 tree that every block of the image is checked against when the
 machine reads it.
 
@@ -133,14 +133,14 @@ machine reads it.
 Pack it into `/var/tmp`, where the install in step 4 can read it:
 
 ```bash
-extctl build $HOME/hello /var/tmp
+pkgctl build $HOME/hello /var/tmp
 ```
 
 ```text
-hello 1: /var/tmp/hello.ext (root 3f9c2a1b7d4e…) and /var/tmp/hello.meta
+hello 1: /var/tmp/hello.pkg (root 3f9c2a1b7d4e…) and /var/tmp/hello.meta
 ```
 
-`extctl build` checks the image's shape but not its programs; the install
+`pkgctl build` checks the image's shape but not its programs; the install
 checks those.
 
 </Tab>
@@ -157,29 +157,29 @@ limits the owner set for the key.
 Decide before the first install. A name's images are one publisher's: the
 record keeps the key that signed the first one (or nobody), and every later
 image of that name must be signed by the same key, even one a person
-approves. Changing publisher means `extctl remove` first.
+approves. Changing publisher means `pkgctl remove` first.
 
 Make an Ed25519 key on the host if you have none for this:
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/slopos-extension
+ssh-keygen -t ed25519 -f ~/.ssh/slopos-package
 ```
 
-Pack again with `EXTENSION_KEY` naming it:
+Pack again with `PACKAGE_KEY` naming it:
 
 ```bash
-EXTENSION_KEY=~/.ssh/slopos-extension just extension ~/hello
+PACKAGE_KEY=~/.ssh/slopos-package just package ~/hello
 ```
 
-The output ends with an extra line, and `builddir/extensions/hello.meta.sig`
+The output ends with an extra line, and `builddir/packages/hello.meta.sig`
 now lies beside the sidecar:
 
 ```text
-signed builddir/extensions/hello.meta.sig with /home/you/.ssh/slopos-extension
+signed builddir/packages/hello.meta.sig with /home/you/.ssh/slopos-package
 ```
 
 The machine must trust the key once. `ceiling` names the capabilities its
-extensions may be granted and `user` what their unasked actions may hold
+packages may be granted and `user` what their unasked actions may hold
 together, each as names joined by commas, or `-` for none. `hello` asks for
 no capability, so `-` will do for both:
 
@@ -187,21 +187,21 @@ no capability, so `-` will do for both:
 <Tab value="From the host">
 
 ```bash
-just remote push ~/.ssh/slopos-extension.pub /var/tmp/
-just remote run -- extctl key add /var/tmp/slopos-extension.pub ceiling - user -
+just remote push ~/.ssh/slopos-package.pub /var/tmp/
+just remote run -- pkgctl key add /var/tmp/slopos-package.pub ceiling - user -
 ```
 
 </Tab>
 <Tab value="At the machine">
 
-Copy `~/.ssh/slopos-extension.pub` to the machine, here to `/var/tmp`,
+Copy `~/.ssh/slopos-package.pub` to the machine, here to `/var/tmp`,
 then:
 
 ```bash
-extctl key add /var/tmp/slopos-extension.pub ceiling - user -
+pkgctl key add /var/tmp/slopos-package.pub ceiling - user -
 ```
 
-The terminal prints `extctl: waiting for you to allow this on the screen`
+The terminal prints `pkgctl: waiting for you to allow this on the screen`
 and the desktop asks you to allow it. The details under the question show
 the command line, with the key's fingerprint and both ceilings. Choose
 *Change*.
@@ -219,23 +219,23 @@ SHA256:bbXpuKG6zhzdmnxq256TlqzFBzRl2f6OOg722cYNbU8 trusted with ceiling - and us
 <Tab value="From the host">
 
 ```bash
-just remote install --extension builddir/extensions/hello.ext
+just remote install --package builddir/packages/hello.pkg
 ```
 
-`just remote` runs `scripts/remote.py install --extension`. It refuses a
+`just remote` runs `scripts/remote.py install --package`. It refuses a
 sidecar that names another image than the one beside it, and otherwise
 pushes the image, and the sidecar and signature when they lie
-beside it, then runs `extctl install-signed` for a signed image or
-`extctl install` naming the root it pushed for an unsigned one. Either way it
-runs unasked, because the paired host may install extensions. Among its
+beside it, then runs `pkgctl install-signed` for a signed image or
+`pkgctl install` naming the root it pushed for an unsigned one. Either way it
+runs unasked, because the paired host may install packages. Among its
 output:
 
 ```text
-remote: pushed builddir/extensions/hello.ext: … bytes, sha256 …, root 3f9c2a1b7d4e…
+remote: pushed builddir/packages/hello.pkg: … bytes, sha256 …, root 3f9c2a1b7d4e…
 hello 1 installed; it runs as activation 2
 ```
 
-followed by `bootctl status` and `extctl status`.
+followed by `bootctl status` and `pkgctl status`.
 
 </Tab>
 <Tab value="At the machine">
@@ -246,11 +246,11 @@ directory must be readable by anyone:
 
 ```bash
 cd /var/tmp
-extctl install hello.ext
+pkgctl install hello.pkg
 ```
 
-The terminal prints `extctl: waiting for you to allow this on the screen`.
-The desktop asks whether to install an extension and give it what it asks
+The terminal prints `pkgctl: waiting for you to allow this on the screen`.
+The desktop asks whether to install a package and give it what it asks
 for. The details under the question show the command line, which names the
 image's root, its signer (`signer nobody`, or the key's fingerprint when
 `hello.meta.sig` lies beside the image) and the grant,
@@ -263,7 +263,7 @@ hello 1 installed; it runs as activation 2
 ```
 
 For a signed image, copy `hello.meta` and `hello.meta.sig` beside
-`hello.ext` and run `extctl install-signed hello.ext` instead. It asks no
+`hello.pkg` and run `pkgctl install-signed hello.pkg` instead. It asks no
 administrator anything.
 
 </Tab>
@@ -277,7 +277,7 @@ shown since the boot.
 At the machine, or with `just remote run -- ...` from the host:
 
 ```bash
-extctl status hello
+pkgctl status hello
 ```
 
 ```text
@@ -295,7 +295,7 @@ hello
 ```
 
 ```text
-Hello from the hello extension, version 1.
+Hello from the hello package, version 1.
 ```
 
 The daemon's output goes to its log:
@@ -311,17 +311,17 @@ hellod started
 followed by a line with the date for every minute it has run. The daemon
 runs as the user `hello`, and its log belongs to that user, not to you or to
 root, although the base's `ls -l` shows no owners to prove it. After a
-restart, `extctl status hello` still says `running`: init shows every enabled
-extension again at boot, checking it against its record first.
+restart, `pkgctl status hello` still says `running`: init shows every enabled
+package again at boot, checking it against its record first.
 
 ## 6. Ship an update
 
 Change the command's message to say `version 2`, raise the version in
-`.extension/release` to 2, and pack it again as in step 2 (with
-`EXTENSION_KEY` set if you signed version 1). Install it as in step 4.
+`.package/release` to 2, and pack it again as in step 2 (with
+`PACKAGE_KEY` set if you signed version 1). Install it as in step 4.
 
 A signed update goes in without a question; an unsigned one asks again, as a
-first install does. Either way `extctl status hello` now shows the new image
+first install does. Either way `pkgctl status hello` now shows the new image
 as `current` and the old one as `previous`, and `hello` prints the new
 message. `hellod` keeps running from the old image: nothing it runs or reads
 changed. Change `libexec/hellod` in the next version and init restarts it.
@@ -330,7 +330,7 @@ Installing changed bytes under a version number already installed is
 refused, so raise the version every time:
 
 ```text
-extctl: hello.ext: version 1 was installed with other bytes
+pkgctl: hello.pkg: version 1 was installed with other bytes
 ```
 
 ## 7. Roll back, turn off or remove
@@ -339,16 +339,16 @@ Each of these asks an administrator at the machine, and runs unasked from the
 paired host:
 
 ```bash
-extctl rollback hello
-extctl disable hello
-extctl enable hello
-extctl remove hello
+pkgctl rollback hello
+pkgctl disable hello
+pkgctl enable hello
+pkgctl remove hello
 ```
 
 `rollback` makes the previous image current again and lowers the version
 floor to it, but refuses the version it left to a signed install, so the
 next signed update has to be version 3. `disable` takes the
-extension away from `/opt/hello`, stops its service and removes its command
+package away from `/opt/hello`, stops its service and removes its command
 until `enable`. `remove` takes away its images, its data, settings and log,
 and gives up the name: the record keeps only its retired uids, and the next
 image of `hello`, from any publisher, goes in as a first install:
@@ -359,23 +359,23 @@ hello removed; any publisher's image of it goes in as a first install; its uids 
 
 If a program still runs as one of its uids, or something they own is left
 in a shared directory, the uids stay retired and the message says why; run
-`extctl remove hello` again once that is gone.
+`pkgctl remove hello` again once that is gone.
 
 ## What usually goes wrong
 
-- **`/.extension/declare names /opt/hello/libexec/hellod, which the image
+- **`/.package/declare names /opt/hello/libexec/hellod, which the image
   does not hold`.** The program is missing, or not executable when it was
   packed. Make it executable (`chmod +x` on the host, `install` on the
   machine) and pack again.
 - **`outside bin, libexec, lib and share`.** The tree holds something else at
-  its top. Only those four directories and `.extension` may be there.
-- **`a service's log, state and runtime directory are its extension's first
+  its top. Only those four directories and `.package` may be there.
+- **`a service's log, state and runtime directory are its package's first
   user's, so it declares a user`.** A service, `state` or `runtime` needs a
   `user` line, and so does an action.
-- **`statically linked, not against libc.so`** (from `just extension`,
+- **`statically linked, not against libc.so`** (from `just package`,
   `static, with no PT_INTERP`) or **`binds <name>, which nothing it needs
   exports`.** A compiled program was linked statically, or needs a function
-  the machine's `libc.so` does not have. `just extension` checks against the
+  the machine's `libc.so` does not have. `just package` checks against the
   host build's `libc.so`; a machine running an older base may lack a function
   a newer one has.
 - **`version 1 was installed with other bytes`** or **`is older than`**.
@@ -384,21 +384,21 @@ in a shared directory, the uids stay retired and the message says why; run
   key first (step 3).
 - **`it is another publisher's image of hello`.** The installed images were
   signed by another key, or by nobody. Sign with the key that signed them,
-  or `extctl remove hello` first.
-- **`hello is a person's name`.** The extension or one of its users has the
+  or `pkgctl remove hello` first.
+- **`hello is a person's name`.** The package or one of its users has the
   same name as a person on the machine. Rename it in `release`.
 - **The install fails reading the image although your session can read
   it.** The install reads it as uid 0 without the power to override file
   permissions. Put the image, and run the command, in a directory everyone
   can read, such as `/var/tmp`.
-- **`extctl status` says `stopped:` and a reason.** A check at activation
+- **`pkgctl status` says `stopped:` and a reason.** A check at activation
   refused the image, usually because its key was removed or a ceiling
-  lowered. Fix the cause and run `extctl enable hello`.
+  lowered. Fix the cause and run `pkgctl enable hello`.
 - **It installed but `not running`.** The machine booted with
-  `extensions=off`. The install says so: `extensions are off this boot, so
+  `packages=off`. The install says so: `packages are off this boot, so
   it is not shown`.
 
-Read next: [Extension images](/docs/abi/extension-images) for sockets,
+Read next: [Package images](/docs/abi/package-images) for sockets,
 settings in `/etc/hello`, privileged actions and apps, and
-[Extensions](/docs/architecture/extensions) for how the grant, the store and
+[Packages](/docs/architecture/packages) for how the grant, the store and
 the service supervision work.

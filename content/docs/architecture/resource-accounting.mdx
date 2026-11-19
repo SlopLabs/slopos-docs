@@ -46,8 +46,8 @@ but it still counts against its person's share, described next.
 The disk limit applies to blocks a program allocates while it runs. A file it
 wrote stays on disk after it exits and is charged to nobody, so this is not a
 disk quota. A program holding the capability to write raw disks, or the one
-to install extensions, has no disk limit at all: the installer fills a whole
-root in one process, and an extension's installer stores whole images
+to install packages, has no disk limit at all: the installer fills a whole
+root in one process, and a package's installer stores whole images
 ([Capabilities](/docs/architecture/authority)).
 
 The pinned-memory limit is set at boot to an eighth of the machine's usable

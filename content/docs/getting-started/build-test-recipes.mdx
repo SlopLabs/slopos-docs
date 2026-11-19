@@ -231,7 +231,7 @@ recipe's own description.
 | `just build-kernel-only` | Build the kernel ELF without the programs or the base |
 | `just install [VARIANT]`, `just install-kernel [VARIANT]` | On SlopOS only: build a system and try its base (with its kernel when it needs one), or try a build's kernel in the spare slot ([Updating SlopOS](/docs/self-hosting/updating)). `VARIANT` defaults to `release` |
 | `just iso` | Build `builddir/slop.iso` with `BOOT_CMDLINE` as its kernel command line. `PAYLOAD=1` adds the toolchain and a clone of `HEAD` in a partition the installer copies from; `REMOTE=1` packs a base paired with this host's remote-control broker |
-| `just extension <dir>` | Pack the extension laid out in `<dir>` into `builddir/extensions/<name>.ext` and its sidecar, signed when `EXTENSION_KEY` names a key ([Package an extension](/docs/development/packaging-an-extension)) |
+| `just package <dir>` | Build the package laid out in `<dir>` into `builddir/packages/<name>.pkg` and its sidecar, signed when `PACKAGE_KEY` names a key ([Build a package](/docs/development/building-a-package)) |
 | `just icons` | Render the shipped app icons at 64 and 128 pixels |
 | `just clean` | Remove compiler output under `builddir/target`, the `builddir/kernel-*.elf` files and the gates' probe builds under `builddir/gates` |
 | `just distclean` | `clean`, then remove `builddir/`, `test_output.log`, `fs/assets/ext4.img`, `fs/assets/ext4-tests.img` and the extracted llvm-project, rustc and vendored-crate trees under `third_party/`. Leaves the persistent root, the self-hosting and capacity images and `fs/assets/guest-push.git` alone |

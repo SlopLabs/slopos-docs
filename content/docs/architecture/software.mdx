@@ -6,13 +6,13 @@ description: "Where software that isn't part of the base lives, how programs and
 Everything SlopOS needs to boot, log you in and repair itself is in the
 [base](/docs/architecture/base), a read-only image that is replaced as a
 unit. Everything else comes in one of two forms. Software for everyone on
-the machine, the toolchain, the editor and the other apps among it, is an
-*image*: a sealed, signed filesystem that `extctl` installs and shows at
-`/opt/<name>` (see [Extensions](/docs/architecture/extensions)). A program
+the machine, the toolchain, the editor and the other apps among it, is a
+*package*: one sealed image that `pkgctl` installs and shows at
+`/opt/<name>` (see [Packages](/docs/architecture/packages)). A program
 you build for yourself is a file you copy into `~/.local` in your home, where
 only you will run it. None of it needs a reboot.
 
-Two promises follow from where software lives. A command an image provides,
+Two promises follow from where software lives. A command a package provides,
 or one in your `~/.local/bin`, can never take the place of a system tool you
 run by name, because the system's directories are searched first. And a
 library you put in `~/.local/lib` is never loaded into a program that holds
@@ -21,12 +21,12 @@ program. What SlopOS does not offer is a shared directory everyone may
 install into: there is no `/usr/local`.
 
 The page walks through why software leaves the base, the apps SlopOS ships
-as an image, and how programs and libraries are found.
+as a package, and how programs and libraries are found.
 
 ## Where it comes from
 
 The split between the system's own programs and everything else is
-FreeBSD's, which keeps its base apart from what packages install. Shipping
+FreeBSD's, which keeps its base apart from what its packages install. Shipping
 the software everyone shares as read-only images rather than files unpacked
 into a shared tree is the model of systemd's system extensions and of
 Android's APEX modules. `~/.local`, with programs in `~/.local/bin`, is the
@@ -53,7 +53,7 @@ Second, a place everyone runs programs from must be one nobody but the
 system can write. A shared directory the first person may write is a place
 where they can replace a command the second runs, and a group allowed to
 write it is no better, since everyone in the group can plant code for
-everyone else. So software for everyone goes in as an image: `extctl`
+everyone else. So software for everyone goes in as a package: `pkgctl`
 checks it against its signature and what it declares, an administrator
 approves it, and the kernel serves it read-only. A person's own builds stay
 in their own home.
@@ -69,8 +69,8 @@ entries, icons and the editor's manual they ship as the image
 gallery has no dock entry), and appear at `/opt/slopos-essentials`.
 
 The build stages the image's files in `builddir/apps`, with its
-`.extension/release` and `.extension/declare`, and packs them through
-`scripts/build_extension.sh` into `builddir/slopos-essentials/`. The image's
+`.package/release` and `.package/declare`, and packs them through
+`scripts/build_package.sh` into `builddir/slopos-essentials/`. The image's
 version is a UTC time stamp that moves only when the staged files do
 (`builddir/slopos-essentials.version`), so a root that already holds this
 build passes a repeat over.
@@ -82,17 +82,17 @@ Every root is offered the image, the way it is offered the toolchain's:
 | The host's image builders | `scripts/build_fs_image.sh` puts the image among the root's offered images | Every `just boot` and test image |
 | The installer | `/bin/installer` offers the new root the medium's `images/` | Installing SlopOS onto a disk |
 | Init on a live boot | init offers the medium's `images/` | Booting the install medium |
-| `just install` | `extctl install`, which an administrator approves | Building the system on SlopOS |
+| `just install` | `pkgctl install`, which an administrator approves | Building the system on SlopOS |
 
 An offered image goes in at boot without asking anyone, since only uid 0
-can offer one ([Extensions](/docs/architecture/extensions#installing-an-extension)
+can offer one ([Packages](/docs/architecture/packages#installing-a-package)
 has the rules). `just install` installs the new image only when the running
 `libc.so` is the one it was just built against. Otherwise it prints the
 command to run once the new base is running, since a freshly built app may
 call a function the running library does not export yet.
 
 Two checks keep the apps honest. `xtask programs`, which
-`build_extension.sh` runs as it packs the image, fails an app that is
+`build_package.sh` runs as it packs the image, fails an app that is
 statically linked, names a loader other than `/lib/ld-slopos.so.1`, does not
 list `libc.so` among the libraries it needs, or contains a `syscall`
 instruction of its own, since a system call made in place would bypass the
@@ -118,10 +118,10 @@ icon=org.slopos.editor.png
 PNG in the same share's `slopos/icons/`, beside which a copy at twice the
 size, `<icon>@2x.png`, waits for displays that need one. `boot=medium` marks
 an app shown only when the system booted from the install medium. The dock
-reads the entries at the start of a session from each image's share (only
-the apps the image declares), then `/usr/share` (the base) and
+reads the entries at the start of a session from each package's share (only
+the apps the package declares), then `/usr/share` (the base) and
 `~/.local/share`, in that order, and an entry with the same id as an earlier
-one replaces it, as XDG data directories rank. So an image's entry yields to
+one replaces it, as XDG data directories rank. So a package's entry yields to
 the base's and to yours, and you can override any app's entry with your own
 in `~/.local/share/slopos/apps`. The shell keeps no list of apps; `PATH`
 finds them.
@@ -134,19 +134,19 @@ The editor looks for its manual the same way, in `~/.local/share`, then
 The command search path puts the system first. A program started with no
 `PATH` gets `/bin:/sbin:/opt/bin` (`slopos_abi::fs::DEFAULT_PATH`), the
 same list `execvp` uses and the tools that search `PATH` share. A person's
-session puts their own directory between the system's and the images':
+session puts their own directory between the system's and the packages':
 
 ```text
 PATH=/bin:/sbin:/home/user/.local/bin:/opt/bin
 ```
 
 So nothing on a writable disk shadows a base tool, your own programs come
-before the commands images provide (`/opt/bin`, see
-[Extensions](/docs/architecture/extensions#commands-apps-and-settings)), and
+before the commands packages provide (`/opt/bin`, see
+[Packages](/docs/architecture/packages#commands-apps-and-settings)), and
 those come last.
 
 The shell reads a command's completion rules, when `SHELL_COMPLETION_PATH`
-names no directory, from the `share/shell/completions` of the image whose
+names no directory, from the `share/shell/completions` of the package whose
 command `/opt/bin/<command>` links to, then from the base's
 `/usr/share/shell/completions`.
 
@@ -158,7 +158,7 @@ a library by name in this order:
    loaded it (under `AT_SECURE`, only their absolute entries that don't use
    `$ORIGIN`);
 3. `/lib`, then `/usr/lib`;
-4. for a program of an image, that image's own `/opt/<name>/lib`;
+4. for a program of a package, that package's own `/opt/<name>/lib`;
 5. `$HOME/.local/lib`, only for a process that is neither `AT_SECURE` nor
    running as uid 0.
 
@@ -169,8 +169,8 @@ always tries `LD_LIBRARY_PATH` first.
 `AT_SECURE` is a flag the kernel sets for a program that starts holding any
 gated [capability](/docs/architecture/authority), or running as other ids
 than its starter's real ones, and for a program `exec` loads while the
-caller's effective ids differ from its real ones. Every program of an
-[image](/docs/architecture/extensions) starts with it too, however it was
+caller's effective ids differ from its real ones. Every program of a
+[package](/docs/architecture/packages) starts with it too, however it was
 started, so it never loads a library from a home. Skipping `~/.local/lib`
 for such a program, and for uid 0, means a library a person can write never
 ends up inside a program that holds more than that person does. The loader
@@ -183,9 +183,9 @@ if it is an absolute path.
   `~/.local/bin` and its libraries into `~/.local/lib`; that needs nothing
   from anyone. Your shell finds the program at once, since `~/.local/bin` is
   already on your `PATH`.
-- **Software for everyone is an image.** Pack it with
-  `scripts/build_extension.sh` and install it with `extctl install`, which an
-  administrator approves ([Package an extension](/docs/development/packaging-an-extension)).
+- **Software for everyone is a package.** Build it with
+  `scripts/build_package.sh` and install it with `pkgctl install`, which an
+  administrator approves ([Build a package](/docs/development/building-a-package)).
 - **An app follows `libc.so`.** Link programs you ship outside the base
   dynamically, as `cargo build` does for SlopOS by default.
 
@@ -199,7 +199,7 @@ ship. `dl_test` holds the loader to its search order.
 ## For contributors
 
 - **The base keeps what the security model or a repair needs, and what makes
-  private system calls directly.** Anything else belongs in an image. The
+  private system calls directly.** Anything else belongs in a package. The
   lists are in `scripts/lib/base.sh`.
 - **A program outside the base talks to `libc.so` alone.** If an app needs
   something new from the system, export it from `libc.so` (and record it with

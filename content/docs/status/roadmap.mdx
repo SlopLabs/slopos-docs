@@ -3,7 +3,7 @@ title: "Roadmap"
 description: "The plans we are working on, what each is for, how far along it is, and what has landed."
 ---
 
-As of 2026-11-19, SlopOS commit `cfd13887`.
+As of 2026-11-19, SlopOS commit `35efac95`.
 
 This page lists the work that is planned next and the larger plans that have
 landed since August 2026. Today four plans are open (installed software,
@@ -28,20 +28,23 @@ against the tree before relying on it.
 ## One form for installed software
 
 **What it is for:** software reaching a machine in one form. What someone
-distributes is an image, checked on every read and shown at `/opt/<name>`;
+distributes is a package, an image checked on every read and shown at
+`/opt/<name>`;
 what a person builds is a file in their own `~/.local`, and no directory a
 person can write is shared. (`plans/installed-software.md`)
 
-**Where it stands:** phases 1 to 8 are done. The toolchain is built as an
+**Where it stands:** all nine phases are done. The toolchain is built as an
 image, `slopos-toolchain`, and the apps outside the base are one,
 `slopos-essentials`; every root is offered them and init installs an offered
 image at boot with nobody to approve it. An image reads as fast as the root
 and installs in one pass over it. `/usr/local` and `tree-install` are gone,
 so `PATH` is `/bin:/sbin:/opt/bin` plus a person's `~/.local/bin`. A name's
-images are one publisher's until `extctl remove` gives the name up. There is
+images are one publisher's until `pkgctl remove` gives the name up. There is
 no fixed number of images: one filesystem serves every activation, and what
-the shown images hold is bounded by an eighth of usable memory
-([Extensions](/docs/architecture/extensions), [Installed
+the shown images hold is bounded by an eighth of usable memory. The last
+phase named installed software a *package* and its tool `pkgctl`; the rename
+took base interface 16
+([Packages](/docs/architecture/packages), [Installed
 software](/docs/architecture/software)).
 
 Phase 8 measured what an image costs, with a hundred small images shown at
@@ -53,14 +56,7 @@ hundred images cost the kernel under 0.3 s at boot, which is why images stay
 shown at boot rather than at first use. The `fsperf` gate caps the heap and
 the reads per image (`FSACT`, see [Test output](/docs/abi/ktap-test-output)).
 
-Still to do:
-
-1. Phase 9: retire the word *extension*, which still names the crates,
-   `extctl`, the calls, the capability, the store, the privd actions, the
-   image format and the boot option. The rename takes a `BASE_INTERFACE`
-   number.
-
-Beyond the phases the plan lists, without an order: a front end that
+What the plan leaves for later, without an order: a front end that
 fetches signed images, more of an image's identity (a short id from the
 signing key, a successor key), installs by someone who is not an
 administrator, confining an image's programs to its grant, and a recipe per
@@ -179,7 +175,7 @@ here:
 | SlopOS on bare metal | 2026-10-11 | [Installing SlopOS](/docs/self-hosting/installing), [CPU frequency](/docs/architecture/cpu-frequency), [Networking](/docs/architecture/networking), [Diagnosing the kernel](/docs/development/diagnostics), [Remote control](/docs/self-hosting/remote-control) |
 | Principals, brokered authority and consent | 2026-10-14 | [Capabilities](/docs/architecture/authority), [Privileged actions](/docs/architecture/privd) |
 | Live userland: one sealed base, replaced without a reboot | 2026-10-16 | [Base system](/docs/architecture/base), [Installed software](/docs/architecture/software), [Init and services](/docs/architecture/init) |
-| System extensions | 2026-10-23 | [Extensions](/docs/architecture/extensions) |
+| Packages: images with services and grants | 2026-10-23 | [Packages](/docs/architecture/packages) |
 | Users and login | 2026-10-23 | [Users and file permissions](/docs/architecture/users), [Sessions and login](/docs/architecture/sessions) |
 | A graphical installer | 2026-10-25 | [Installing SlopOS](/docs/self-hosting/installing) |
 | The desktop's look, words and toolkit | 2026-10-28 | [Desktop](/docs/architecture/desktop), [Windowing](/docs/architecture/userland-windowing) |

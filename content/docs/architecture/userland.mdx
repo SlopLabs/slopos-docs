@@ -107,12 +107,12 @@ of the C library, however many shared libraries it loads, so there is only
 one `malloc` and one `errno` to get confused about.
 
 The loader searches where Linux's does (`LD_LIBRARY_PATH`, the `RUNPATH` or
-`RPATH` of the object that needs the library, `/lib`, `/usr/lib`), then an
-extension's own `lib` directory for that extension's programs, and last
+`RPATH` of the object that needs the library, `/lib`, `/usr/lib`), then a
+package's own `lib` directory for that package's programs, and last
 `~/.local/lib`, which it skips for a process running as
 uid 0 or marked `AT_SECURE` (the kernel's mark on a program that starts
 holding a capability beyond those every program has, or running with ids
-other than the real ids of whoever started it, or that is an extension's
+other than the real ids of whoever started it, or that is a package's
 program, whoever starts it), so a library a person can
 write never reaches a program holding more than they do.
 [Installed software](/docs/architecture/software#how-programs-and-libraries-are-found)
@@ -169,14 +169,14 @@ and a file without one is run as a shell script, as POSIX requires.
 
 When nothing sets `PATH`, the search path is `/bin:/sbin:/opt/bin`.
 The system's directories come first, so no installed command can replace a
-system tool by accident, and the commands extensions provide come last. A
+system tool by accident, and the commands packages provide come last. A
 person's session adds their own `~/.local/bin` between the two (see
 [Installed software](/docs/architecture/software)). Only exported variables
 reach the programs the shell starts.
 
 Tab completes command names, and arguments for commands that have completion
 rules; rules ship in the base for git, cargo, ninja, `keymap`, `mkdir` and
-`rmdir`, and an extension's command may bring its own.
+`rmdir`, and a package's command may bring its own.
 
 The shell can also run holding power: `priv -s` starts one with the
 capabilities `priv` grants (see [Privileged actions](/docs/architecture/privd)),
@@ -213,7 +213,7 @@ may ask you first (see [Privileged actions](/docs/architecture/privd)).
 | Kind | Programs |
 |---|---|
 | People and sessions | `users` (the people on the machine, their passwords and who administers it), `session` (restart, end or lock your session, or show the login screen), `login` (the console's login prompt), `priv` (run a command with power over the machine's settings, the job `sudo` does elsewhere), `endtask` (end another person's program), `prefs` (your own preferences: the desktop's background and clock and your keyboard layout), `/sbin/authcheck` (checks a password) |
-| Booting, installing and updating | `bootctl` (kernel slots, bases and crash records), `installer` and `installer-ui`, `extctl` (extensions), `halt` (power off or restart) |
+| Booting, installing and updating | `bootctl` (kernel slots, bases and crash records), `installer` and `installer-ui`, `pkgctl` (packages), `halt` (power off or restart) |
 | Disks | `mke2fs`, `e2fsck`, `resize2fs`, `tune2fs`, `debugfs` and `dumpe2fs` in `/sbin`, from e2fsprogs |
 | Looking inside | `sysmon` (the System Monitor), `cpufreq`, `prof` (the kernel's profiler), `kconsole` (the diagnostic console's reports) |
 | Network | `ip` (interfaces, addresses and routes, until the next start), `netctl` (the network settings the computer keeps and starts with), `ss` (sockets), `ping`, `nc` (a TCP or UDP connection), `nmap` (the machines on the local network), `curl` (HTTP and HTTPS), `remoted` (the paired agent a host drives, see [Remote control](/docs/self-hosting/remote-control)) |
@@ -239,9 +239,9 @@ implemented here. It serves three jobs:
   own pinned certificate authority.
   [Networking](/docs/architecture/networking) covers TLS.
 - **Signatures**: Ed25519, verified strictly as RFC 8032 describes, and SSH
-  signatures in the format `ssh-keygen -Y sign` writes. `extctl` checks a
-  signed extension and its signed configuration this way (see
-  [Extensions](/docs/architecture/extensions)).
+  signatures in the format `ssh-keygen -Y sign` writes. `pkgctl` checks a
+  signed package and its signed configuration this way (see
+  [Packages](/docs/architecture/packages)).
 - **Password hashes**: Argon2id, which uses BLAKE2b inside, as RFC 9106
   specifies it. The accounts record stores each person's password this way
   (see [Users and file permissions](/docs/architecture/users)).
@@ -287,8 +287,8 @@ non-blocking descriptors, as it would on any Unix.
 - **Use `fsync` and `rename`** to replace files safely, as on any Unix;
   [Crash recovery](/docs/architecture/crash-recovery) explains what the disk
   promises.
-- **Install it into `~/.local`** by copying it there, or for everyone as an
-  extension image (see [Installed software](/docs/architecture/software)).
+- **Install it into `~/.local`** by copying it there, or for everyone as a
+  package image (see [Installed software](/docs/architecture/software)).
 
 ## How it is tested
 

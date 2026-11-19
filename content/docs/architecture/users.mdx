@@ -152,15 +152,15 @@ uid 0 either ([Privileged actions](/docs/architecture/privd)).
 |---|---|---|
 | 0 | `root` | init, privd, and the programs privd starts for most actions |
 | 1 to 99 | the base's own users | `greeter` (uid 50), which runs the login screen and the console's login prompt |
-| 100 to 999 | extensions' users | each extension's services and actions, under users of its own ([Extensions](/docs/architecture/extensions)) |
+| 100 to 999 | packages' users | each package's services and actions, under users of its own ([Packages](/docs/architecture/packages)) |
 | 1000 to 59999 | people | everything a person runs: their desktop, terminal and shells, the commands `priv` runs for them |
 | 65534 | `nobody` | nothing; it is listed because Unix programs expect it |
 
-An extension takes uids only when its images are granted a user: then it
+A package takes uids only when its images are granted a user: then it
 keeps one for its own name too, its *number*, from which init makes its
-services' login tags. An extension granted no user takes no uid and has no
-number. Either way `users add` refuses an installed extension's name. When
-`extctl remove` takes an extension away, its uids become *retired* in the
+services' login tags. A package granted no user takes no uid and has no
+number. Either way `users add` refuses an installed package's name. When
+`pkgctl remove` takes a package away, its uids become *retired* in the
 store's record. Once init has stopped its services, the removal deletes
 what those uids own directly in `/tmp`, `/var/tmp` and `/dev/shm`, and
 gives the uids back when nothing they own is found deeper and no task has
@@ -170,7 +170,7 @@ another uid's directory could put a link under the walk.
 
 uid 1000 is the *first person*, the one the installer creates. Their home is
 always `/home/user`, whatever name they chose, because the ownership map
-below names that path. The Wheel of Fate and an extension's session
+below names that path. The Wheel of Fate and a package's session
 services run as the first person, and `remoted` as the person the accounts
 record names for it (the first administrator unless set otherwise). Every
 person has a group of their own whose gid is their uid. Administrators are also
@@ -219,7 +219,7 @@ Nothing is handed over between people: init's boot only lays out the root.
 Where something makes the first person's home, it is `0755` while the
 accounts record holds at most one person (`root_layout::alone`; a root with
 no record counts as one person) and `0700` otherwise. No person writes
-where others' programs are found: software for everyone is an extension
+where others' programs are found: software for everyone is a package
 image, and a person's own builds go in their `~/.local`
 ([Installed software](/docs/architecture/software)).
 
@@ -275,12 +275,12 @@ you choose none.
 
 ### The user database
 
-From the record and the installed extensions' users, SlopOS writes the files
+From the record and the installed packages' users, SlopOS writes the files
 every Unix program reads:
 
 | File | Mode | Holds |
 |---|---|---|
-| `/etc/passwd` | `0644` | root, `greeter`, the people, the extensions' users, then `nobody`; a person's shell is `/bin/shell`, everyone else's but root's `/bin/false` |
+| `/etc/passwd` | `0644` | root, `greeter`, the people, the packages' users, then `nobody`; a person's shell is `/bin/shell`, everyone else's but root's `/bin/false` |
 | `/etc/group` | `0644` | root, `admin` listing the administrators, then a group of each user's own |
 | `/etc/shadow` | `0600` | each person's password hash, empty for none |
 
@@ -354,7 +354,7 @@ administrator to type their password into the desktop's dialog
 
 - A name is a lowercase letter followed by lowercase letters, digits, `-` and
   `_`, at most 32 bytes, and not one the base keeps (`root`, `nobody`, `admin`,
-  `greeter`) or an extension's user holds.
+  `greeter`) or a package's user holds.
 - The last administrator stays one, and the first person can't be removed,
   because they hold the workspace at `/src`.
 - An administrator without a password is asked to set one when they add
@@ -431,7 +431,7 @@ test vectors.
   allocated.
 - **Database writers take the store's lock** (`ACCOUNTS_STORE.lock`, a file
   beside the store) across reading the record and writing the database,
-  `extctl` among them after an extension changes, so the last database
+  `pkgctl` among them after a package changes, so the last database
   written matches the newest record. `/etc/shadow` is written first and from
   the record alone.
 - **Secrets are typed through `userland/src/secret.rs`.** It turns echo off
@@ -469,7 +469,7 @@ test vectors.
 | `slopos-ostd/src/process/cred.rs` | `slopos_ostd::process::cred`: credentials, the id rules and the permission checks |
 | `fs/src/vfs/perm.rs`, `fs/src/vfs/ops.rs` | Where the filesystem applies them |
 | `core/src/syscall/cred_handlers.rs` | The id system calls |
-| `abi/src/fs.rs` | The uid ranges (`EXTENSION_UIDS`, `PERSON_UIDS`), the ownership map, and the directories the kernel keeps in place (`KEPT_DIRS`) |
+| `abi/src/fs.rs` | The uid ranges (`PACKAGE_UIDS`, `PERSON_UIDS`), the ownership map, and the directories the kernel keeps in place (`KEPT_DIRS`) |
 | `userland/src/root_layout.rs` | Laying out a root, and the owners record |
 | `accounts-core/` | The accounts record (`slopos_accounts_core::record`), password hashes (`slopos_accounts_core::password`), the three database files (`slopos_accounts_core::{passwd, group, shadow}`) and the porcelain listing |
 | `userland/src/accounts.rs`, `userland/src/sealed.rs`, `userland/src/secret.rs` | The store, sealed files, and reading a typed secret |

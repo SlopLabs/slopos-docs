@@ -3,7 +3,7 @@ title: "What works"
 description: "What SlopOS can do today, in QEMU and on one real laptop."
 ---
 
-As of 2026-11-19, SlopOS commit `cfd13887`.
+As of 2026-11-19, SlopOS commit `35efac95`.
 
 SlopOS boots, runs a desktop for several people with their own accounts,
 keeps your files across reboots and crashes, talks to the network over three
@@ -44,7 +44,7 @@ so ported C and Rust code finds the common calls where it expects them, and a
 call it lacks fails with `ENOSYS`. 47 more are SlopOS's own, numbered densely
 from the start of the private range. Those calls make up the *base
 interface*, numbered so that a kernel can say which bases it serves; at this
-commit a kernel serves interface 15 alone, since before v1 it serves only
+commit a kernel serves interface 16 alone, since before v1 it serves only
 its own tree's ([System calls](/docs/architecture/syscalls)). The counts are
 the handlers in the kernel's two dispatch tables
 (`core/src/syscall/handlers.rs`), and the interfaces are
@@ -86,7 +86,7 @@ person hold none that change the system: the most any of them holds is the
 compositor's hold on the screen and the input. When one needs more (to
 install a kernel, add a person or power the machine off), it asks a broker,
 privd, which carries out one of 41 named actions (the `action` lines of the
-base's policy, `assets/privd/actions`, to which an installed extension may add
+base's policy, `assets/privd/actions`, to which an installed package may add
 its own), after asking the person in a dialog, or at a text console's prompt,
 when the action says so. `priv` runs a command with more power the same way,
 as `sudo` would ([Privileged actions](/docs/architecture/privd)).
@@ -140,7 +140,7 @@ checked on every read and shown at `/opt/<name>`, or a file a person copied
 into their own `~/.local` ([Installed
 software](/docs/architecture/software)); images add commands, apps, services
 and actions with a grant the computer's owner approved
-([Extensions](/docs/architecture/extensions)). The toolchain and the apps
+([Packages](/docs/architecture/packages)). The toolchain and the apps
 outside the base are two images, which every root is offered and init
 installs at boot.
 
@@ -258,7 +258,7 @@ Every base carries these programs, listed in `scripts/lib/base.sh`; `init`,
 ```text
 init privd shell coreutils terminal compositor roulette halt bootctl installer
 installer-ui sysmon nmap ip keymap ss nc curl ping oops_smoke cpufreq remoted
-kconsole endtask prof session login extctl users authcheck priv netctl prefs
+kconsole endtask prof session login pkgctl users authcheck priv netctl prefs
 settings mke2fs e2fsck resize2fs tune2fs debugfs dumpe2fs
 ```
 

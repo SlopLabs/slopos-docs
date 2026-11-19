@@ -1,60 +1,63 @@
 ---
-title: "Extensions"
+title: "Packages"
 description: "How software that is not part of the base gets daemons, privileged helpers and commands, installed by the computer's owner and checked on every read."
 ---
 
-import { ExtensionStack } from '@/components/diagrams/extension-stack';
+import { PackageStack } from '@/components/diagrams/package-stack';
 
-An *extension* is system software that does not ship in the base, packed as
-one read-only image. Once the computer's owner installs it, it can do what
-system software does on other systems: run a daemon from boot, as a user of
+A *package* is software that does not ship in the base, packed as one
+read-only image. It can be as plain as an editor, and once the computer's
+owner installs it, it can also do what system software does on other
+systems: run a daemon from boot, as a user of
 its own, holding the capabilities it was granted, on network ports or sockets
 that init keeps for it; offer privileged helpers that apps ask
 [privd](/docs/architecture/privd) for, as they ask for the base's; put
 commands on everyone's `PATH` and apps in the dock; and keep the computer's
 settings for it in `/etc/<name>`. It appears, read-only, at `/opt/<name>`.
 
-You can rely on a few things. Every block of an extension is checked against
-a hash before any program reads it. An extension gets exactly what the owner
-approved, never more than the base allows any extension, and never anything
-that could change the base, the boot chain, the extensions themselves, the
+You can rely on a few things. Every block of a package is checked against
+a hash before any program reads it. A package gets exactly what the owner
+approved, never more than the base allows any package, and never anything
+that could change the base, the boot chain, the packages themselves, the
 screen and keyboard, or who a process is. Nothing it ships can replace a base
 command, and its programs reach SlopOS through `libc.so` alone, the interface
-that only grows. Each extension keeps its previous image for rollback, can be turned off by itself,
-and the whole set can be skipped for one boot with `extensions=off`.
+that only grows. Each package keeps its previous image for rollback, can be turned off by itself,
+and the whole set can be skipped for one boot with `packages=off`.
 
-What isn't promised: an extension is trusted with what it is granted, and some
+What isn't promised: a package is trusted with what it is granted, and some
 grants (raw disk access, mounting, reading and writing every file) amount to
-the whole computer. Extensions cannot depend on each other or share
+the whole computer. Packages cannot depend on each other or share
 libraries, there is no repository and nothing updates them automatically, and
 the kernel checks no signature itself: a base program does, before it asks
 the kernel to show an image.
 
-This page explains why the base alone is not enough, how an extension goes
+This page explains why the base alone is not enough, how a package goes
 in and appears, and what its services, actions, commands and settings can
-do. [Package an extension](/docs/development/packaging-an-extension) walks
+do. [Build a package](/docs/development/building-a-package) walks
 through building and installing one, and
-[Extension images](/docs/abi/extension-images) is the exact format.
+[Package images](/docs/abi/package-images) is the exact format.
 
 ## Where it comes from
 
-None of the parts is new. systemd's
+None of the parts is new. The word is the
+[Filesystem Hierarchy Standard](https://specifications.freedesktop.org/fhs/latest/opt.html)'s,
+which reserves `/opt/<package>` for each add-on software package. systemd's
 [system extension images](https://www.freedesktop.org/software/systemd/man/latest/systemd-sysext.html)
 extend a host's `/usr` and `/opt` with read-only images. The tree of SHA-256 hashes
-that follows an extension's filesystem, checked as each block is read, is
+that follows a package's filesystem, checked as each block is read, is
 Linux's [dm-verity](https://docs.kernel.org/admin-guide/device-mapper/verity.html)
 tree, laid out byte for byte as `veritysetup` writes it. Android's
 [APEX](https://source.android.com/docs/core/ota/apex) packages are
 dm-verity-backed ext4 images whose updates must be signed by the same key as
 the copy built into the device, which is the rule SlopOS applies to signed
-updates. An extension ships privileged actions the way a program ships
+updates. A package ships privileged actions the way a program ships
 [polkit](https://polkit.pages.freedesktop.org/polkit/polkit.8.html) action
 files, its services take their sockets the way a systemd service does
 through `LISTEN_FDS`, its settings are edited the way `sudoedit` edits a
 file, and its signatures are the ones `ssh-keygen -Y sign` makes.
 
 What is SlopOS's own is how the pieces meet the rest of the system: the
-kernel attests an extension's programs as the extension's, the owner rather
+kernel attests a package's programs as the package's, the owner rather
 than a vendor grants capabilities, and an image goes in and out while the
 system runs.
 
@@ -63,7 +66,7 @@ system runs.
 The [base](/docs/architecture/base) is the read-only userland that every
 kernel slot boots. Adding a daemon to it would tie the daemon's releases to
 the system's and grow an image the kernel keeps in memory. The usual
-alternative on Unix is a package that a root process unpacks into `/usr` or
+alternative on Unix is an archive that a root process unpacks into `/usr` or
 `/opt`. That cannot work on SlopOS, for three reasons:
 
 - **Power comes from what a program is, not where it lives.** privd lets an
@@ -77,10 +80,10 @@ alternative on Unix is a package that a root process unpacks into `/usr` or
   dropped a file there" proves nothing, so an install has to say exactly
   what it grants, and something has to hold it to that.
 - **The owner decides, not a vendor.** No signing key is built in. The
-  person who owns the computer approves an extension, or trusts a key to
+  person who owns the computer approves a package, or trusts a key to
   approve updates on their behalf, within limits they set.
 
-So an extension keeps three things apart: the *measurement* (the hash that
+So a package keeps three things apart: the *measurement* (the hash that
 names the image's bytes), the *authority* that vouched for those bytes (a
 person's approval or a trusted key's signature) and the *grant* (the
 capabilities, users and commands it gets).
@@ -89,13 +92,13 @@ capabilities, users and commands it gets).
 
 ### The image
 
-An extension is a single file: an ext4 volume, then a tree of SHA-256 hashes
+A package's image is a single file: an ext4 volume, then a tree of SHA-256 hashes
 over the volume's 4 KiB blocks. The hash of the tree's top block is the
 image's *root*, and it names the image: change any byte and the root
 changes. The volume holds what will appear under `/opt/<name>` (`bin/`,
-`libexec/`, `lib/` and `share/`) and three files under `/.extension/`:
+`libexec/`, `lib/` and `share/`) and three files under `/.package/`:
 
-- `release` names the extension and its version, a number updates are
+- `release` names the package and its version, a number updates are
   ordered by;
 - `declare` says what it asks for: its users, services, actions, commands,
   apps and directories;
@@ -108,13 +111,13 @@ binds a function neither of those exports, and a statically linked one,
 which would carry its own copy of the C library and bypass the interface
 that only grows. Shell scripts need nothing.
 
-### Installing an extension
+### Installing a package
 
-`/bin/extctl` installs extensions. Here is what happens when the owner
+`/bin/pkgctl` installs packages. Here is what happens when the owner
 installs one called `hello`, whose daemon `hellod` runs as its own user and
 whose command `hello` goes on the `PATH`:
 
-1. **Read and check, as the person.** `extctl install hello.ext` opens the
+1. **Read and check, as the person.** `pkgctl install hello.pkg` opens the
    image, computes its root, reads its declaration and works out the grant.
    If `hello.meta.sig` lies beside it, it also notes which key signed the
    image, trusted or not; otherwise the signer is nobody:
@@ -127,19 +130,19 @@ whose command `hello` goes on the `PATH`:
    is only ever asked about something that would go in. That check is what
    the image says (its name, grant, signer, ceilings and clashes); the
    contents are the mechanism's to check, after the copy.
-2. **Ask.** `extctl` asks privd for the action
-   `org.slopos.extension.install`. The command line privd runs names the
+2. **Ask.** `pkgctl` asks privd for the action
+   `org.slopos.package.install`. The command line privd runs names the
    image's root, its signer and the grant in full, so that is what the
    person approves (privd shows the signer as *Signed by*):
 
    ```text
-   /bin/extctl install hello.ext 3f9c…e1 name hello signer nobody grant - unasked - users hello commands hello
+   /bin/pkgctl install hello.pkg 3f9c…e1 name hello signer nobody grant - unasked - users hello commands hello
    ```
 
    An administrator approves it when privd asks; a person who is not an
    administrator needs an administrator's password.
-3. **Check again, as the mechanism.** privd runs `extctl` again as uid 0
-   holding two capabilities, `ExtensionUpdate` and `Seal`. It reads the
+3. **Check again, as the mechanism.** privd runs `pkgctl` again as uid 0
+   holding two capabilities, `PackageUpdate` and `Seal`. It reads the
    image itself and refuses it if it is not the root that was approved, was
    not signed by the signer named, or asks for anything the grant line does
    not say. It holds the image to the rules every install keeps:
@@ -152,13 +155,13 @@ whose command `hello` goes on the `PATH`:
    - the version is above every version installed before (the same version
      only with the same bytes);
    - every capability asked for is inside the *base's ceiling*
-     (`/usr/share/slopos/privd/extensions`, sealed in the base), and none is
-     one that could change the base, the boot chain, the extensions, the
+     (`/usr/share/slopos/privd/packages`, sealed in the base), and none is
+     one that could change the base, the boot chain, the packages, the
      seats, another process's signals or who a process is;
    - every program binds only what `libc.so` and the image's own libraries
      export;
-   - no other installed extension declares the same command or user.
-4. **Store.** The image is read once. `extctl` copies it into the store in
+   - no other installed package declares the same command or user.
+4. **Store.** The image is read once. `pkgctl` copies it into the store in
    large chunks while another thread hashes each block into the tree and
    each file against the manifest as the chunks pass, and the copy is
    refused unless the tree's root is the one named. The copy is sealed and
@@ -166,7 +169,7 @@ whose command `hello` goes on the `PATH`:
    later reader holds each data block to that tree anyway. A new record says
    what was installed, who signed it and what it was granted, and gives
    `hello` a uid.
-5. **Show.** `extctl` asks the kernel to activate the image at `/opt/hello`
+5. **Show.** `pkgctl` asks the kernel to activate the image at `/opt/hello`
    (next section). Then it writes the user database, links
    `/opt/bin/hello`, and tells init, which starts `hellod`.
 
@@ -176,57 +179,57 @@ The terminal says what happened:
 hello 1 installed; it runs as activation 3
 ```
 
-On a terminal, `extctl install` keeps one line on standard error up to date
+On a terminal, `pkgctl install` keeps one line on standard error up to date
 while it works: reading the image, copying it with a progress bar, saving
 the copy, checking its files, starting it and finishing, each with how long
 it has run. The line is taken back before the result, which ends with how
 long the install took.
 
 A second way in needs no question. The owner can trust an Ed25519 SSH key
-with `extctl key add`, giving it two limits: a *ceiling* of capabilities its
-extensions may hold, and a `user` ceiling for what their unasked actions may
+with `pkgctl key add`, giving it two limits: a *ceiling* of capabilities its
+packages may hold, and a `user` ceiling for what their unasked actions may
 hold (below). An image packed with a *sidecar*, a three-line file naming the
-extension, its version and its root, and signed with that key goes in with
-`extctl install-signed` with no question to an administrator who runs it, as
+package, its version and its root, and signed with that key goes in with
+`pkgctl install-signed` with no question to an administrator who runs it, as
 long as it fits both ceilings and the base's. The record keeps the key that
 signed a name's images, and a name's images are one publisher's: that key's
 updates go in unasked while it is trusted, the person can approve one by
 hand like a first install, and an image another key signed is refused. A
-signed update does not turn back on an extension the person turned off, and
+signed update does not turn back on a package the person turned off, and
 does not bring back one the person removed.
 
 A third way is for software the system itself ships. An image uid 0 puts in
-`/var/lib/slopos/offered`, as `<name>.ext` beside its sidecar, goes in at
-boot with nobody asked: init runs `extctl install-offered` after the user
-database is brought up to date and before the extensions start (not with
-`extensions=off`), and a live boot offers the install medium's `images/`.
+`/var/lib/slopos/offered`, as `<name>.pkg` beside its sidecar, goes in at
+boot with nobody asked: init runs `pkgctl install-offered` after the user
+database is brought up to date and before the packages start (not with
+`packages=off`), and a live boot offers the install medium's `images/`.
 Only uid 0 can write that directory, the ones above it and the files in it.
 An offered image must ask for nothing: no user, service, action, state,
 settings or runtime directory. It must be signed by nobody, and it never
 goes in over a name a key's images hold, a name that was removed, or a
 version that was rolled back from. A version the record already has is
-passed over without opening the image, and an extension the person turned
+passed over without opening the image, and a package the person turned
 off stays off.
 
 **Versions only go up.** The record keeps a *version floor*: each install
 raises it to the version installed, and only a rollback lowers it. A version
 below the floor is refused, and so is the floor's own version with other
-bytes. `extctl rollback hello` makes the previous image current again and
+bytes. `pkgctl rollback hello` makes the previous image current again and
 lowers the floor to it, but the version it left is refused to signed
 installs until a newer one goes in, so an update withdrawn for a fault
-cannot come back unasked. `extctl remove hello` takes the extension away
+cannot come back unasked. `pkgctl remove hello` takes the package away
 with its data, settings and log, and gives up the name: its record keeps
 only its retired uids and its settings' serial number, and any publisher's
 image of `hello` then goes in as a first install, never unasked.
 
 ### How an image appears under /opt
 
-The kernel call `ext_activate(name, fd, digest)` shows the image that `fd`
+The kernel call `pkg_activate(name, fd, digest)` shows the image that `fd`
 reads at `/opt/<name>`, trusting the caller that `digest` is its root. Only a
-process holding `ExtensionUpdate` may make it, and in practice `extctl` is
+process holding `PackageUpdate` may make it, and in practice `pkgctl` is
 the only caller, run by init at boot or by privd as an action's mechanism.
 
-<ExtensionStack />
+<PackageStack />
 
 The kernel reads the image where it lies, through a device that checks every
 block against the tree on its way in, as dm-verity does. A block that does
@@ -234,11 +237,11 @@ not match fails the read that meets it with `EIO`, and the kernel log says
 so:
 
 ```text
-EXT: image block 812 fails its tree
+PKG: image block 812 fails its tree
 ```
 
 Every read of a bad block fails, but the kernel limits how often it writes
-that line, because any program that can read the extension's files can
+that line, because any program that can read the package's files can
 provoke it. A damaged image therefore logs a few lines and a count of those
 it held back, and cannot push everything else out of the log.
 
@@ -247,71 +250,71 @@ does not vouch for reaches a program. Above the device, the volume is served
 by an ext4 instance of its own, read-only. Before showing it, the kernel walks
 the whole tree once and refuses anything a path could not name on its own,
 such as a file at two names. That walk is also how the kernel can later tell
-a peer which file of the extension it is running.
+a peer which file of the package it is running.
 
 The mount at `/opt/<name>` is read-only and pinned: no unmount takes it away
 and no mount covers it, so `/opt/hello/bin/hello` is always the image's file.
 Each activation is numbered, never reusing a number within a boot, and the
 number is part of every inode it serves. So a program started from one image
 is told apart from the same path in the next. That is also what lets the
-kernel treat an extension's programs specially: whoever starts one, it starts
+kernel treat a package's programs specially: whoever starts one, it starts
 in secure mode (`AT_SECURE`, which
-[Capabilities](/docs/architecture/authority) describes). A program of an
-extension speaks as that extension to privd and to its peers, so it must not
+[Capabilities](/docs/architecture/authority) describes). A program of a
+package speaks as that package to privd and to its peers, so it must not
 load a library from wherever the person or program starting it points. In
 secure mode the loader ignores `LD_LIBRARY_PATH`, `$ORIGIN`, relative
 directories and `$HOME/.local/lib`, and searches `/opt/<name>/lib` after
 `/lib` and `/usr/lib`, once the kernel has confirmed that the program is a
-file of that extension's activation.
+file of that package's activation.
 
-Replacing an extension with a new image swaps the mount in one step. Whatever
+Replacing a package with a new image swaps the mount in one step. Whatever
 still uses the old one (an open file, a mapping, a program running from it)
 keeps it, and the kernel frees it once nothing does, as it does for a
 replaced base generation. There is no fixed number of activations: the ones
 held at once (counting those still held after being replaced) may use up to
 an eighth of usable memory for their indexes, the tree blocks they keep and
 their bookkeeping. Past that, showing another image fails with `EBUSY`, so
-an extension can be turned off but not updated until one is freed. A
+a package can be turned off but not updated until one is freed. A
 volume's block cache is not counted, since the kernel can reclaim it. The
 log records each step:
 
 ```text
-EXT: activation 3 is hello
-EXT: hello deactivated
-EXT: activation 3 freed
+PKG: activation 3 is hello
+PKG: hello deactivated
+PKG: activation 3 freed
 ```
 
 Activation is not a one-time check. At every boot init runs
-`extctl activate-all`, before privd and the services start, and that holds
-each enabled extension's stored image to its record, to its key if a key
+`pkgctl activate-all`, before privd and the services start, and that holds
+each enabled package's stored image to its record, to its key if a key
 installed it, to the base's ceiling and to the running `libc.so` again.
 The last check does not read the image's programs: an install keeps the
 names they bind that none of the image's own libraries export, in a sealed
 list beside the image, and each activation holds the base's `libc.so` to
 that list, so an older base's smaller `libc.so` still stops it.
 `enable` and `rollback` do the same, and so does trusting or removing a key,
-for the extensions that key installed. An extension that no longer fits (its
+for the packages that key installed. A package that no longer fits (its
 key was removed, a ceiling was lowered, a new base's ceiling is smaller) is
 stopped, and its record says why.
 
 ### Services
 
-An extension gets users of its own. The record gives the extension's name and
+A package gets users of its own. The record gives the package's name and
 each user it declares a uid between 100 and 999, the lowest one no record
-holds; an extension that declares no user takes no uid. Removal does not free
+holds; a package that declares no user takes no uid. Removal does not free
 the uids at once. They stay *retired* while a program runs as one of them or
-something they own is left: `extctl remove` takes away what they own directly
+something they own is left: `pkgctl remove` takes away what they own directly
 in `/tmp`, `/var/tmp` and `/dev/shm`, and gives the uids back only when
 nothing of theirs is found deeper. Until then a later `remove` tries again.
-The user database lists installed extensions' users after the people, each
-with a group of its own and its home at `/var/lib/<name>`. An extension
+The user database lists installed packages' users after the people, each
+with a group of its own and its home at `/var/lib/<name>`. A package
 never runs as uid 0, and never as a person except for its session services.
 
-Init runs each service an enabled extension declares
+Init runs each service an enabled package declares
 ([Init and services](/docs/architecture/init) covers the general rules):
 
 - **As its user, with its grant.** The service holds the capabilities it
-  declares, cut to what the extension was granted and to the base's ceiling,
+  declares, cut to what the package was granted and to the base's ceiling,
   in a login tag of its own, so init can find and end everything it starts.
   When the service's process exits, init ends whatever else still carries the
   tag before it starts the service again.
@@ -323,33 +326,33 @@ Init runs each service an enabled extension declares
   writing to it or closing it tells init the service is up. Because init
   made the socket, a program that connects to it and asks who is at the
   other end (`SO_PEERCRED`, `SO_PEERPROGRAM`) is told init, not the service.
-  If two extensions ask for the same socket, the one installed later (the
+  If two packages ask for the same socket, the one installed later (the
   one with the higher uid) runs no service at all.
 - **With its output kept.** Standard output and error go to
   `/var/log/<name>/<service>.log`, written by a copy of init running as the
-  extension's user, never as uid 0. At 256 KiB the log becomes
+  package's user, never as uid 0. At 256 KiB the log becomes
   `<service>.log.1`.
 - **Restarted as it asks.** `restart on-failure`, the default, starts it
   again unless it exited with status 0; `always` and `never` do what they
   say. Restarts count against init's budget of five a minute. A start that
   fails outright is tried again a second later, and after five such
-  failures in a row init gives up on the service until the extension
+  failures in a row init gives up on the service until the package
   changes. A service declared `after` another starts once that one has said
   it is ready, has run for thirty seconds, or will not start at all.
 
 The directories a service uses (`/var/log/<name>`, and `/var/lib/<name>` and
-`/run/<name>` when declared) are made for the extension's first user. If one
+`/run/<name>` when declared) are made for the package's first user. If one
 of them already exists and belongs to anyone else, init runs none of the
-extension's services rather than hand a stranger's directory over.
+package's services rather than hand a stranger's directory over.
 
 A *session service* runs as the first person instead, while their desktop
 session runs, and ends with it.
 
-When an extension changes, `extctl` tells init, and init reads the store and
+When a package changes, `pkgctl` tells init, and init reads the store and
 the activations again. It restarts only what the change touches: a
 service whose declaration, user, grant, program, libraries or files it
 `reads` changed. Everything else keeps running on the image it started from,
-and the sockets pass from the old service to the new one. An extension whose
+and the sockets pass from the old service to the new one. A package whose
 record or activation init cannot read at that moment is left as it stands,
 and init tries again a second later, then at doubling intervals up to a
 minute. Services also survive init replacing itself with a new base's init:
@@ -359,16 +362,16 @@ and restarts the rest.
 
 ### Actions
 
-An extension can declare privileged actions that apps ask privd for. One
-called `greet` in `hello` is `ext.hello.greet` to privd. Its mechanism is a
-program of the extension, run as the extension's first user, holding the
+A package can declare privileged actions that apps ask privd for. One
+called `greet` in `hello` is `pkg.hello.greet` to privd. Its mechanism is a
+program of the package, run as the package's first user, holding the
 capabilities the action declares, cut to the grant, the base's ceiling and
 what privd can hand out. Its
 `allow` lines are privd's own (`admin` and `user` at a level, `paired`, or
-`program <path>`), with two differences: an extension's action never allows
+`program <path>`), with two differences: a package's action never allows
 `root` or `greeter`, and its `program` principal may name one of the
-extension's own programs, which matches only while that exact image's
-program is running. The question privd shows names the extension. An action
+package's own programs, which matches only while that exact image's
+program is running. The question privd shows names the package. An action
 may allow `paired`, but the paired agent never reaches it: its connection
 goes only to the base's mechanisms, which ask only for the base's actions.
 
@@ -378,34 +381,34 @@ capabilities to whoever those lines let in, with nobody asked each time, and
 for `user` or a `program` that is every person's processes. So a first
 install's grant line lists such actions after `unasked`, and a key's `user`
 ceiling limits what they may hold together. privd reads the running
-extensions' actions when it starts, and again whenever init tells it the set
+packages' actions when it starts, and again whenever init tells it the set
 has changed, which init does with `SIGHUP`. privd keeps its socket open
 throughout, and each request is judged by the actions as they stand when it
 arrives. An action that clashes with one of the base's is left out, and so
 is one whose `program` principal names a dynamically linked base program;
-the extension's other actions still load.
+the package's other actions still load.
 
 ### Commands, apps and settings
 
-**Commands.** For each `command` an extension declares, `extctl` keeps a link
+**Commands.** For each `command` a package declares, `pkgctl` keeps a link
 in `/opt/bin` to `/opt/<name>/bin/<command>`. `/opt/bin` comes last on the
-default `PATH` (`/bin:/sbin:/opt/bin`), so an extension's command never
-shadows a base tool. Two extensions declaring the same command are refused
+default `PATH` (`/bin:/sbin:/opt/bin`), so a package's command never
+shadows a base tool. Two packages declaring the same command are refused
 at install. The shell finds a command's completions in its image's
 `share/shell/completions`, through its `/opt/bin` link, before the base's.
 
-**Apps.** The dock reads an extension's app entries from
+**Apps.** The dock reads a package's app entries from
 `/opt/<name>/share/slopos/apps`, and an entry the base or the person's
-`~/.local` has of the same id wins, so an extension adds apps but replaces
-none. It shows only the apps the extension declares.
+`~/.local` has of the same id wins, so a package adds apps but replaces
+none. It shows only the apps the package declares.
 
-**Settings.** An extension that declares `config` gets `/etc/<name>`, a
+**Settings.** A package that declares `config` gets `/etc/<name>`, a
 sealed directory of sealed files that everyone can read and only a holder of
 `Seal` can change. Its defaults ship in the image; `/etc/<name>` holds what
-the computer changed. `extctl config edit <name> <file>` lets a person edit
+the computer changed. `pkgctl config edit <name> <file>` lets a person edit
 a copy in their own editor and installs it once they approve, the way
-`sudoedit` works. `extctl config apply` installs a file signed by the key
-that installed the extension, unasked, as long as its serial number is above
+`sudoedit` works. `pkgctl config apply` installs a file signed by the key
+that installed the package, unasked, as long as its serial number is above
 the last one applied, so an old signed file cannot come back. Init restarts
 each service that `reads` a file that changed. A setting never widens a
 grant, and secrets belong in `/var/lib/<name>`, since `/etc/<name>` is
@@ -413,10 +416,10 @@ readable by everyone.
 
 ### The store
 
-Everything `extctl` keeps lives in `/var/lib/slopos/extensions`: the trusted
-keys as `keys.<n>`, and for each extension a directory of its own, `<name>/`,
+Everything `pkgctl` keeps lives in `/var/lib/slopos/packages`: the trusted
+keys as `keys.<n>`, and for each package a directory of its own, `<name>/`,
 holding its record as `record.<n>` beside its current and previous images,
-each named by its root (`<root>.ext`, with `<root>.meta` and
+each named by its root (`<root>.pkg`, with `<root>.meta` and
 `<root>.meta.sig` when a key signed it, and `<root>.needs`, the names its
 programs need from `libc.so`).
 
@@ -424,9 +427,9 @@ Nothing in the store is ever renamed or rewritten in place. A changed record
 or key list goes in as the next numbered generation, is sealed and read back,
 and only then are the older ones removed; readers believe the newest sealed
 generation. A writer cut off at any point therefore leaves the old state or
-the new one, never a store that has forgotten an extension's version floor.
-Writers take the lock file `/var/lib/slopos/extensions.lock`; readers take
-nothing, and anyone can read the store, which is how `extctl status` works
+the new one, never a store that has forgotten a package's version floor.
+Writers take the lock file `/var/lib/slopos/packages.lock`; readers take
+nothing, and anyone can read the store, which is how `pkgctl status` works
 without privileges.
 
 The seal is what protects it: a process that may override file permissions
@@ -440,43 +443,44 @@ RAM root installs.
 
 ## What it means in practice
 
-For the owner, everything goes through `extctl`, and the commands that change
+For the owner, everything goes through `pkgctl`, and the commands that change
 something are privd [actions](/docs/abi/privd-actions):
 
 | Command | What it does | Who is asked |
 |---|---|---|
-| `extctl status [<name>]` | Lists the trusted keys and each extension: enabled or not, running or not, its floor, uids and images | Nobody |
-| `extctl install <image>` | A first install, granting what the image declares | An administrator confirms |
-| `extctl install-signed <image>` | Installs or updates an image signed by a trusted key | Nobody, for an administrator |
-| `extctl install-offered [<dir>]` | Installs what uid 0 offers in `/var/lib/slopos/offered`, run by init at boot | Nobody; init runs it |
-| `extctl key add <key.pub> ceiling <caps> user <caps>`, `key remove <fingerprint>` | Trusts or stops trusting a signing key | An administrator confirms |
-| `extctl enable`, `disable`, `rollback <name>` | Turns an extension on or off, or goes back to the previous one | An administrator confirms |
-| `extctl remove <name>` | Removes an extension with its data, settings and log, giving up the name | An administrator confirms |
-| `extctl config edit <name> <file>` | Edits a settings file in `/etc/<name>` | An administrator confirms |
-| `extctl config apply <file>` | Installs a settings file signed by the key of the extension's current image | Nobody, for an administrator |
-| `extctl build <dir> [<out-dir>]` | Packs a laid-out tree into an image and sidecar | Nobody |
+| `pkgctl status [<name>]` | Lists the trusted keys and each package: enabled or not, running or not, its floor, uids and images | Nobody |
+| `pkgctl install <image>` | A first install, granting what the image declares | An administrator confirms |
+| `pkgctl install-signed <image>` | Installs or updates an image signed by a trusted key | Nobody, for an administrator |
+| `pkgctl install-offered [<dir>]` | Installs what uid 0 offers in `/var/lib/slopos/offered`, run by init at boot | Nobody; init runs it |
+| `pkgctl key add <key.pub> ceiling <caps> user <caps>`, `key remove <fingerprint>` | Trusts or stops trusting a signing key | An administrator confirms |
+| `pkgctl enable`, `disable`, `rollback <name>` | Turns a package on or off, or goes back to the previous one | An administrator confirms |
+| `pkgctl remove <name>` | Removes a package with its data, settings and log, giving up the name | An administrator confirms |
+| `pkgctl config edit <name> <file>` | Edits a settings file in `/etc/<name>` | An administrator confirms |
+| `pkgctl config apply <file>` | Installs a settings file signed by the key of the package's current image | Nobody, for an administrator |
+| `pkgctl build <dir> [<out-dir>]` | Packs a laid-out tree into an image and sidecar | Nobody |
 
 A person who is not an administrator needs an administrator's password for
 any command that changes something. A machine
 [paired](/docs/self-hosting/remote-control) with a host lets that host run
 these commands unasked.
 
-When an extension stops the system working properly, there are two ways
-back. Booting once with `extensions=off` on the kernel command line shows no
-extension at all (the kernel refuses `ext_activate` for that boot, so
+When a package stops the system working properly, there are two ways
+back. Booting once with `packages=off` on the kernel command line shows no
+package at all (the kernel refuses `pkg_activate` for that boot, so
 nothing in userland can override it). From the install medium's
-[rescue shell](/docs/self-hosting/installing), `extctl --root /mnt disable
+[rescue shell](/docs/self-hosting/installing), `pkgctl --root /mnt disable
 <name>` turns one off on a disk mounted at `/mnt`; no privd action takes
 `--root`, so only a shell that already holds the capabilities can do this.
 
-For a developer, an extension is the way to ship anything that needs a
-daemon, a capability or a privileged helper without rebuilding the base.
-Ordinary apps don't need one: they install into `~/.local` as
-[installed software](/docs/architecture/software).
+For a developer, a package is the way to ship software to everyone on a
+computer without rebuilding the base: an app, a command, or anything that
+needs a daemon, a capability or a privileged helper. What you build for
+yourself needs none: it is a file in your `~/.local`
+([installed software](/docs/architecture/software)).
 
 ## Differences from systemd-sysext
 
-| | systemd-sysext | SlopOS extensions |
+| | systemd-sysext | SlopOS packages |
 |---|---|---|
 | Where it appears | Merged into `/usr` and `/opt` with overlayfs | Mounted on its own at `/opt/<name>` |
 | Integrity | Verity data optional | A SHA-256 tree always, checked on every read |
@@ -484,15 +488,15 @@ Ordinary apps don't need one: they install into `~/.local` as
 
 ## How it is tested
 
-Three userland tests install extensions end to end through `extctl` and
-privd. `extension_test` covers first and signed installs, both ceilings, the
-version floor, rollback, a disabled extension staying disabled, key changes,
+Three userland tests install packages end to end through `pkgctl` and
+privd. `package_test` covers first and signed installs, both ceilings, the
+version floor, rollback, a disabled package staying disabled, key changes,
 the store's seals, and an image larger than an eighth of memory.
-`extension_service_test` runs a daemon as its user on sockets init holds,
+`package_service_test` runs a daemon as its user on sockets init holds,
 crashes it, updates it with and without a change to the daemon, and
-re-executes init underneath it. `extension_action_test` covers actions,
+re-executes init underneath it. `package_action_test` covers actions,
 principals, commands on `PATH`, app entries and settings. In the kernel,
-`fs::tests::extensions` flips a bit in an image and expects exactly the read
+`fs::tests::packages` flips a bit in an image and expects exactly the read
 that meets it to fail. On the host, the hash tree is checked against what
 `veritysetup` writes and the volume against `e2fsck` and `mke2fs`.
 
@@ -505,14 +509,14 @@ that meets it to fail. On the host, the hash tree is checked against what
   must not be one in `NEVER`, and a new capability that could change the
   base, the boot chain or an identity belongs in `NEVER`.
 - **The image reader and the kernel's index must refuse the same shapes.**
-  `extctl` judges the tree `slopos_extension_core::volume::read` reads; the
-  kernel names programs in the tree `fs/src/extension/index.rs` builds. If
+  `pkgctl` judges the tree `slopos_package_core::volume::read` reads; the
+  kernel names programs in the tree `fs/src/package/index.rs` builds. If
   one accepts what the other refuses, the tree that was judged is not the
   tree that runs.
 - **A mechanism reads what a request names without `DacOverride`.** So only
   files uid 0 may read by their mode go in, and a request can never copy a
   file only uid 0 may read into a place everyone reads.
-- **Read `SO_PEEREXTENSION` before `SO_PEERPROGRAM`.** A recorded identity
+- **Read `SO_PEERPACKAGE` before `SO_PEERPROGRAM`.** A recorded identity
   only ever lapses, so reading the label first means a lapse between the two
   reads gives no program rather than a path that looks like the base's.
 - **Locks nest as the layers do, and none is held across a read.** An
@@ -522,34 +526,34 @@ that meets it to fail. On the host, the hash tree is checked against what
   activation) is read straight off its filesystem's device by those runs.
   The verifying device checks each block it reads (`verity::check`); the
   levels above the leaves, up to 256 blocks, are read and checked at open
-  and kept, and 64 leaves are kept under `EXT_VERITY_KEPT`, a spinlock never
+  and kept, and 64 leaves are kept under `PKG_VERITY_KEPT`, a spinlock never
   held across I/O. A seal taken off the file later fails reads with `EIO`,
   never other bytes. Nothing below a disk's filesystem may read an
   activation.
 - **Store writers never rename.** They lock
-  `/var/lib/slopos/extensions.lock` (`EXTENSION_STORE.lock`, mode 0600),
+  `/var/lib/slopos/packages.lock` (`PACKAGE_STORE.lock`, mode 0600),
   ignore the termination signals privd relays, write a new generation, seal
   it through the descriptor that wrote it and read it back before removing
   older ones. A record or key list is believed only when it is sealed and
   has uid 0's owner and mode, so a generation a `DacOverride` holder spoilt
   before its seal is passed over for the last one a writer finished.
 - **Names are refused in two places.** The kernel refuses
-  `slopos_abi::extension::RESERVED` (the system's own names and the base's
-  directories). `extctl` also installs none of `slopos_extension_core::TAKEN`,
+  `slopos_abi::package::RESERVED` (the system's own names and the base's
+  directories). `pkgctl` also installs none of `slopos_package_core::TAKEN`,
   the names whose `/var/log`, `/run` or `/etc` directory the system already
-  uses, but it still shows, stops and removes an extension the store holds
+  uses, but it still shows, stops and removes a package the store holds
   under such a name. A new system directory of that kind needs a row in
   `TAKEN`.
-- **An activation replaces only an activation.** `ext_activate` swaps the
+- **An activation replaces only an activation.** `pkg_activate` swaps the
   mount under the mount table's lock (`vfs::mount::mount_replacing`), keeping
   the mount's id, and mounts it read-only and `MOUNT_PINNED`. A mount at
   `/opt/<name>` that is not an activation is neither replaced (`EBUSY`) nor
-  taken away by `ext_deactivate` (`ENOENT`). One filesystem,
-  `extension::ACTIVATIONS`, serves every activation at a mount of its own;
+  taken away by `pkg_deactivate` (`ENOENT`). One filesystem,
+  `package::ACTIVATIONS`, serves every activation at a mount of its own;
   a call finds its activation by the number in the inode's high half, and
   `is_activation` is one identity compare. An activation's `Ext4Mount`,
-  index and device are kernel heap made at `ext_activate` and freed by the
-  reaper, held to `extension::budget()`; the reclaimer only `try_lock`s the
+  index and device are kernel heap made at `pkg_activate` and freed by the
+  reaper, held to `package::budget()`; the reclaimer only `try_lock`s the
   activations. The mount table is a heap vector sorted by path, grown
   outside its IRQ lock, with no fixed size.
 - **The kernel's volume cache is small on purpose.** An activation's
@@ -563,20 +567,20 @@ that meets it to fail. On the host, the hash tree is checked against what
 - **`verity-core` is optimized in dev builds too.** Every block an image
   serves is hashed, so `[profile.dev.package.slopos-verity-core]` builds it
   at `opt-level = 3`. It hashes through the `sha256::Compress` a source
-  chooses; `extctl` takes `sha256::ni`, the CPU's SHA instructions, when
+  chooses; `pkgctl` takes `sha256::ni`, the CPU's SHA instructions, when
   `ni::present()` finds them (userland only: the kernel is soft-float).
-- **Every extension program starts `AT_SECURE`.** `exec_image` sets it for
-  any image the kernel attests as an extension's, whatever the caller asked
+- **Every package program starts `AT_SECURE`.** `exec_image` sets it for
+  any image the kernel attests as a package's, whatever the caller asked
   for. Without it, a library that maps nothing executable, loaded from the
   starter's `LD_LIBRARY_PATH`, would run inside a process that still carries
-  the extension's name. `secure_getenv` answers such a program nothing and
+  the package's name. `secure_getenv` answers such a program nothing and
   it starts not dumpable, as any `AT_SECURE` program does.
-- **The block mismatch line stays rate-limited.** `EXT: image block <n> fails
+- **The block mismatch line stays rate-limited.** `PKG: image block <n> fails
   its tree` is reachable by any reader of an activation's files, so it is
-  logged through `klog_warn_ratelimited!`. The other `EXT:` lines
-  (`EXT: activation <n> is <name>`, `EXT: <name> deactivated`,
-  `EXT: activation <n> freed`) need `ExtensionUpdate` to provoke and are not.
-- **An `ExtensionUpdate` holder is not held to a `DiskBlocks` ceiling.** It
+  logged through `klog_warn_ratelimited!`. The other `PKG:` lines
+  (`PKG: activation <n> is <name>`, `PKG: <name> deactivated`,
+  `PKG: activation <n> freed`) need `PackageUpdate` to provoke and are not.
+- **A `PackageUpdate` holder is not held to a `DiskBlocks` ceiling.** It
   stores whole images in one process, as the installer fills a root, so the
   per-process disk quota does not bind it. Every image it stores is copied
   with its holes kept, sealed, and read back against its tree
@@ -593,14 +597,14 @@ that meets it to fail. On the host, the hash tree is checked against what
   or removing one answers `EBUSY`, and `mount(2)` and `umount(2)` refuse a
   target at, above or beneath one with `EPERM`, `/var` included.
 - **Init and privd take uids from records, never from a name lookup.**
-  `slopos_extension_core::accounts` gives the extension's name and each
+  `slopos_package_core::accounts` gives the package's name and each
   granted user the lowest free uid, and the uid of the name is the
-  extension's *number*. The login tags come from it:
+  package's *number*. The login tags come from it:
   `init_control::service_tag` from the number and the service's place among
-  the extension's services, `init_control::action_tag` for all of an
-  extension's mechanisms, and `init_control::LOGGER` for the copies of init
+  the package's services, `init_control::action_tag` for all of a
+  package's mechanisms, and `init_control::LOGGER` for the copies of init
   (`/sbin/init --log <service>`) that write logs. A mechanism carries its
-  extension's tag rather than privd's, so init can end an extension's
+  package's tag rather than privd's, so init can end a package's
   mechanisms when its actions stop running, and a restarted privd counts
   them with what its predecessor started.
 - **A service is started only from the activation its declaration was read
@@ -616,20 +620,20 @@ that meets it to fail. On the host, the hash tree is checked against what
 - **A re-execution hands services on only to an init that can read them.**
   They travel in pipes named after the state's on the new init's command
   line (`--resume <state> <units>,…`), and the new image must hold the
-  header line `extensions::CARRIED` in its text. Before executing an image
+  header line `packages::CARRIED` in its text. Before executing an image
   that does not, init ends every service. The first line names every
   descriptor kept, so an image that cannot read the rest still closes them.
   Changing what is carried means a new header, not a new meaning for the
   old one.
 - **privd holds `SetId` only to start mechanisms.** Init hands privd
   `slopos_priv_core::PRIVD_CAPS`: what an action may name (`DELEGABLE`) plus
-  `SetId`, which no action may name, so privd can start a mechanism as an
-  extension's user. `ProcSignal` is in `DELEGABLE` so privd can relay a
+  `SetId`, which no action may name, so privd can start a mechanism as a
+  package's user. `ProcSignal` is in `DELEGABLE` so privd can relay a
   requester's signals to a mechanism running as another uid; `NEVER` keeps
-  it from every extension, and privd signals only mechanisms it started.
-- **`extctl` owns only its own links in `/opt/bin`.** After every change it
+  it from every package, and privd signals only mechanisms it started.
+- **`pkgctl` owns only its own links in `/opt/bin`.** After every change it
   rewrites the links that point into `/opt` and touches nothing else there.
-- **No privd action takes `--root`.** `extctl --root <dir>
+- **No privd action takes `--root`.** `pkgctl --root <dir>
   status|enable|disable` acts on the store of a root mounted at `<dir>` with
   whatever its caller holds, which is how the rescue shell uses it.
 
@@ -639,7 +643,7 @@ that meets it to fail. On the host, the hash tree is checked against what
   The closest relative on Linux: read-only images merged into a host's
   `/usr` and `/opt`, and how their compatibility is checked.
 - [dm-verity](https://docs.kernel.org/admin-guide/device-mapper/verity.html),
-  in the Linux kernel's documentation. The hash tree an extension image
+  in the Linux kernel's documentation. The hash tree a package image
   carries, and why a read that fails its hash fails outright.
 - [APEX file format](https://source.android.com/docs/core/ota/apex), from
   the Android Open Source Project. Updatable system components as
@@ -647,7 +651,7 @@ that meets it to fail. On the host, the hash tree is checked against what
   already installed.
 - [polkit(8)](https://polkit.pages.freedesktop.org/polkit/polkit.8.html).
   Mechanisms that ship their own actions and the levels at which a subject
-  may run them, the model for an extension's actions.
+  may run them, the model for a package's actions.
 - [sd_listen_fds(3)](https://www.freedesktop.org/software/systemd/man/latest/sd_listen_fds.html).
   The socket-passing convention a service's `LISTEN_FDS` follows. SlopOS
   starts the sockets at descriptor 4 and sets no `LISTEN_PID`, so a daemon
@@ -660,19 +664,19 @@ that meets it to fail. On the host, the hash tree is checked against what
 
 | Where | What |
 |---|---|
-| `extension-core/` | The image (`slopos_extension_core::image`), volume, declaration (`slopos_extension_core::declare`), grant, sidecar, record, keys and ceiling as data, the uids (`accounts.rs`), and the install and activation checks (`admit.rs`); host-tested |
+| `package-core/` | The image (`slopos_package_core::image`), volume, declaration (`slopos_package_core::declare`), grant, sidecar, record, keys and ceiling as data, the uids (`accounts.rs`), and the install and activation checks (`admit.rs`); host-tested |
 | `verity-core/` | SHA-256 and the dm-verity hash tree (`slopos-verity-core`), shared by the kernel and the tools |
-| `fs/src/extension/` | Activations: the verifying device (`extension::device`), the path index (`extension::index`), the shared filesystem and memory budget (`extension::ACTIVATIONS`, `extension::budget`) |
+| `fs/src/package/` | Activations: the verifying device (`package::device`), the path index (`package::index`), the shared filesystem and memory budget (`package::ACTIVATIONS`, `package::budget`) |
 | `fs/src/vfs/mount.rs` | Swapping an activation's mount in one step |
-| `core/src/syscall/fs/base_handlers.rs` | `ext_activate` and `ext_deactivate` |
-| `core/src/exec/mod.rs` | Starting an extension's program in secure mode (`exec_image`) |
-| `userland/src/apps/extctl/` | `/bin/extctl`, the store (`store.rs`), the user database (`accounts.rs`), the links in `/opt/bin` (`commands.rs`) and settings (`configure.rs`) |
-| `userland/src/apps/init/extensions.rs` | Running extensions' services |
+| `core/src/syscall/fs/base_handlers.rs` | `pkg_activate` and `pkg_deactivate` |
+| `core/src/exec/mod.rs` | Starting a package's program in secure mode (`exec_image`) |
+| `userland/src/apps/pkgctl/` | `/bin/pkgctl`, the store (`store.rs`), the user database (`accounts.rs`), the links in `/opt/bin` (`commands.rs`) and settings (`configure.rs`) |
+| `userland/src/apps/init/packages.rs` | Running packages' services |
 | `userland/src/init_control.rs` | The login tags of services, mechanisms and log writers |
 | `userland/src/activation.rs` | Reading what is shown at `/opt/<name>`, and the actions privd runs (`slopos_userland::activation`) |
 | `slibc/src/ld_so/` | The loader's search of `/opt/<name>/lib` |
-| `assets/privd/extensions` | The base's ceiling |
-| `tools/extension/`, `scripts/build_extension.sh` | Packing and signing an extension on the host (`just extension DIR`) |
+| `assets/privd/packages` | The base's ceiling |
+| `tools/package/`, `scripts/build_package.sh` | Packing and signing a package on the host (`just package DIR`) |
 
-[Extension images](/docs/abi/extension-images) lists the image format and the
+[Package images](/docs/abi/package-images) lists the image format and the
 declaration grammar in full.

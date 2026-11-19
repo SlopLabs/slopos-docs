@@ -84,13 +84,13 @@ directly.
 | `RawBlock` | Reading and writing disks and partitions directly, re-reading a partition table, reading and erasing crash records; it also lifts the per-process disk-space limit | privd; `bootctl`, the installer and the e2fsprogs programs it starts |
 | `Clock` | Setting the wall clock | privd; what `priv` runs |
 | `NetAdmin` | Changing the network: interfaces, addresses, routes, the resolver and DHCP; seeing which process owns every socket | privd; `ip`, `netctl` (which init also runs at boot to apply the kept network settings), what `priv` runs |
-| `Seal` | Setting or clearing a file's immutable flag (what `chattr +i` sets) | privd; `users`, `extctl`, the installer |
+| `Seal` | Setting or clearing a file's immutable flag (what `chattr +i` sets) | privd; `users`, `pkgctl`, the installer |
 | `BootEntry` | On top of `Power`, the firmware's boot manager entries: `Boot####`, `BootOrder`, `BootNext` and `BootCurrent`, and no other firmware variable | privd; the installer |
 | `SetId` | Taking a user or group id the process doesn't already hold, setting supplementary groups, and starting a child as someone else or with a login tag | privd |
 | `DacOverride` | Reading and writing any file whatever its permission bits, and giving any file to any owner | privd; `users`, the installer, what `priv` runs |
 | `SchedHigh` | Starting a program at the `High` scheduling tier, and setting a nice value below both zero and the task's current one | Init alone, which starts the compositor at `High` |
 | `BaseUpdate` | Making another archive the running base | privd; `bootctl base install`, `base try` and `base rollback` |
-| `ExtensionUpdate` | Activating and deactivating extensions; it also lifts the per-process disk-space limit | privd; `extctl` |
+| `PackageUpdate` | Activating and deactivating packages; it also lifts the per-process disk-space limit | privd; `pkgctl` |
 | `TestHarness` | The test-only system calls, which do nothing unless the kernel booted with `tests=on` | The copy of init that runs the tests |
 
 Two more capabilities are *universal*: every program holds them, and nothing
@@ -116,12 +116,12 @@ call so that taking it away later, once the wheel is something init hands
 `/bin/roulette`, is a visible change. Every other capability is *gated*: a
 program holds it only if something handed it over.
 
-An extension's services may also hold `Power`, `Mount`, `RawBlock`,
+A package's services may also hold `Power`, `Mount`, `RawBlock`,
 `NetAdmin`, `ConsoleConfig`, `SysInspect`, `Clock`, `DacOverride` or
 `SchedHigh`, and its actions any of those but `SchedHigh`, if the machine's
 owner granted them when installing it. That list is the base's ceiling for
-extensions, and no grant can name anything outside it
-([Extensions](/docs/architecture/extensions)). The rescue shell that an
+packages, and no grant can name anything outside it
+([Packages](/docs/architecture/packages)). The rescue shell that an
 install medium offers holds everything privd can give.
 
 ## How a process gets its capabilities
@@ -145,8 +145,8 @@ mode the dynamic loader ignores `LD_LIBRARY_PATH`, `$ORIGIN` and relative
 directories, and doesn't search `~/.local/lib` (nor does it for any process of
 uid 0's), so nobody
 can slip a library into a program that holds more than they do. Every program
-of an extension starts in secure mode too, whether a spawn or an `exec` loads
-it and whatever it holds: it speaks as its extension, which whoever started it
+of a package starts in secure mode too, whether a spawn or an `exec` loads
+it and whatever it holds: it speaks as its package, which whoever started it
 does not, so it must take no library from where its starter points.
 
 `fork` copies the parent's capabilities, and the threads of a process share
@@ -161,7 +161,7 @@ Init starts each program it supervises with what its service table names and
 nothing more. privd gets every capability an action may name, and `SetId`.
 Each compositor, a person's desktop or the login screen, gets `DisplaySeat`
 and `InputSeat`, and the Wheel of Fate gets `DisplaySeat`. A boot-time job
-gets what its one job needs, and an extension's service what it declares
+gets what its one job needs, and a package's service what it declares
 within its grant. What init starts as a person (their terminal, a console
 login's shell, `remoted`) and the console's login prompt hold nothing gated.
 [Init and services](/docs/architecture/init#what-init-starts-and-in-what-order)
@@ -170,7 +170,7 @@ lists every program init starts, as whom, and holding what.
 An action may name any gated capability but the seat capabilities,
 `SeatSwitch`, `SchedHigh`, `SetId` and `TestHarness`, so nothing privd starts
 holds those. privd holds `SetId` only to start a mechanism as someone other
-than uid 0: an extension's own user, or the person who asked.
+than uid 0: a package's own user, or the person who asked.
 
 ### Example: powering off from a terminal
 
@@ -299,7 +299,7 @@ guarantee is that every use of that authority is checked.
 
 - **To give a program a power,** decide who starts it. Something init runs at
   boot gets it from init's service table; something a person or a service asks
-  for gets an action in privd's policy; an extension's program gets it from its
+  for gets an action in privd's policy; a package's program gets it from its
   declaration, within what the owner granted. There is no setuid bit, and no
   file, path or owner gives a program anything.
 - **If a program gets `EPERM` from a gated call,** it lacks the capability.
@@ -398,7 +398,7 @@ bit 20, the bits above the removed `ClipboardGlobal` having moved down one,
 and `CAP_UNIVERSAL` is `ConsoleIo | Fate`. A new capability also needs a
 decision in `priv-core`: whether an action
 may name it (`DELEGABLE`), whether `priv` may (`REQUESTER_CEILING`), and whether
-an extension never may (`NEVER` in `extension-core`).
+a package never may (`NEVER` in `package-core`).
 
 **Nothing else carries authority.** `task.flags` says where and how a task
 runs, never what it may do; a spawn naming a flag bit that isn't defined is

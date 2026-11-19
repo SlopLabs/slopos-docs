@@ -279,7 +279,7 @@ The second line is a check on every app outside the base: it must load
 through `/lib/ld-slopos.so.1`, link `libc.so`, and make no system call of its
 own, because apps are updated on their own schedule and the C library is the
 one interface that only grows. `builddir/apps` now holds `bin/stopwatch`, the
-entry and both icons, and its `.extension/declare` names `stopwatch` as a
+entry and both icons, and its `.package/declare` names `stopwatch` as a
 command and `org.slopos.stopwatch` as an app; the build writes those lines
 itself from `APPS` and the entries.
 

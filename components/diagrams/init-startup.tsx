@@ -33,15 +33,15 @@ const PHASES: Phase[] = [
         holds: 'Seal',
       },
       {
-        title: 'Extensions',
-        detail: 'extctl activate-all shows each enabled extension at /opt/<name>',
-        holds: 'ExtensionUpdate, Seal',
+        title: 'Packages',
+        detail: 'pkgctl activate-all shows each enabled package at /opt/<name>',
+        holds: 'PackageUpdate, Seal',
       },
     ],
   },
   {
     name: 'Services',
-    note: 'in this order; privd, remoted and the console login start again when they exit, five times a minute at most, and an extension’s service as it declares',
+    note: 'in this order; privd, remoted and the console login start again when they exit, five times a minute at most, and a package’s service as it declares',
     steps: [
       {
         title: 'privd',
@@ -59,9 +59,9 @@ const PHASES: Phase[] = [
         holds: 'DisplaySeat',
       },
       {
-        title: 'Console login and extensions’ services',
-        detail: '/bin/login on init’s terminal, and each service an extension declares',
-        holds: 'nothing, or what the extension was granted',
+        title: 'Console login and packages’ services',
+        detail: '/bin/login on init’s terminal, and each service a package declares',
+        holds: 'nothing, or what the package was granted',
       },
     ],
   },

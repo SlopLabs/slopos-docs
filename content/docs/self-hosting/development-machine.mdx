@@ -63,16 +63,19 @@ without your home, `/bin:/sbin:/opt/bin`: the shell exports it
 when it starts with none and searches it for `command -p`, the C library's
 `execvp` and the coreutils fall back to it, and remote control runs its
 commands with it. `/opt/bin` comes last because it holds the commands of the
-images the machine runs, the toolchain's and the apps' among them, and those
-the machine's owner let [extensions](/docs/architecture/extensions) add, which
-so shadow none of the system's tools. Nothing lands in `/usr/local`: software
-for everyone is an image, and a program you build for yourself is a file you
+[packages](/docs/architecture/packages) the machine runs, the toolchain's and
+the apps' among them, which so shadow none of the system's tools. Nothing
+lands in `/usr/local`: software for everyone is a package, and a program you
+build for yourself is a file you
 copy into `~/.local` (its `bin`, `lib` and `share`).
 
 The toolchain is cross-built on the host by `just toolchain`, which takes
 hours; [Toolchain](/docs/self-hosting/toolchain) explains what it builds. You
 can boot without it. The root is then offered only the apps, and the guest
-has no `cargo` and no `just`, which is one of the toolchain's programs.
+has no `cargo` and no `just`, which is one of the toolchain's programs. A
+toolchain directory left by a build that wrote another image format holds no
+`slopos-toolchain.pkg`, and `just boot` stops there and says so: run
+`just toolchain` again, or remove the directory.
 
 ## Who you are in the guest
 
@@ -171,7 +174,7 @@ base tried: interface <i>, build tag -; the system runs it now (generation 2), a
 bootctl base commit /src/slopos/builddir/initramfs.cpio keeps it; bootctl base rollback ends the trial
 ```
 
-The apps' image goes in next, through `extctl install`, provided the C
+The apps' image goes in next, through `pkgctl install`, provided the C
 library it was built against is the one now running; if it isn't, the
 recipe prints the command that installs it once it is.
 
@@ -426,7 +429,10 @@ at.
 
 A persistent root made before the toolchain and the apps became images
 still holds the old shared trees under `/usr/local` and their manifests,
-which no search path names any more. `just reset root` drops them.
+which no search path names any more, and one made before base interface 16
+still holds the store that interface read, in another directory of
+`/var/lib/slopos`, which nothing reads now.
+`just reset root` drops them.
 
 ### The checksums on a writable root
 

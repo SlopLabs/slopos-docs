@@ -85,8 +85,8 @@ not, the kernel uses the loader's alone and logs
   The exceptions: `mount=`, `tests.run=` and `tests.skip=` accumulate;
   `prof=on`, `panic=reboot` and `verity=require` take effect wherever they
   appear;
-  `extensions=off` takes effect wherever it appears, and a later
-  `extensions=on` does not undo it.
+  `packages=off` takes effect wherever it appears, and a later
+  `packages=on` does not undo it.
 - `video=framebuffer`, `roulette=skip`, `tp.off`, `tp.poll`, `tp.debug`,
   `platform.debug`, `panic.post_boot_unwind=on`, `panic.fatal_smoke=on` and
   `panic.nested_drop_smoke=on` are matched as text
@@ -173,7 +173,7 @@ The rest of the options have no Linux counterpart of the same name.
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `roulette=skip` | `skip` | spin | init does not run `/bin/roulette`, the Wheel of Fate, at startup |
-| `extensions=` | `on`, `off` | `on` | `off` activates no extension this boot: init does not run `extctl activate-all`, `ext_activate` answers `EPERM`, and `sys_info` reports `BOOT_FLAG_EXTENSIONS_OFF`. See [Extensions](/docs/architecture/extensions) |
+| `packages=` | `on`, `off` | `on` | `off` activates no package this boot: init does not run `pkgctl activate-all`, `pkg_activate` answers `EPERM`, and `sys_info` reports `BOOT_FLAG_PACKAGES_OFF`. See [Packages](/docs/architecture/packages) |
 
 ### Hardware
 
@@ -266,7 +266,7 @@ The output these options control is described in
 
 | Where | What |
 |---|---|
-| `boot/src/early_init.rs` | `root=`, `verity=`, the panic, logging, lockdep, quota, watchdog, scheduling, memory, `prof=`, `extensions=` and test-mode options |
+| `boot/src/early_init.rs` | `root=`, `verity=`, the panic, logging, lockdep, quota, watchdog, scheduling, memory, `prof=`, `packages=` and test-mode options |
 | `boot/src/limine_protocol.rs` | The loader's command line and the built-in one |
 | `boot-core/src/kernel.rs` (`CMDLINE_SECTION`, `stamp_cmdline`), `boot-core/src/layout.rs` (`MACHINE_CMDLINE`) | The kernel's words section, its rule and the machine's words file |
 | `userland/src/apps/bootctl.rs` (`cmdline`, `install --cmdline`) | Stamping the machine's words into a slot's kernel |
