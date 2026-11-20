@@ -271,7 +271,10 @@ builds and installs your current tree on the paired computer:
 `scripts/remote.py install` does steps 3 to 5 for files you built yourself
 (`--base`, `--kernel` with `--tag`, `--commit`), and
 `--package` installs a package image `just package` packed
-([Build a package](/docs/development/building-a-package)).
+([Build a package](/docs/development/building-a-package)). A package goes in
+before the armed kernel boots, through the `pkgctl` of the base that is
+running, so a machine whose base is older than base interface 16 takes the
+base and kernel in one run and its packages in a second.
 [Updating SlopOS](/docs/self-hosting/updating) explains what `bootctl` checks
 before it writes anything.
 
